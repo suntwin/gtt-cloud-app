@@ -16,6 +16,7 @@ from pandas.api.types import (
 
 # ── Patch for streamlit-aggrid + Streamlit 1.28+ compatibility ──
 import streamlit.components.v1 as _components
+
 if not hasattr(_components, 'MarshallComponentException'):
     _components.MarshallComponentException = Exception
 
@@ -23,13 +24,12 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataRe
 
 st.set_page_config(page_title="GTT Crypto Hourly Scanner", page_icon="⚡", layout="wide")
 
-
 # ════════════════════════════════════════════════════════════════════
 # 1. CONFIGURATION & ENDPOINTS
 # ════════════════════════════════════════════════════════════════════
 gtt_endpoints = {
-    "22h":  "https://api.marketinout.com/run/screen?key=9fdcdedbcee248d8",
-    "68h":  "https://api.marketinout.com/run/screen?key=30ae06ca7155498e",
+    "22h": "https://api.marketinout.com/run/screen?key=9fdcdedbcee248d8",
+    "68h": "https://api.marketinout.com/run/screen?key=30ae06ca7155498e",
     "126h": "https://api.marketinout.com/run/screen?key=e42d24a9aabc4a7e",
 }
 
@@ -50,7 +50,7 @@ gtt_columns = [
 ]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-COLUMN_PREFS_FILE  = os.path.join(BASE_DIR, "crypto_column_prefs.json")
+COLUMN_PREFS_FILE = os.path.join(BASE_DIR, "crypto_column_prefs.json")
 SCORING_PREFS_FILE = os.path.join(BASE_DIR, "crypto_scoring_prefs.json")
 
 
@@ -66,6 +66,7 @@ def load_column_prefs():
             return {}
     return {}
 
+
 def save_column_prefs(prefs):
     try:
         with open(COLUMN_PREFS_FILE, 'w') as f:
@@ -73,12 +74,14 @@ def save_column_prefs(prefs):
     except Exception as e:
         st.warning(f"Could not save column preferences: {e}")
 
+
 def get_persisted_columns(table_key, all_cols, default_hidden_cols):
     prefs = load_column_prefs()
     default_visible = [c for c in all_cols if c not in default_hidden_cols]
     saved = prefs.get(table_key, default_visible)
     saved = [c for c in saved if c in all_cols]
     return saved if saved else default_visible
+
 
 def load_scoring_prefs():
     if os.path.exists(SCORING_PREFS_FILE):
@@ -88,6 +91,7 @@ def load_scoring_prefs():
         except Exception:
             return {}
     return {}
+
 
 def save_scoring_prefs(prefs):
     try:
@@ -107,18 +111,13 @@ def _is_categorical(series):
 
 
 def clean_df_for_json(df):
-    """Make DataFrame JSON-safe for streamlit-aggrid.
-
-    Replaces NaN / Inf with None (→ JSON null) and converts numpy
-    scalars to Python native types so json.dumps never crashes.
-    """
+    """Make DataFrame JSON-safe for streamlit-aggrid."""
     df = df.copy()
     df = df.replace([np.inf, -np.inf], np.nan)
     for col in df.columns:
         if df[col].isna().any():
             df[col] = df[col].astype(object)
             df.loc[df[col].isna(), col] = None
-    # Convert any remaining numpy scalars → Python native
     for col in df.columns:
         if df[col].dtype == object:
             df[col] = df[col].apply(
@@ -184,7 +183,7 @@ def fetch_weekly_daily_scan(url):
             if len(fields) < n_metrics + 2:
                 continue
             symbol = fields[0]
-            last   = fields[1]
+            last = fields[1]
             metrics = fields[-n_metrics:]
             rows.append([symbol, last] + metrics)
 
@@ -256,7 +255,8 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 if clean.empty:
                     right.info(f"Column **{column}** has no numeric values")
                     continue
-                _min = float(clean.min()); _max = float(clean.max())
+                _min = float(clean.min());
+                _max = float(clean.max())
                 step = (_max - _min) / 100 if (_max - _min) > 0 else 1
                 custom_defaults = {
                     '_chg_percentclose_hourly': 1.0, 'Adr': 3.0, 'Ti65': 1.05,
@@ -361,7 +361,7 @@ def main():
         st.sidebar.number_input("_nr4_prev < this → 4 pts", value=tight_defaults[0], step=0.5, key="sc_t1"),
         st.sidebar.number_input("_nr4_prev < this → 3 pts", value=tight_defaults[1], step=0.5, key="sc_t2"),
         st.sidebar.number_input("_nr4_prev < this → 2 pts", value=tight_defaults[2], step=0.5, key="sc_t3"),
-        st.sidebar.number_input("_nr4_prev < this → 1 pt",  value=tight_defaults[3], step=0.5, key="sc_t4"),
+        st.sidebar.number_input("_nr4_prev < this → 1 pt", value=tight_defaults[3], step=0.5, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
@@ -371,7 +371,7 @@ def main():
     v_raw = [
         st.sidebar.number_input("dvol/avg > this → 3 pts", value=vol_defaults[0], step=0.5, key="sc_v1"),
         st.sidebar.number_input("dvol/avg > this → 2 pts", value=vol_defaults[1], step=0.5, key="sc_v2"),
-        st.sidebar.number_input("dvol/avg > this → 1 pt",  value=vol_defaults[2], step=0.5, key="sc_v3"),
+        st.sidebar.number_input("dvol/avg > this → 1 pt", value=vol_defaults[2], step=0.5, key="sc_v3"),
     ]
     v3, v2, v1 = sorted(v_raw)
 
@@ -409,7 +409,7 @@ def main():
     ma20_raw = [
         st.sidebar.number_input("abs(20MADist) < this → 3 pts", value=ma20_defaults[0], step=0.5, key="sc_ma20_1"),
         st.sidebar.number_input("abs(20MADist) < this → 2 pts", value=ma20_defaults[1], step=0.5, key="sc_ma20_2"),
-        st.sidebar.number_input("abs(20MADist) < this → 1 pt",  value=ma20_defaults[2], step=0.5, key="sc_ma20_3"),
+        st.sidebar.number_input("abs(20MADist) < this → 1 pt", value=ma20_defaults[2], step=0.5, key="sc_ma20_3"),
     ]
     ma20_t1, ma20_t2, ma20_t3 = sorted(ma20_raw)
 
@@ -422,18 +422,18 @@ def main():
     )
     ma10_raw = [
         st.sidebar.number_input("abs(10MADist) < this → 2 pts", value=ma10_defaults[0], step=0.5, key="sc_ma10_1"),
-        st.sidebar.number_input("abs(10MADist) < this → 1 pt",  value=ma10_defaults[1], step=0.5, key="sc_ma10_2"),
+        st.sidebar.number_input("abs(10MADist) < this → 1 pt", value=ma10_defaults[1], step=0.5, key="sc_ma10_2"),
     ]
     ma10_t1, ma10_t2 = sorted(ma10_raw)
 
     # Tier thresholds
     st.sidebar.subheader("🏷️ Tier Thresholds")
     tier_a = st.sidebar.number_input("Tier A (🟢) min score",
-        value=saved_scoring.get('tier_a_threshold', 10),
-        min_value=1, max_value=14, step=1, key="sc_tier_a")
+                                     value=saved_scoring.get('tier_a_threshold', 10),
+                                     min_value=1, max_value=14, step=1, key="sc_tier_a")
     tier_b = st.sidebar.number_input("Tier B (🟡) min score",
-        value=saved_scoring.get('tier_b_threshold', 7),
-        min_value=1, max_value=14, step=1, key="sc_tier_b")
+                                     value=saved_scoring.get('tier_b_threshold', 7),
+                                     min_value=1, max_value=14, step=1, key="sc_tier_b")
 
     if st.sidebar.button("💾 Save scoring config", key="save_scoring_btn"):
         prefs_to_save = {
@@ -461,14 +461,14 @@ def main():
         fetch_label = ("Auto-refreshing scans..." if auto_fetch and not manual_fetch
                        else "Fetching & merging 22h / 68h / 126h crypto scans...")
         with st.spinner(fetch_label):
-            df_22h  = fetch_gtt_scan(gtt_endpoints["22h"],  "22h")
-            df_68h  = fetch_gtt_scan(gtt_endpoints["68h"],  "68h")
+            df_22h = fetch_gtt_scan(gtt_endpoints["22h"], "22h")
+            df_68h = fetch_gtt_scan(gtt_endpoints["68h"], "68h")
             df_126h = fetch_gtt_scan(gtt_endpoints["126h"], "126h")
 
             if df_22h is not None and not df_22h.empty:
-                df_22h_r  = df_22h.rename(columns={'_period_perf': 'Perf_22h'})
-                df_68h_r  = (df_68h.rename(columns={'_period_perf': 'Perf_68h'})
-                             if df_68h is not None and not df_68h.empty else None)
+                df_22h_r = df_22h.rename(columns={'_period_perf': 'Perf_22h'})
+                df_68h_r = (df_68h.rename(columns={'_period_perf': 'Perf_68h'})
+                            if df_68h is not None and not df_68h.empty else None)
                 df_126h_r = (df_126h.rename(columns={'_period_perf': 'Perf_126h'})
                              if df_126h is not None and not df_126h.empty else None)
 
@@ -496,9 +496,9 @@ def main():
                 else:
                     base_df['Perf_126h'] = np.nan
 
-                base_df['Perf_22h']  = base_df['Perf_22h'].fillna(0)
-                base_df['Perf_68h']  = base_df['Perf_68h'].fillna(0)
-                base_df['Perf_126h'] = base_df['Perf_126h'].fillna(0)
+                base_df['Perf_22h'] = base_df['Perf_22h'].fillna(0) if 'Perf_22h' in base_df.columns else 0
+                base_df['Perf_68h'] = base_df['Perf_68h'].fillna(0) if 'Perf_68h' in base_df.columns else 0
+                base_df['Perf_126h'] = base_df['Perf_126h'].fillna(0) if 'Perf_126h' in base_df.columns else 0
 
                 perf_cols = ['Perf_22h', 'Perf_68h', 'Perf_126h']
                 base_df['Avg_Perf'] = (base_df[perf_cols]
@@ -520,16 +520,21 @@ def main():
                 wd_df = fetch_weekly_daily_scan(weekly_daily_endpoint)
                 if wd_df is not None and not wd_df.empty:
                     st.session_state.wd_full_df = wd_df.copy()
-                    wd_subset = wd_df[['Symbol', 'Dailyclose_chg_pct', 'Dailytightcloses_of4',
+
+                    # Safely select available columns to prevent KeyError
+                    wd_cols_to_keep = ['Symbol', 'Dailyclose_chg_pct', 'Dailytightcloses_of4',
                                        'Insidebar_thisday', 'Insidebars_of8',
-                                       'Weeklyrsi', 'Dailyrsi', 'Dailycontraction']].rename(columns={
-                        'Dailyclose_chg_pct':    'D_CloseChg_Pct',
-                        'Dailytightcloses_of4':  'D_TightCloses',
-                        'Insidebar_thisday':     'D_InsideBar',
-                        'Insidebars_of8':        'D_InsideBars8',
-                        'Weeklyrsi':             'W_RSI',
-                        'Dailyrsi':              'D_RSI',
-                        'Dailycontraction':      'D_Contraction',
+                                       'Weeklyrsi', 'Dailyrsi', 'Dailycontraction']
+                    available_wd_cols = [c for c in wd_cols_to_keep if c in wd_df.columns]
+
+                    wd_subset = wd_df[available_wd_cols].rename(columns={
+                        'Dailyclose_chg_pct': 'D_CloseChg_Pct',
+                        'Dailytightcloses_of4': 'D_TightCloses',
+                        'Insidebar_thisday': 'D_InsideBar',
+                        'Insidebars_of8': 'D_InsideBars8',
+                        'Weeklyrsi': 'W_RSI',
+                        'Dailyrsi': 'D_RSI',
+                        'Dailycontraction': 'D_Contraction',
                     })
                     actionable_df = actionable_df.merge(wd_subset, on='Symbol', how='left')
                 else:
@@ -553,10 +558,10 @@ def main():
 
             # ── Scoring (NaN → 0 pts always) ──
             thresholds_ok = (
-                len(set([t1, t2, t3, t4])) >= 4 and
-                len(set([v1, v2, v3])) >= 3 and
-                len(set([ma20_t1, ma20_t2, ma20_t3])) >= 3 and
-                len(set([ma10_t1, ma10_t2])) >= 2
+                    len(set([t1, t2, t3, t4])) >= 4 and
+                    len(set([v1, v2, v3])) >= 3 and
+                    len(set([ma20_t1, ma20_t2, ma20_t3])) >= 3 and
+                    len(set([ma10_t1, ma10_t2])) >= 2
             )
 
             if not thresholds_ok:
@@ -567,24 +572,30 @@ def main():
                     actionable_df[c] = 0 if c != 'Tier' else '🔴 Error'
             else:
                 # 1) Tightness
-                nr4_prev_filled = actionable_df['_nr4_previous'].fillna(999)
-                actionable_df['Tight_Score'] = pd.cut(
-                    nr4_prev_filled,
-                    bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
-                    labels=[4, 3, 2, 1, 0]
-                ).astype(int)
+                if '_nr4_previous' in actionable_df.columns:
+                    nr4_prev_filled = actionable_df['_nr4_previous'].fillna(999)
+                    actionable_df['Tight_Score'] = pd.cut(
+                        nr4_prev_filled,
+                        bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
+                        labels=[4, 3, 2, 1, 0]
+                    ).astype(int)
+                else:
+                    actionable_df['Tight_Score'] = 0
 
                 # 2) BO Volume (hourly)
-                rvol_ratio = np.where(
-                    actionable_df['_avgvol_mln_hourly'] > 0,
-                    actionable_df['dvolhourly'] / actionable_df['_avgvol_mln_hourly'],
-                    0
-                )
-                actionable_df['Vol_Score'] = pd.cut(
-                    rvol_ratio,
-                    bins=[-float('inf'), v3, v2, v1, float('inf')],
-                    labels=[0, 1, 2, 3]
-                ).astype(int)
+                if 'dvolhourly' in actionable_df.columns and '_avgvol_mln_hourly' in actionable_df.columns:
+                    rvol_ratio = np.where(
+                        actionable_df['_avgvol_mln_hourly'] > 0,
+                        actionable_df['dvolhourly'] / actionable_df['_avgvol_mln_hourly'],
+                        0
+                    )
+                    actionable_df['Vol_Score'] = pd.cut(
+                        rvol_ratio,
+                        bins=[-float('inf'), v3, v2, v1, float('inf')],
+                        labels=[0, 1, 2, 3]
+                    ).astype(int)
+                else:
+                    actionable_df['Vol_Score'] = 0
 
                 # 3) DailyTightCloses Bonus
                 actionable_df['TClose_Score'] = np.where(
@@ -593,50 +604,62 @@ def main():
                 )
 
                 # 3b) StrongOpen Bonus
-                actionable_df['StrongOpen_Score'] = np.where(
-                    actionable_df['strongopen'].fillna(0) >= 1,
-                    strongopen_pts, 0
-                )
+                if 'strongopen' in actionable_df.columns:
+                    actionable_df['StrongOpen_Score'] = np.where(
+                        actionable_df['strongopen'].fillna(0) >= 1,
+                        strongopen_pts, 0
+                    )
+                else:
+                    actionable_df['StrongOpen_Score'] = 0
 
                 # 3c) _wtc Bonus
-                actionable_df['WTC_Score'] = np.where(
-                    actionable_df['_wtc'].fillna(0) >= 1,
-                    wtc_pts, 0
-                )
+                if '_wtc' in actionable_df.columns:
+                    actionable_df['WTC_Score'] = np.where(
+                        actionable_df['_wtc'].fillna(0) >= 1,
+                        wtc_pts, 0
+                    )
+                else:
+                    actionable_df['WTC_Score'] = 0
 
                 # 4a) 20MADist
-                ma20_filled = actionable_df['_20madist'].fillna(999)
-                ma20_abs = ma20_filled.abs()
-                ma20_base_score = pd.cut(
-                    ma20_abs,
-                    bins=[-float('inf'), ma20_t1, ma20_t2, ma20_t3, float('inf')],
-                    labels=[3, 2, 1, 0]
-                ).astype(int)
-                ma20_is_invalid = (actionable_df['_20madist'].isna() |
-                                   (actionable_df['_20madist'] < ma20_neg_cutoff))
-                actionable_df['MA20_Score'] = np.where(ma20_is_invalid, 0, ma20_base_score)
+                if '_20madist' in actionable_df.columns:
+                    ma20_filled = actionable_df['_20madist'].fillna(999)
+                    ma20_abs = ma20_filled.abs()
+                    ma20_base_score = pd.cut(
+                        ma20_abs,
+                        bins=[-float('inf'), ma20_t1, ma20_t2, ma20_t3, float('inf')],
+                        labels=[3, 2, 1, 0]
+                    ).astype(int)
+                    ma20_is_invalid = (actionable_df['_20madist'].isna() |
+                                       (actionable_df['_20madist'] < ma20_neg_cutoff))
+                    actionable_df['MA20_Score'] = np.where(ma20_is_invalid, 0, ma20_base_score)
+                else:
+                    actionable_df['MA20_Score'] = 0
 
                 # 4b) 10MADist
-                ma10_filled = actionable_df['_10madist'].fillna(999)
-                ma10_abs = ma10_filled.abs()
-                ma10_base_score = pd.cut(
-                    ma10_abs,
-                    bins=[-float('inf'), ma10_t1, ma10_t2, float('inf')],
-                    labels=[2, 1, 0]
-                ).astype(int)
-                ma10_is_invalid = (actionable_df['_10madist'].isna() |
-                                   (actionable_df['_10madist'] < ma10_neg_cutoff))
-                actionable_df['MA10_Score'] = np.where(ma10_is_invalid, 0, ma10_base_score)
+                if '_10madist' in actionable_df.columns:
+                    ma10_filled = actionable_df['_10madist'].fillna(999)
+                    ma10_abs = ma10_filled.abs()
+                    ma10_base_score = pd.cut(
+                        ma10_abs,
+                        bins=[-float('inf'), ma10_t1, ma10_t2, float('inf')],
+                        labels=[2, 1, 0]
+                    ).astype(int)
+                    ma10_is_invalid = (actionable_df['_10madist'].isna() |
+                                       (actionable_df['_10madist'] < ma10_neg_cutoff))
+                    actionable_df['MA10_Score'] = np.where(ma10_is_invalid, 0, ma10_base_score)
+                else:
+                    actionable_df['MA10_Score'] = 0
 
                 # ── Total ──
                 actionable_df['Total_Score'] = (
-                    actionable_df['Tight_Score'] +
-                    actionable_df['Vol_Score'] +
-                    actionable_df['TClose_Score'] +
-                    actionable_df['StrongOpen_Score'] +
-                    actionable_df['WTC_Score'] +
-                    actionable_df['MA20_Score'] +
-                    actionable_df['MA10_Score']
+                        actionable_df['Tight_Score'] +
+                        actionable_df['Vol_Score'] +
+                        actionable_df['TClose_Score'] +
+                        actionable_df['StrongOpen_Score'] +
+                        actionable_df['WTC_Score'] +
+                        actionable_df['MA20_Score'] +
+                        actionable_df['MA10_Score']
                 )
 
                 # ── Tier ──
@@ -659,7 +682,7 @@ def main():
                         actionable_df.at[idx, 'Change'] = '🆕'
                     else:
                         prev_tier, prev_score = prev[symbol]['tier'], prev[symbol]['score']
-                        cur_rank  = tier_order_map.get(cur_tier, 9)
+                        cur_rank = tier_order_map.get(cur_tier, 9)
                         prev_rank = tier_order_map.get(prev_tier, 9)
                         if cur_rank < prev_rank:
                             actionable_df.at[idx, 'Change'] = '⬆️'
@@ -690,7 +713,7 @@ def main():
                 'Tight_Score', 'Vol_Score', 'TClose_Score',
                 'StrongOpen_Score', 'WTC_Score',
                 'MA20_Score', 'MA10_Score',
-                '_nr4_previous','_chg_percentclose_hourly', 'D_TightCloses', 'D_InsideBars8', 'D_InsideBar',
+                '_nr4_previous', '_chg_percentclose_hourly', 'D_TightCloses', 'D_InsideBars8', 'D_InsideBar',
                 'dvolhourly', '_avgvol_mln_hourly', 'dvoldaily',
                 '_20madist', '_10madist', '_wtc', 'strongopen',
                 'Symbol',
@@ -713,12 +736,12 @@ def main():
 
             # ── Change summary bar ──
             change_col = actionable_df['Change']
-            n_new       = (change_col == '🆕').sum()
-            n_tier_up   = (change_col == '⬆️').sum()
+            n_new = (change_col == '🆕').sum()
+            n_tier_up = (change_col == '⬆️').sum()
             n_tier_down = (change_col == '⬇️').sum()
-            n_score_up  = (change_col == '📈').sum()
-            n_score_dn  = (change_col == '📉').sum()
-            n_dropped   = len(st.session_state.get('dropped_symbols', set()))
+            n_score_up = (change_col == '📈').sum()
+            n_score_dn = (change_col == '📉').sum()
+            n_dropped = len(st.session_state.get('dropped_symbols', set()))
             if n_new + n_tier_up + n_tier_down + n_score_up + n_score_dn + n_dropped > 0:
                 parts = []
                 if n_new:       parts.append(f"🆕 **{n_new}** new")
@@ -755,7 +778,7 @@ def main():
             hidden_main_cols = [c for c in all_main_cols if c not in selected_main_cols]
             col_precedence = {c: i for i, c in enumerate(columns_to_show) if c in filtered_df.columns}
             selected_main_cols = sorted(selected_main_cols, key=lambda c: col_precedence.get(c, 9999))
-            hidden_main_cols   = sorted(hidden_main_cols,   key=lambda c: col_precedence.get(c, 9999))
+            hidden_main_cols = sorted(hidden_main_cols, key=lambda c: col_precedence.get(c, 9999))
             filtered_df = filtered_df[selected_main_cols + hidden_main_cols]
 
             # ════════════════════════════════════════════════════════
@@ -797,7 +820,8 @@ def main():
             # _nr4_previous highlight
             if '_nr4_previous' in filtered_df.columns:
                 gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75,
-                    cellStyle=JsCode("function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
+                                    cellStyle=JsCode(
+                                        "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
 
             # _chg_percentclose_hourly heatmap
             if '_chg_percentclose_hourly' in filtered_df.columns:
@@ -819,9 +843,9 @@ def main():
                     }}
                 """)
                 gb.configure_column('_chg_percentclose_hourly', minWidth=80, maxWidth=110,
-                    cellStyle=chg_jscode, filter='agNumberColumnFilter',
-                    filterParams={'filterOptions': ['greaterThan','lessThan','equals','inRange'],
-                                  'defaultOption':'greaterThan','defaultValues':[0]})
+                                    cellStyle=chg_jscode, filter='agNumberColumnFilter',
+                                    filterParams={'filterOptions': ['greaterThan', 'lessThan', 'equals', 'inRange'],
+                                                  'defaultOption': 'greaterThan', 'defaultValues': [0]})
 
             for col in ['Adr', 'Ti65', '_nr4']:
                 if col in filtered_df.columns:
@@ -834,8 +858,8 @@ def main():
                 if not valid_rvol.empty:
                     valid_rvol['rvol'] = valid_rvol['dvolhourly'] / valid_rvol['_avgvol_mln_hourly']
                     above_avg = valid_rvol[valid_rvol['rvol'] > 1.0]['rvol']
-                    rvol_floor   = max(float(above_avg.min()), 1.0) if not above_avg.empty else 1.0
-                    rvol_ceiling = float(above_avg.max())           if not above_avg.empty else 3.0
+                    rvol_floor = max(float(above_avg.min()), 1.0) if not above_avg.empty else 1.0
+                    rvol_ceiling = float(above_avg.max()) if not above_avg.empty else 3.0
                 else:
                     rvol_floor, rvol_ceiling = 1.0, 3.0
 
@@ -858,6 +882,8 @@ def main():
                 """)
                 gb.configure_column('dvolhourly', minWidth=65, maxWidth=90, cellStyle=rvol_jscode)
                 gb.configure_column('_avgvol_mln_hourly', minWidth=65, maxWidth=90, cellStyle=rvol_jscode)
+
+            if 'dvoldaily' in filtered_df.columns:
                 gb.configure_column('dvoldaily', minWidth=65, maxWidth=90)
 
             # MA dist heatmap
@@ -961,7 +987,7 @@ def main():
             hidden_wd = [c for c in all_wd_cols if c not in sel_wd_cols]
             col_prec_wd = {c: i for i, c in enumerate(['Symbol', 'Last'] + weekly_daily_metric_columns)}
             sel_wd_cols = sorted(sel_wd_cols, key=lambda c: col_prec_wd.get(c, 9999))
-            hidden_wd   = sorted(hidden_wd,   key=lambda c: col_prec_wd.get(c, 9999))
+            hidden_wd = sorted(hidden_wd, key=lambda c: col_prec_wd.get(c, 9999))
             wd = wd[sel_wd_cols + hidden_wd]
 
             gb2 = GridOptionsBuilder.from_dataframe(wd)
