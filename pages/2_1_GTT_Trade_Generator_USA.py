@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import requests
 from io import StringIO
-import pyperclip
 from pandas.api.types import (
     is_categorical_dtype,
     is_datetime64_any_dtype,
@@ -1229,7 +1228,7 @@ def main():
 
                 copy_col1, copy_col2, copy_col3 = st.columns(3)
 
-                 with copy_col1:
+                with copy_col1:
                     st.markdown(f"**Tier A only** — `{len(tier_a_symbols)} symbols`")
                     if tier_a_symbols:
                         st.code(tier_a_tv_string, language=None)

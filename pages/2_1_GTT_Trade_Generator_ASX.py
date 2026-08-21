@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import requests
 from io import StringIO
-import pyperclip
 from pandas.api.types import (
     is_categorical_dtype,
     is_datetime64_any_dtype,
