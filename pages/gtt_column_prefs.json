@@ -1,0 +1,29 @@
+{
+  "main_table": [
+    "Tier",
+    "Symbol",
+    "_chg_percentclose",
+    "Total_Score",
+    "Sector_Rank",
+    "Sector_Percentile",
+    "Sector",
+    "Industry",
+    "Adr",
+    "Ti65",
+    "Avg_RS",
+    "_nr4",
+    "_nr4_previous",
+    "dvol",
+    "W_PctOf10wkHigh",
+    "W_CloseChg_Pct",
+    "W_TightCloses",
+    "W_InsideBars",
+    "_circuit",
+    "_20madist",
+    "_10madist",
+    "Vol_Score",
+    "Change",
+    "_avgvol_mln",
+    "cap"
+  ]
+}
