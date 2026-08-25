@@ -356,12 +356,12 @@ def main():
 
     # 1: Tightness
     st.sidebar.subheader("1️⃣ Tightness (_nr4_prev) — Max 4 pts")
-    tight_defaults = saved_scoring.get('tightness_thresholds', [4.0, 6.0, 8.0, 10.0])
+    tight_defaults = saved_scoring.get('tightness_thresholds', [1.0, 2.0, 3.0, 4.0])
     t_raw = [
-        st.sidebar.number_input("_nr4_prev < this → 2 pts", value=tight_defaults[0], step=0.5, key="sc_t1"),
+        st.sidebar.number_input("_nr4_prev < this → 4 pts", value=tight_defaults[0], step=0.5, key="sc_t1"),
         st.sidebar.number_input("_nr4_prev < this → 3 pts", value=tight_defaults[1], step=0.5, key="sc_t2"),
-        st.sidebar.number_input("_nr4_prev < this → 4 pts", value=tight_defaults[2], step=0.5, key="sc_t3"),
-        st.sidebar.number_input("_nr4_prev < this → 5 pt", value=tight_defaults[3], step=0.5, key="sc_t4"),
+        st.sidebar.number_input("_nr4_prev < this → 2 pts", value=tight_defaults[2], step=0.5, key="sc_t3"),
+        st.sidebar.number_input("_nr4_prev < this → 1 pt", value=tight_defaults[3], step=0.5, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
