@@ -235,6 +235,7 @@ def fetch_weekly_scan(url):
 
 def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
+    check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)", key="check_today_bo")
 
     if not modify:
         mask = pd.Series(True, index=df.index)
@@ -248,86 +249,95 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             mask = mask & (df['Avg_RS'].fillna(0) > 94.5)
         if '_avgvol_mln' in df.columns and scan_mode == "Post Breakout":
             mask = mask & (df['_avgvol_mln'].fillna(0) > 20)
-        return df[mask].copy()
+        df = df[mask].copy()
+    else:
+        df = df.copy()
+        with st.container():
+            default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS',
+                            '_avgvol_mln'] if scan_mode == "Post Breakout" else ['_nr4_previous', '_chg_percentclose', 'Sector_Percentile']
+            to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
-    df = df.copy()
-    with st.container():
-        default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS',
-                        '_avgvol_mln'] if scan_mode == "Post Breakout" else ['_nr4_previous', '_chg_percentclose', 'Sector_Percentile']
-        to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
+            for column in to_filter_columns:
+                left, right = st.columns((1, 20))
+                left.write("↳")
 
-        for column in to_filter_columns:
-            left, right = st.columns((1, 20))
-            left.write("↳")
+                col_series = df[column]
+                has_nans = col_series.isna().any()
 
-            col_series = df[column]
-            has_nans = col_series.isna().any()
+                if is_categorical_dtype(col_series) or col_series.dropna().nunique() < 10:
+                    unique_non_nan = list(col_series.dropna().unique())
+                    NAN_LABEL = "⚠️ (blank / NaN)"
+                    select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
+                    default_selection = list(select_options)
 
-            if is_categorical_dtype(col_series) or col_series.dropna().nunique() < 10:
-                unique_non_nan = list(col_series.dropna().unique())
-                NAN_LABEL = "⚠️ (blank / NaN)"
-                select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
-                default_selection = list(select_options)
-
-                user_cat_input = right.multiselect(
-                    f"Values for {column}", select_options, default=default_selection
-                )
-
-                nan_selected = NAN_LABEL in user_cat_input
-                real_vals = [v for v in user_cat_input if v != NAN_LABEL]
-
-                if nan_selected:
-                    mask = col_series.isna() | col_series.isin(real_vals)
-                else:
-                    mask = ~col_series.isna() & col_series.isin(real_vals)
-                df = df[mask]
-
-            elif is_numeric_dtype(col_series):
-                clean = col_series.dropna()
-                if clean.empty:
-                    right.info(f"Column **{column}** has no numeric values")
-                    continue
-
-                _min = float(clean.min())
-                _max = float(clean.max())
-                step = (_max - _min) / 100 if (_max - _min) > 0 else 1
-
-                custom_defaults = {
-                    '_chg_percentclose': 2.00, 'Adr': 4.0, 'Ti65': 1.05,
-                    'Avg_RS': 92.0, '_avgvol_mln': 20.0, 'Sector_Percentile': 70.00
-                }
-                desired_min = custom_defaults.get(column, _min)
-                default_min = max(desired_min, _min)
-                user_num_input = right.slider(
-                    f"Values for {column}", _min, _max, (default_min, _max), step=step
-                )
-
-                if has_nans:
-                    keep_nans = right.checkbox(
-                        f"Keep rows where **{column}** is blank",
-                        value=True,
-                        key=f"keep_nan_{column}"
+                    user_cat_input = right.multiselect(
+                        f"Values for {column}", select_options, default=default_selection
                     )
-                else:
-                    keep_nans = False
 
-                in_range = col_series.between(*user_num_input)
-                if keep_nans:
-                    mask = in_range | col_series.isna()
-                else:
-                    mask = in_range
-                df = df[mask]
+                    nan_selected = NAN_LABEL in user_cat_input
+                    real_vals = [v for v in user_cat_input if v != NAN_LABEL]
 
-            else:
-                user_text_input = right.text_input(f"Substring or regex in {column}")
-                if user_text_input:
-                    text_mask = col_series.astype(str).str.contains(
-                        user_text_input, case=False, na=False
+                    if nan_selected:
+                        mask = col_series.isna() | col_series.isin(real_vals)
+                    else:
+                        mask = ~col_series.isna() & col_series.isin(real_vals)
+                    df = df[mask]
+
+                elif is_numeric_dtype(col_series):
+                    clean = col_series.dropna()
+                    if clean.empty:
+                        right.info(f"Column **{column}** has no numeric values")
+                        continue
+
+                    _min = float(clean.min())
+                    _max = float(clean.max())
+                    step = (_max - _min) / 100 if (_max - _min) > 0 else 1
+
+                    custom_defaults = {
+                        '_chg_percentclose': 2.00, 'Adr': 4.0, 'Ti65': 1.05,
+                        'Avg_RS': 92.0, '_avgvol_mln': 20.0, 'Sector_Percentile': 70.00
+                    }
+                    desired_min = custom_defaults.get(column, _min)
+                    default_min = max(desired_min, _min)
+                    user_num_input = right.slider(
+                        f"Values for {column}", _min, _max, (default_min, _max), step=step
                     )
-                    df = df[text_mask | col_series.isna()]
+
+                    if has_nans:
+                        keep_nans = right.checkbox(
+                            f"Keep rows where **{column}** is blank",
+                            value=True,
+                            key=f"keep_nan_{column}"
+                        )
+                    else:
+                        keep_nans = False
+
+                    in_range = col_series.between(*user_num_input)
+                    if keep_nans:
+                        mask = in_range | col_series.isna()
+                    else:
+                        mask = in_range
+                    df = df[mask]
+
+                else:
+                    user_text_input = right.text_input(f"Substring or regex in {column}")
+                    if user_text_input:
+                        text_mask = col_series.astype(str).str.contains(
+                            user_text_input, case=False, na=False
+                        )
+                        df = df[text_mask | col_series.isna()]
+
+    # ── Apply Today Breakouts Filter & Sort ──
+    if check_today_bo:
+        if '_chg_percentclose' in df.columns:
+            df = df[df['_chg_percentclose'].fillna(0) > 0]
+        if 'Vol_Score' in df.columns:
+            df = df[df['Vol_Score'].fillna(0) >= 1]
+        if '_nr4_previous' in df.columns:
+            df['_nr4_previous'] = pd.to_numeric(df['_nr4_previous'], errors='coerce')
+            df = df.sort_values(by='_nr4_previous', ascending=True, na_position='last')
 
     return df
-
 # --- 3. MAIN APPLICATION ---
 def main():
     custom_css = """
