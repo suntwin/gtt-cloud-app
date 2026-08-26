@@ -834,13 +834,18 @@ def main():
                 columns_to_show.insert(columns_to_show.index('Sector_Total') + 1, 'Sector_Percentile')
 
             valid_cols = [c for c in columns_to_show if c in actionable_df.columns]
-            # display_df = actionable_df[valid_cols].sort_values(by=['RS_6M', 'RS_3M'], ascending=False)
-            # ── Sort: Tier A first, then B, then Ignore; within each tier, highest score first ──
+            # ── Sort: Tier A first, then B, then Ignore; within each tier, sorted by tightness (_nr4_previous) ──
             tier_sort_order = {'🟢 A': 0, '🟡 B': 1, '🔴 Ignore': 2, '🔴 Error': 3}
             actionable_df['_tier_sort_key'] = actionable_df['Tier'].map(tier_sort_order).fillna(9)
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
-            display_df = display_df.sort_values(by=['_tier_sort_key', 'Total_Score'], ascending=[True, False])
+
+            # Convert _nr4_previous to numeric to ensure proper sorting
+            display_df['_nr4_previous'] = pd.to_numeric(display_df['_nr4_previous'], errors='coerce')
+            # Sort by Tier first, then by Tightness (_nr4_previous ascending = tightest on top).
+            # NaNs are pushed to the bottom.
+            display_df = display_df.sort_values(by=['_tier_sort_key', '_nr4_previous'], ascending=[True, True],
+                                                na_position='last')
             display_df = display_df.drop(columns=['_tier_sort_key'], errors='ignore')
             st.session_state.gtt_display_df = display_df
 

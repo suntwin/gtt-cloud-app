@@ -727,8 +727,13 @@ def main():
             actionable_df['_tier_sort_key'] = actionable_df['Tier'].map(tier_sort_order).fillna(9)
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
-            display_df = display_df.sort_values(by=['_tier_sort_key', 'Total_Score'],
-                                                ascending=[True, False])
+
+            # Convert _nr4_previous to numeric to ensure proper sorting
+            display_df['_nr4_previous'] = pd.to_numeric(display_df['_nr4_previous'], errors='coerce')
+            # Sort by Tier first, then by Tightness (_nr4_previous ascending = tightest on top).
+            # NaNs are pushed to the bottom.
+            display_df = display_df.sort_values(by=['_tier_sort_key', '_nr4_previous'], ascending=[True, True],
+                                                na_position='last')
             display_df = display_df.drop(columns=['_tier_sort_key'], errors='ignore')
             st.session_state.gtt_display_df = display_df
 
