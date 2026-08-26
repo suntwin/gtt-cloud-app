@@ -44,9 +44,19 @@ weekly_daily_metric_columns = [
 
 gtt_columns = [
     'Symbol', 'Last', 'Timestamp',
-    '_chg_percentclose_hourly','cap','_avgvol_mln_hourly', 'Adr', 'Ti65',
-    '_10madist', '_20madist', '_period_perf', '_wtc',
-    '_nr4', '_nr4_previous', 'strongopen', 'dvolhourly', 'dvoldaily'
+    '_chg_percentclose_hourly',
+    '_avgvol_mln_hourly',
+    'cap',
+    'Adr',
+    'Ti65',
+    '_20madist',
+    '_10madist',
+    '_period_perf',
+    '_wtc',
+    '_nr4',
+    '_nr4_previous',
+    'dvolhourly',
+    'dvoldaily'
 ]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
