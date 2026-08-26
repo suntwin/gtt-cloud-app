@@ -45,6 +45,7 @@ weekly_daily_metric_columns = [
 gtt_columns = [
     'Symbol', 'Last', 'Timestamp',
     '_chg_percentclose_hourly',
+    '_chg_percentclose_hourly',
     '_avgvol_mln_hourly',
     'cap',
     'Adr',
@@ -157,7 +158,7 @@ def fetch_gtt_scan(url, name):
 
         numeric_fillna = [
             'Last', '_nr4', '_nr4_previous', 'Adr', 'Ti65',
-            'dvolhourly', 'dvoldaily', '_avgvol_mln_hourly', 'strongopen'
+            'dvolhourly', 'dvoldaily', '_avgvol_mln_hourly', 'strongopen','cap'
         ]
         for col in numeric_fillna:
             if col in df.columns:
@@ -217,6 +218,8 @@ def fetch_weekly_daily_scan(url):
 # ════════════════════════════════════════════════════════════════════
 def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
+    check_mcap = st.checkbox("Mid/Large Cap Only (Market Cap >= $500M)", key="check_mcap_hourly")
+
     if not modify:
         mask = pd.Series(True, index=df.index)
         if '_chg_percentclose_hourly' in df.columns and scan_mode == "Post Breakout":
@@ -229,73 +232,78 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             mask = mask & (df['Avg_Perf'].fillna(0) > 0)
         if '_avgvol_mln_hourly' in df.columns and scan_mode == "Post Breakout":
             mask = mask & (df['_avgvol_mln_hourly'].fillna(0) > 0.5)
-        return df[mask].copy()
+        df = df[mask].copy()
+    else:
+        df = df.copy()
+        with st.container():
+            default_filt = (['_chg_percentclose_hourly', 'Adr', 'Ti65', 'Avg_Perf', '_avgvol_mln_hourly']
+                            if scan_mode == "Post Breakout"
+                            else ['_nr4_previous'])
+            to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
-    df = df.copy()
-    with st.container():
-        default_filt = (['_chg_percentclose_hourly', 'Adr', 'Ti65', 'Avg_Perf', '_avgvol_mln_hourly']
-                        if scan_mode == "Post Breakout"
-                        else ['_nr4_previous'])
-        to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
+            for column in to_filter_columns:
+                left, right = st.columns((1, 20))
+                left.write("↳")
+                col_series = df[column]
+                has_nans = col_series.isna().any()
 
-        for column in to_filter_columns:
-            left, right = st.columns((1, 20))
-            left.write("↳")
-            col_series = df[column]
-            has_nans = col_series.isna().any()
-
-            if _is_categorical(col_series) or col_series.dropna().nunique() < 10:
-                unique_non_nan = list(col_series.dropna().unique())
-                NAN_LABEL = "⚠️ (blank / NaN)"
-                select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
-                default_selection = list(select_options)
-                user_cat_input = right.multiselect(
-                    f"Values for {column}", select_options, default=default_selection
-                )
-                nan_selected = NAN_LABEL in user_cat_input
-                real_vals = [v for v in user_cat_input if v != NAN_LABEL]
-                if nan_selected:
-                    mask = col_series.isna() | col_series.isin(real_vals)
-                else:
-                    mask = ~col_series.isna() & col_series.isin(real_vals)
-                df = df[mask]
-
-            elif is_numeric_dtype(col_series):
-                clean = col_series.dropna()
-                if clean.empty:
-                    right.info(f"Column **{column}** has no numeric values")
-                    continue
-                _min = float(clean.min());
-                _max = float(clean.max())
-                step = (_max - _min) / 100 if (_max - _min) > 0 else 1
-                custom_defaults = {
-                    '_chg_percentclose_hourly': 1.0, 'Adr': 3.0, 'Ti65': 1.05,
-                    'Avg_Perf': 0.0, '_avgvol_mln_hourly': 0.5,
-                }
-                desired_min = custom_defaults.get(column, _min)
-                default_min = max(desired_min, _min)
-                user_num_input = right.slider(
-                    f"Values for {column}", _min, _max, (default_min, _max), step=step
-                )
-                if has_nans:
-                    keep_nans = right.checkbox(
-                        f"Keep rows where **{column}** is blank",
-                        value=True, key=f"keep_nan_{column}"
+                if _is_categorical(col_series) or col_series.dropna().nunique() < 10:
+                    unique_non_nan = list(col_series.dropna().unique())
+                    NAN_LABEL = "⚠️ (blank / NaN)"
+                    select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
+                    default_selection = list(select_options)
+                    user_cat_input = right.multiselect(
+                        f"Values for {column}", select_options, default=default_selection
                     )
-                else:
-                    keep_nans = False
-                in_range = col_series.between(*user_num_input)
-                mask = (in_range | col_series.isna()) if keep_nans else in_range
-                df = df[mask]
-            else:
-                user_text_input = right.text_input(f"Substring or regex in {column}")
-                if user_text_input:
-                    text_mask = col_series.astype(str).str.contains(
-                        user_text_input, case=False, na=False
+                    nan_selected = NAN_LABEL in user_cat_input
+                    real_vals = [v for v in user_cat_input if v != NAN_LABEL]
+                    if nan_selected:
+                        mask = col_series.isna() | col_series.isin(real_vals)
+                    else:
+                        mask = ~col_series.isna() & col_series.isin(real_vals)
+                    df = df[mask]
+
+                elif is_numeric_dtype(col_series):
+                    clean = col_series.dropna()
+                    if clean.empty:
+                        right.info(f"Column **{column}** has no numeric values")
+                        continue
+                    _min = float(clean.min())
+                    _max = float(clean.max())
+                    step = (_max - _min) / 100 if (_max - _min) > 0 else 1
+                    custom_defaults = {
+                        '_chg_percentclose_hourly': 1.0, 'Adr': 3.0, 'Ti65': 1.05,
+                        'Avg_Perf': 0.0, '_avgvol_mln_hourly': 0.5,
+                    }
+                    desired_min = custom_defaults.get(column, _min)
+                    default_min = max(desired_min, _min)
+                    user_num_input = right.slider(
+                        f"Values for {column}", _min, _max, (default_min, _max), step=step
                     )
-                    df = df[text_mask | col_series.isna()]
+                    if has_nans:
+                        keep_nans = right.checkbox(
+                            f"Keep rows where **{column}** is blank",
+                            value=True, key=f"keep_nan_{column}"
+                        )
+                    else:
+                        keep_nans = False
+                    in_range = col_series.between(*user_num_input)
+                    mask = (in_range | col_series.isna()) if keep_nans else in_range
+                    df = df[mask]
+                else:
+                    user_text_input = right.text_input(f"Substring or regex in {column}")
+                    if user_text_input:
+                        text_mask = col_series.astype(str).str.contains(
+                            user_text_input, case=False, na=False
+                        )
+                        df = df[text_mask | col_series.isna()]
+
+    # ── Apply Market Cap Filter ──
+    if check_mcap:
+        if 'cap' in df.columns:
+            df = df[df['cap'].fillna(0) >= 500000000]
+
     return df
-
 
 # ════════════════════════════════════════════════════════════════════
 # 5. MAIN APPLICATION
