@@ -1257,40 +1257,369 @@ def main():
             st.info("Click 'Generate GTT Trading Plan' to load data.")
 
     # --- TAB 2: MARKET THEMES ---
+    # with tab2:
+    #     if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
+    #         scored_df = st.session_state.gtt_scored_df.copy()
+    #         if 'Sector' in scored_df.columns:
+    #             tier_ab = scored_df[scored_df['Tier'].isin(['🟢 A', '🟡 B'])].copy()
+    #             if not tier_ab.empty:
+    #                 sector_summary = tier_ab.groupby('Sector').agg(
+    #                     Tier_A_Count=('Tier', lambda x: (x == '🟢 A').sum()),
+    #                     Tier_B_Count=('Tier', lambda x: (x == '🟡 B').sum()),
+    #                     Total_Count=('Symbol', 'count'),
+    #                     Avg_RS=('Avg_RS', 'mean'),
+    #                     Avg_Total_Score=('Total_Score', 'mean'),
+    #                 ).round(2).sort_values('Total_Count', ascending=False)
+    #
+    #                 st.subheader("Sector Concentration (Tier A + B stocks)")
+    #                 st.dataframe(sector_summary, use_container_width=True)
+    #
+    #                 st.subheader("Top Setups by Sector")
+    #                 for sector in sector_summary.head(10).index:
+    #                     sector_stocks = tier_ab[tier_ab['Sector'] == sector].sort_values('Total_Score', ascending=False)
+    #                     display_cols = [c for c in ['Symbol', 'Tier', 'Total_Score', 'Last',
+    #                                                  '_chg_percentclose', 'Avg_RS', 'Adr',
+    #                                                  '_nr4_previous', '_20madist', '_10madist',
+    #                                                  'W_TightCloses'] if c in sector_stocks.columns]
+    #                     with st.expander(f"🏛️ {sector} ({len(sector_stocks)} stocks)"):
+    #                         st.dataframe(sector_stocks[display_cols].head(15), use_container_width=True, hide_index=True)
+    #             else:
+    #                 st.info("No Tier A or B stocks found.")
+    #         else:
+    #             st.info("No sector data available.")
+    #     else:
+    #         st.info("Generate data first.")
+    #
+    # --- TAB 2: MARKET THEMES & LEADERS (with heatmaps, same as main scanner) ---
     with tab2:
         if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
             scored_df = st.session_state.gtt_scored_df.copy()
             if 'Sector' in scored_df.columns:
                 tier_ab = scored_df[scored_df['Tier'].isin(['🟢 A', '🟡 B'])].copy()
                 if not tier_ab.empty:
+                    # ── Sector summary aggregation ──
                     sector_summary = tier_ab.groupby('Sector').agg(
                         Tier_A_Count=('Tier', lambda x: (x == '🟢 A').sum()),
                         Tier_B_Count=('Tier', lambda x: (x == '🟡 B').sum()),
                         Total_Count=('Symbol', 'count'),
                         Avg_RS=('Avg_RS', 'mean'),
                         Avg_Total_Score=('Total_Score', 'mean'),
-                    ).round(2).sort_values('Total_Count', ascending=False)
+                    ).round(2).sort_values('Total_Count', ascending=False).reset_index()
 
                     st.subheader("Sector Concentration (Tier A + B stocks)")
-                    st.dataframe(sector_summary, use_container_width=True)
 
+                    # ── Build AgGrid for sector summary with RS + Score heatmaps ──
+                    ss_gb = GridOptionsBuilder.from_dataframe(sector_summary)
+                    ss_gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
+                    ss_gb.configure_side_bar()
+                    ss_gb.configure_grid_options(enableBrowserTooltips=True)
+                    for col in sector_summary.columns:
+                        ss_gb.configure_column(col, headerTooltip=col)
+
+                    # Avg_RS heatmap (same red→green dynamic gradient as Tab 1)
+                    if 'Avg_RS' in sector_summary.columns:
+                        valid_rs = sector_summary[sector_summary['Avg_RS'] > 0]['Avg_RS']
+                        rs_min = float(valid_rs.min()) if not valid_rs.empty else 0
+                        rs_max = float(valid_rs.max()) if not valid_rs.empty else 100
+                        rs_jscode = JsCode(f"""
+                            function(params) {{
+                                const val = params.value;
+                                if (val === null || val === undefined || val <= 0) return null;
+                                const min = {rs_min}; const max = {rs_max};
+                                if (max === min) return {{ 'backgroundColor': '#ffffff', 'color': 'black' }};
+                                const ratio = (val - min) / (max - min);
+                                let r, g, b;
+                                if (ratio < 0.5) {{ const pct = ratio / 0.5; r = 255; g = Math.round(100 + (155 * pct)); b = Math.round(100 + (155 * pct)); }}
+                                else {{ const pct = (ratio - 0.5) / 0.5; r = Math.round(255 - (155 * pct)); g = 255; b = Math.round(255 - (155 * pct)); }}
+                                return {{ 'backgroundColor': 'rgb(' + r + ',' + g + ',' + b + ')', 'color': 'black', 'fontWeight': ratio >= 0.9 ? 'bold' : 'normal' }};
+                            }}
+                        """)
+                        ss_gb.configure_column('Avg_RS', minWidth=70, maxWidth=100, cellStyle=rs_jscode)
+
+                    # Avg_Total_Score heatmap
+                    if 'Avg_Total_Score' in sector_summary.columns:
+                        valid_sc = sector_summary[sector_summary['Avg_Total_Score'] > 0]['Avg_Total_Score']
+                        sc_min = float(valid_sc.min()) if not valid_sc.empty else 0
+                        sc_max = float(valid_sc.max()) if not valid_sc.empty else 14
+                        sc_jscode = JsCode(f"""
+                            function(params) {{
+                                const val = params.value;
+                                if (val === null || val === undefined) return null;
+                                const min = {sc_min}; const max = {sc_max};
+                                if (max === min) return {{ 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' }};
+                                const ratio = (val - min) / (max - min);
+                                let r, g, b;
+                                if (ratio < 0.5) {{ const pct = ratio / 0.5; r = 255; g = Math.round(100 + (155 * pct)); b = Math.round(100 + (155 * pct)); }}
+                                else {{ const pct = (ratio - 0.5) / 0.5; r = Math.round(255 - (155 * pct)); g = 255; b = Math.round(255 - (155 * pct)); }}
+                                return {{ 'backgroundColor': 'rgb(' + r + ',' + g + ',' + b + ')', 'color': 'black', 'fontWeight': ratio >= 0.9 ? 'bold' : 'normal' }};
+                            }}
+                        """)
+                        ss_gb.configure_column('Avg_Total_Score', minWidth=90, maxWidth=120, headerName='Avg Score',
+                                               cellStyle=sc_jscode)
+                    ss_gb.configure_column('Sector', minWidth=140, maxWidth=200, pinned='left')
+                    ss_go = ss_gb.build()
+                    AgGrid(sector_summary, gridOptions=ss_go, height=400, width='100%',
+                           update_mode=GridUpdateMode.MODEL_CHANGED,
+                           data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                           allow_unsafe_jscode=True)
+
+                    # ── Top setups by sector (one AgGrid per sector, same styling as main scanner) ──
                     st.subheader("Top Setups by Sector")
-                    for sector in sector_summary.head(10).index:
-                        sector_stocks = tier_ab[tier_ab['Sector'] == sector].sort_values('Total_Score', ascending=False)
-                        display_cols = [c for c in ['Symbol', 'Tier', 'Total_Score', 'Last',
-                                                     '_chg_percentclose', 'Avg_RS', 'Adr',
-                                                     '_nr4_previous', '_20madist', '_10madist',
-                                                     'W_TightCloses'] if c in sector_stocks.columns]
+                    for sector in sector_summary.head(10)['Sector'].tolist():
+                        sector_stocks = tier_ab[tier_ab['Sector'] == sector].sort_values(
+                            'Total_Score', ascending=False).head(15)
+                        display_cols = [c for c in [
+                            'Symbol', 'Tier', 'Change', 'Total_Score',
+                            'Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score',
+                            'Last', '_chg_percentclose', 'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
+                            'Adr', 'Ti65', '_nr4', '_nr4_previous',
+                            'dvol', '_avgvol_mln', '_20madist', '_10madist',
+                            'W_TightCloses', 'W_InsideBars', 'W_PctOf10wkHigh', 'W_CloseChg_Pct',
+                            'Sector', 'Industry', 'Sector_Rank', 'Sector_Total', 'Sector_Percentile'
+                        ] if c in sector_stocks.columns]
+                        sector_display = sector_stocks[display_cols].copy()
+
                         with st.expander(f"🏛️ {sector} ({len(sector_stocks)} stocks)"):
-                            st.dataframe(sector_stocks[display_cols].head(15), use_container_width=True, hide_index=True)
+                            gb = GridOptionsBuilder.from_dataframe(sector_display)
+                            gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
+                            gb.configure_side_bar()
+                            gb.configure_grid_options(enableBrowserTooltips=True)
+                            for col in sector_display.columns:
+                                gb.configure_column(col, headerTooltip=col)
+
+                            # ── RS heatmap (same dynamic gradient as Tab 1) ──
+                            for col in ['Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M']:
+                                if col not in sector_display.columns:
+                                    continue
+                                valid_data = sector_display[sector_display[col] > 0][col]
+                                col_min = valid_data.min() if not valid_data.empty else 0
+                                col_max = valid_data.max() if not valid_data.empty else 100
+                                dynamic_jscode = JsCode(f"""
+                                    function(params) {{
+                                        const val = params.value;
+                                        if (val <= 0) return null;
+                                        const min = {col_min}; const max = {col_max};
+                                        if (max === min) return {{ 'backgroundColor': '#ffffff', 'color': 'black' }};
+                                        const ratio = (val - min) / (max - min);
+                                        let r, g, b;
+                                        if (ratio < 0.5) {{ const pct = ratio / 0.5; r = 255; g = Math.round(100 + (155 * pct)); b = Math.round(100 + (155 * pct)); }}
+                                        else {{ const pct = (ratio - 0.5) / 0.5; r = Math.round(255 - (155 * pct)); g = 255; b = Math.round(255 - (155 * pct)); }}
+                                        return {{ 'backgroundColor': 'rgb(' + r + ',' + g + ',' + b + ')', 'color': 'black', 'fontWeight': ratio >= 0.9 ? 'bold' : 'normal' }};
+                                    }}
+                                """)
+                                if col == 'Avg_RS':
+                                    gb.configure_column(col, minWidth=60, maxWidth=90, cellStyle=dynamic_jscode)
+                                else:
+                                    gb.configure_column(col, minWidth=50, maxWidth=80, cellStyle=dynamic_jscode)
+
+                            # ── _nr4_previous yellow highlight ──
+                            nr4_prev_highlight_jscode = JsCode(
+                                """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
+                            if '_nr4_previous' in sector_display.columns:
+                                gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75, cellStyle=nr4_prev_highlight_jscode)
+
+                            # ── _chg_percentclose pink→purple gradient ──
+                            if '_chg_percentclose' in sector_display.columns:
+                                valid_chg = sector_display[sector_display['_chg_percentclose'] > 0]['_chg_percentclose']
+                                chg_min = float(valid_chg.min()) if not valid_chg.empty else 0.0
+                                chg_max = float(valid_chg.max()) if not valid_chg.empty else 10.0
+                                chg_jscode = JsCode(f"""
+                                    function(params) {{
+                                        const val = params.value; if (!val || val <= 0) return null;
+                                        const min = {chg_min}; const max = {chg_max};
+                                        if (max === min) return {{ 'backgroundColor': '#ffe6ff', 'color': 'black' }};
+                                        const ratio = Math.min((val - min) / (max - min), 1.0);
+                                        const r = Math.round(255 - (115 * ratio)); const g = Math.round(220 - (220 * ratio)); const b = Math.round(255 - (115 * ratio));
+                                        return {{ 'backgroundColor': 'rgb(' + r + ',' + g + ',' + b + ')', 'color': ratio > 0.5 ? 'white' : 'black', 'fontWeight': ratio >= 0.8 ? 'bold' : 'normal' }};
+                                    }}
+                                """)
+                                gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110, cellStyle=chg_jscode,
+                                                    filter='agNumberColumnFilter',
+                                                    filterParams={'filterOptions': ['greaterThan', 'lessThan', 'equals', 'inRange'],
+                                                                  'defaultOption': 'greaterThan', 'defaultValues': [0]})
+
+                            for col in ['Adr', 'Ti65', '_nr4']:
+                                if col in sector_display.columns:
+                                    gb.configure_column(col, minWidth=55, maxWidth=75)
+
+                            # ── dvol / _avgvol_mln rvol heatmap ──
+                            if 'dvol' in sector_display.columns and '_avgvol_mln' in sector_display.columns:
+                                valid_rvol = sector_display[(sector_display['dvol'] > 0) & (sector_display['_avgvol_mln'] > 0)].copy()
+                                if not valid_rvol.empty:
+                                    valid_rvol['rvol_ratio'] = valid_rvol['dvol'] / valid_rvol['_avgvol_mln']
+                                    above_avg = valid_rvol[valid_rvol['rvol_ratio'] > 1.0]['rvol_ratio']
+                                    rvol_floor = max(float(above_avg.min()), 1.0) if not above_avg.empty else 1.0
+                                    rvol_ceiling = float(above_avg.max()) if not above_avg.empty else 3.0
+                                else:
+                                    rvol_floor, rvol_ceiling = 1.0, 3.0
+                                rvol_jscode = JsCode(f"""
+                                    function(params) {{
+                                        const dvol = params.data.dvol; const avgvol = params.data._avgvol_mln;
+                                        if (!dvol || !avgvol || avgvol <= 0 || dvol <= 0) return null;
+                                        const ratio = dvol / avgvol; if (ratio <= 1.0) return null;
+                                        const floor = {rvol_floor}; const ceiling = {rvol_ceiling};
+                                        if (ceiling <= floor) return {{ 'backgroundColor': '#d4edda', 'color': 'black' }};
+                                        const normRatio = Math.min((ratio - floor) / (ceiling - floor), 1.0);
+                                        let r, g, b;
+                                        if (normRatio < 0.5) {{ const pct = normRatio / 0.5; r = Math.round(248 - (208 * pct)); g = Math.round(255 - (90 * pct)); b = Math.round(248 - (181 * pct)); }}
+                                        else {{ const pct = (normRatio - 0.5) / 0.5; r = Math.round(40 - (17 * pct)); g = Math.round(165 - (78 * pct)); b = Math.round(67 - (31 * pct)); }}
+                                        return {{ 'backgroundColor': 'rgb(' + r + ',' + g + ',' + b + ')', 'color': 'black', 'fontWeight': normRatio >= 0.8 ? 'bold' : 'normal' }};
+                                    }}
+                                """)
+                                gb.configure_column('dvol', minWidth=60, maxWidth=85, cellStyle=rvol_jscode)
+                                gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, cellStyle=rvol_jscode)
+
+                            # ── 20MADist / 10MADist heatmap ──
+                            ma_dist_jscode = JsCode("""
+                                function(params) {
+                                    const val = params.value;
+                                    if (val === null || val === undefined || isNaN(val)) return null;
+                                    const absVal = Math.abs(val);
+                                    if (val < -6) return { 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' };
+                                    if (absVal < 2) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                                    if (absVal < 4) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                                    if (absVal < 6) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                                    return null;
+                                }
+                            """)
+                            if '_20madist' in sector_display.columns:
+                                gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
+                            if '_10madist' in sector_display.columns:
+                                gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
+
+                            # ── Score column styling (green tiers) ──
+                            score_col_style = JsCode("""
+                                function(params) {
+                                    const val = params.value;
+                                    if (val === null || val === undefined) return null;
+                                    if (val >= 3) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                                    if (val >= 2) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                                    if (val >= 1) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                                    return null;
+                                }
+                            """)
+                            for sc_col in ['Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score']:
+                                if sc_col in sector_display.columns:
+                                    gb.configure_column(sc_col, minWidth=45, maxWidth=60, cellStyle=score_col_style)
+
+                            # ── Weekly column styling ──
+                            wk_pct_jscode = JsCode("""
+                                function(params) {
+                                    const val = params.value; if (val === null || val === undefined || isNaN(val)) return null;
+                                    if (val >= 1.0) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                                    if (val >= 0.95) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                                    if (val >= 0.85) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                                    return null;
+                                }
+                            """)
+                            if 'W_PctOf10wkHigh' in sector_display.columns:
+                                gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95, maxWidth=120, cellStyle=wk_pct_jscode)
+                            if 'W_CloseChg_Pct' in sector_display.columns:
+                                gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90, maxWidth=115)
+                            if 'W_TightCloses' in sector_display.columns:
+                                gb.configure_column('W_TightCloses', headerName='Wk TightCl/4', minWidth=85, maxWidth=105)
+                            if 'W_InsideBars' in sector_display.columns:
+                                gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
+
+                            # ── Header shortening ──
+                            header_shortening = {
+                                'Change': 'Chg',
+                                '_chg_percentclose': 'Chg %',
+                                '_avgvol_mln': 'AvgVolMln',
+                                '_nr4_previous': 'NR4Prev',
+                                '_10madist': '10MADist',
+                                '_20madist': '20MADist',
+                                'Tight_Score': 'Tight',
+                                'Vol_Score': 'Vol',
+                                'TClose_Score': 'TClose',
+                                'MA20_Score': 'MA20',
+                                'MA10_Score': 'MA10',
+                            }
+                            for raw_col, short_name in header_shortening.items():
+                                if raw_col in sector_display.columns:
+                                    gb.configure_column(raw_col, headerName=short_name)
+
+                            # ── Tier styling ──
+                            tier_jscode = JsCode("""
+                                function(params) {
+                                    if (!params.value) return null;
+                                    if (params.value.includes('A')) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                                    if (params.value.includes('B')) return { 'backgroundColor': '#ffc107', 'color': 'black', 'fontWeight': 'bold' };
+                                    if (params.value.includes('Ignore')) return { 'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold' };
+                                    return null;
+                                }
+                            """)
+                            if 'Tier' in sector_display.columns:
+                                gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode, pinned='left')
+
+                            # ── Change column styling ──
+                            if 'Change' in sector_display.columns:
+                                change_cell_jscode = JsCode("""
+                                    function(params) {
+                                        if (!params.value) return null;
+                                        if (params.value === '🆕') return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                                        if (params.value === '⬆️') return { 'backgroundColor': '#17a2b8', 'color': 'white', 'fontWeight': 'bold' };
+                                        if (params.value === '📈') return { 'backgroundColor': '#d4edda', 'color': '#155724' };
+                                        if (params.value === '⬇️') return { 'backgroundColor': '#ffc107', 'color': '#856404', 'fontWeight': 'bold' };
+                                        if (params.value === '📉') return { 'backgroundColor': '#fff3cd', 'color': '#856404' };
+                                        return null;
+                                    }
+                                """)
+                                gb.configure_column('Change', minWidth=50, maxWidth=60, cellStyle=change_cell_jscode, headerName='Chg')
+
+                            if 'Total_Score' in sector_display.columns:
+                                gb.configure_column('Total_Score', minWidth=55, maxWidth=70)
+
+                            # ── Symbol renderer with (rank/total) ──
+                            symbol_renderer_jscode = JsCode("""
+                            function(params) {
+                                const symbol = params.value;
+                                const rank = params.data.Sector_Rank;
+                                const total = params.data.Sector_Total;
+                                if (rank && total && rank > 0) {
+                                    return symbol + ' (' + rank + '/' + total + ')';
+                                }
+                                return symbol;
+                            }
+                            """)
+                            if 'Symbol' in sector_display.columns:
+                                gb.configure_column('Symbol', cellRenderer=symbol_renderer_jscode, minWidth=150, maxWidth=180, pinned='left')
+
+                            if 'Sector_Rank' in sector_display.columns:
+                                gb.configure_column('Sector_Rank', hide=True)
+                            if 'Sector_Total' in sector_display.columns:
+                                gb.configure_column('Sector_Total', hide=True)
+                            if 'Sector_Percentile' in sector_display.columns:
+                                gb.configure_column('Sector_Percentile', minWidth=100, maxWidth=120)
+                            if 'Sector' in sector_display.columns:
+                                gb.configure_column('Sector', minWidth=120, maxWidth=150)
+                            if 'Industry' in sector_display.columns:
+                                gb.configure_column('Industry', minWidth=120, maxWidth=150)
+
+                            # ── Row-level highlight for new/upgraded stocks ──
+                            row_style_jscode = JsCode("""
+                                function(params) {
+                                    if (!params.data) return null;
+                                    const change = params.data.Change;
+                                    if (change === '🆕') return { 'backgroundColor': '#e8f5e9' };
+                                    if (change === '⬆️') return { 'backgroundColor': '#e1f5fe' };
+                                    return null;
+                                }
+                            """)
+                            gb.configure_grid_options(getRowStyle=row_style_jscode)
+
+                            go = gb.build()
+                            AgGrid(sector_display, gridOptions=go, height=400, width='100%',
+                                   update_mode=GridUpdateMode.MODEL_CHANGED,
+                                   data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                                   allow_unsafe_jscode=True)
                 else:
                     st.info("No Tier A or B stocks found.")
             else:
                 st.info("No sector data available.")
         else:
             st.info("Generate data first.")
-
-    # --- TAB 3: WEEKLY BASE WATCH ---
+    # # --- TAB 3: WEEKLY BASE WATCH ---
     with tab3:
         if 'weekly_full_df' in st.session_state and st.session_state.weekly_full_df is not None:
             weekly_df = st.session_state.weekly_full_df.copy()

@@ -354,7 +354,7 @@ def main():
         }
     </style>
     """
-    st.title("⚡ GTT Trade Generator (USA)")
+    st.title("⚡ GTT Trade Daily Crypto Generator")
 
     file_age = get_file_age_days(SECTOR_FILE)
     if file_age is not None:
