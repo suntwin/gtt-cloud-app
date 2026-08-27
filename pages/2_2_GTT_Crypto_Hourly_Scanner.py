@@ -45,7 +45,6 @@ weekly_daily_metric_columns = [
 gtt_columns = [
     'Symbol', 'Last', 'Timestamp',
     '_chg_percentclose_hourly',
-    '_chg_percentclose_hourly',
     '_avgvol_mln_hourly',
     'cap',
     'Adr',
