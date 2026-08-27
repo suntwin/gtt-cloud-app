@@ -771,50 +771,7 @@ def main():
                 choices = ['🟢 A', '🟡 B']
                 actionable_df['Tier'] = np.select(conditions, choices, default='🔴 Ignore')
 
-            # ══════════════════════════════════════════════════════════════════
-            # CHANGE DETECTION — compare with previous scan
-            # ══════════════════════════════════════════════════════════════════
-            tier_order_map = {'🟢 A': 0, '🟡 B': 1, '🔴 Ignore': 2, '🔴 Error': 3}
 
-            if 'prev_scan_data' in st.session_state and st.session_state.prev_scan_data is not None:
-                prev = st.session_state.prev_scan_data
-                actionable_df['Change'] = ''
-
-                for idx, row in actionable_df.iterrows():
-                    symbol = row['Symbol']
-                    cur_tier = row['Tier']
-                    cur_score = row['Total_Score']
-
-                    if symbol not in prev:
-                        actionable_df.at[idx, 'Change'] = '🆕'
-                    else:
-                        prev_tier = prev[symbol]['tier']
-                        prev_score = prev[symbol]['score']
-                        cur_tier_rank = tier_order_map.get(cur_tier, 9)
-                        prev_tier_rank = tier_order_map.get(prev_tier, 9)
-
-                        if cur_tier_rank < prev_tier_rank:
-                            actionable_df.at[idx, 'Change'] = '⬆️'
-                        elif cur_tier_rank > prev_tier_rank:
-                            actionable_df.at[idx, 'Change'] = '⬇️'
-                        elif cur_score > prev_score:
-                            actionable_df.at[idx, 'Change'] = '📈'
-                        elif cur_score < prev_score:
-                            actionable_df.at[idx, 'Change'] = '📉'
-
-                # Track symbols that dropped out entirely
-                current_symbols = set(actionable_df['Symbol'])
-                prev_symbols = set(prev.keys())
-                st.session_state.dropped_symbols = prev_symbols - current_symbols
-            else:
-                actionable_df['Change'] = ''
-                st.session_state.dropped_symbols = set()
-
-            # Save current scan for next comparison
-            st.session_state.prev_scan_data = {
-                row['Symbol']: {'tier': row['Tier'], 'score': int(row['Total_Score'])}
-                for _, row in actionable_df.iterrows()
-            }
 
             # Move Tier to front
 
@@ -826,7 +783,7 @@ def main():
             st.session_state.gtt_scored_df = actionable_df.copy()
 
             columns_to_show = [
-                'Tier', 'Change','Total_Score',
+                'Tier','Total_Score',
                 'Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score',
                 '_nr4_previous', '_chg_percentclose','W_TightCloses', 'W_InsideBars', 'W_PctOf10wkHigh',
                 'dvol', '_avgvol_mln',
@@ -865,24 +822,7 @@ def main():
 
             st.success(f"Generated {len(st.session_state.gtt_display_df)} actionable GTT setups.")
 
-            # ── Change summary bar ──
-            change_col = actionable_df['Change']
-            n_new = (change_col == '🆕').sum()
-            n_tier_up = (change_col == '⬆️').sum()
-            n_tier_down = (change_col == '⬇️').sum()
-            n_score_up = (change_col == '📈').sum()
-            n_score_down = (change_col == '📉').sum()
-            n_dropped = len(st.session_state.get('dropped_symbols', set()))
 
-            if n_new + n_tier_up + n_tier_down + n_score_up + n_score_down + n_dropped > 0:
-                parts = []
-                if n_new: parts.append(f"🆕 **{n_new}** new")
-                if n_tier_up: parts.append(f"⬆️ **{n_tier_up}** tier up")
-                if n_tier_down: parts.append(f"⬇️ **{n_tier_down}** tier down")
-                if n_score_up: parts.append(f"📈 **{n_score_up}** score up")
-                if n_score_down: parts.append(f"📉 **{n_score_down}** score down")
-                if n_dropped: parts.append(f"❌ **{n_dropped}** dropped out")
-                st.info("Changes since last scan: " + " | ".join(parts))
             filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode)
 
             # ── Persisted column visibility ──
@@ -1098,19 +1038,7 @@ def main():
             # gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode, pinned='left')
             gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode, pinned='left')
             # ── Change column styling ──
-            change_cell_jscode = JsCode("""
-                function(params) {
-                    if (!params.value) return null;
-                    if (params.value === '🆕') return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
-                    if (params.value === '⬆️') return { 'backgroundColor': '#17a2b8', 'color': 'white', 'fontWeight': 'bold' };
-                    if (params.value === '📈') return { 'backgroundColor': '#d4edda', 'color': '#155724' };
-                    if (params.value === '⬇️') return { 'backgroundColor': '#ffc107', 'color': '#856404', 'fontWeight': 'bold' };
-                    if (params.value === '📉') return { 'backgroundColor': '#fff3cd', 'color': '#856404' };
-                    return null;
-                }
-            """)
-            gb.configure_column('Change', minWidth=50, maxWidth=60, cellStyle=change_cell_jscode,
-                                headerName='Chg')
+
 
             gb.configure_column('Total_Score', minWidth=55, maxWidth=70)
 
@@ -1143,17 +1071,7 @@ def main():
 
             for col in hidden_main_cols:
                 gb.configure_column(col, hide=True)
-            # ── Row-level highlight for new/upgraded stocks ──
-            row_style_jscode = JsCode("""
-                function(params) {
-                    if (!params.data) return null;
-                    const change = params.data.Change;
-                    if (change === '🆕') return { 'backgroundColor': '#e8f5e9' };
-                    if (change === '⬆️') return { 'backgroundColor': '#e1f5fe' };
-                    return null;
-                }
-            """)
-            gb.configure_grid_options(getRowStyle=row_style_jscode)
+
 
             go = gb.build()
             loud_message_1 = "Confirm volume on 1 hour if it matches previous swing or close"
