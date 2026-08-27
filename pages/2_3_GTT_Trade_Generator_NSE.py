@@ -1156,7 +1156,8 @@ def main():
             gb.configure_grid_options(getRowStyle=row_style_jscode)
 
             go = gb.build()
-            loud_message = "Confirm volume on 1 hour if it matches previous swing or close"
+            loud_message_1 = "Confirm volume on 1 hour if it matches previous swing or close"
+            loud_message_2 = "SEPA identification is Key for Swing to Work"
 
             st.markdown(f"""
                             <style>
@@ -1169,12 +1170,12 @@ def main():
                             .loud-alert {{
                                 background-color: #dc143c; 
                                 color: #ffffff; 
-                                font-size: 20px; /* Scaled down from 36px */
+                                font-size: 20px; 
                                 font-weight: 800; 
-                                padding: 12px 20px; /* Scaled down padding */
+                                padding: 12px 20px; 
                                 border-radius: 8px;
                                 text-align: center;
-                                border: 3px solid #ffd700; /* Slightly thinner border */
+                                border: 3px solid #ffd700; 
                                 margin: 15px 0px;
                                 text-transform: uppercase; 
                                 letter-spacing: 0.5px;
@@ -1184,9 +1185,12 @@ def main():
                             </style>
 
                             <div class="loud-alert">
-                                🚨 {loud_message} 🚨
+                                🚨 {loud_message_1} 🚨<br>
+                                🚨 {loud_message_2} 🚨
                             </div>
                         """, unsafe_allow_html=True)
+
+
             grid_response = AgGrid(filtered_df, gridOptions=go, height=600, width='100%',
                                    update_mode=GridUpdateMode.MODEL_CHANGED,
                                    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,

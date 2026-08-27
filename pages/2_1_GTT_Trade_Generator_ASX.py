@@ -1177,37 +1177,39 @@ def main():
 
 
 
-            loud_message = "Confirm volume on 1 hour if it matches previous swing or close"
+            loud_message_1 = "Confirm volume on 1 hour if it matches previous swing or close"
+            loud_message_2 = "SEPA identification is Key for Swing to Work"
 
             st.markdown(f"""
-                <style>
-                @keyframes pulse-warning {{
-                    0% {{ box-shadow: 0 0 0 0 rgba(255, 25, 25, 0.7); }}
-                    70% {{ box-shadow: 0 0 0 15px rgba(255, 25, 25, 0); }}
-                    100% {{ box-shadow: 0 0 0 0 rgba(255, 25, 25, 0); }}
-                }}
+                            <style>
+                            @keyframes pulse-warning {{
+                                0% {{ box-shadow: 0 0 0 0 rgba(255, 25, 25, 0.7); }}
+                                70% {{ box-shadow: 0 0 0 15px rgba(255, 25, 25, 0); }}
+                                100% {{ box-shadow: 0 0 0 0 rgba(255, 25, 25, 0); }}
+                            }}
 
-                .loud-alert {{
-                    background-color: #dc143c; 
-                    color: #ffffff; 
-                    font-size: 20px; /* Scaled down from 36px */
-                    font-weight: 800; 
-                    padding: 12px 20px; /* Scaled down padding */
-                    border-radius: 8px;
-                    text-align: center;
-                    border: 3px solid #ffd700; /* Slightly thinner border */
-                    margin: 15px 0px;
-                    text-transform: uppercase; 
-                    letter-spacing: 0.5px;
-                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                    animation: pulse-warning 2s infinite; 
-                }}
-                </style>
+                            .loud-alert {{
+                                background-color: #dc143c; 
+                                color: #ffffff; 
+                                font-size: 20px; 
+                                font-weight: 800; 
+                                padding: 12px 20px; 
+                                border-radius: 8px;
+                                text-align: center;
+                                border: 3px solid #ffd700; 
+                                margin: 15px 0px;
+                                text-transform: uppercase; 
+                                letter-spacing: 0.5px;
+                                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                                animation: pulse-warning 2s infinite; 
+                            }}
+                            </style>
 
-                <div class="loud-alert">
-                    🚨 {loud_message} 🚨
-                </div>
-            """, unsafe_allow_html=True)
+                            <div class="loud-alert">
+                                🚨 {loud_message_1} 🚨<br>
+                                🚨 {loud_message_2} 🚨
+                            </div>
+                        """, unsafe_allow_html=True)
             grid_response = AgGrid(filtered_df, gridOptions=go, height=600, width='100%',
                                    update_mode=GridUpdateMode.MODEL_CHANGED,
                                    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
