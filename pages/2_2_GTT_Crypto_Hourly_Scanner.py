@@ -301,7 +301,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     # ── Apply Market Cap Filter ──
     if check_mcap:
         if 'cap' in df.columns:
-            df = df[df['cap'].fillna(0) >= 500000000]
+            df = df[df['cap'].fillna(0) >= 500]
 
     return df
 
