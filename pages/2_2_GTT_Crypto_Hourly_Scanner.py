@@ -373,7 +373,7 @@ def main():
 
     # 1: Tightness
     st.sidebar.subheader("1️⃣ Tightness (_nr4_prev) — Max 4 pts")
-    tight_defaults = saved_scoring.get('tightness_thresholds', [1.0, 2.0, 3.0, 4.0])
+    tight_defaults = saved_scoring.get('tightness_thresholds', [4.0, 6.0, 8.0, 10.0])
     t_raw = [
         st.sidebar.number_input("_nr4_prev < this → 4 pts", value=tight_defaults[0], step=0.5, key="sc_t1"),
         st.sidebar.number_input("_nr4_prev < this → 3 pts", value=tight_defaults[1], step=0.5, key="sc_t2"),
@@ -418,7 +418,7 @@ def main():
 
     # 4: 20MADist
     st.sidebar.subheader("4️⃣ 20MADist — Max 3 pts")
-    ma20_defaults = saved_scoring.get('ma20_tiers', [1.0, 2.0, 4.0])
+    ma20_defaults = saved_scoring.get('ma20_tiers', [2.0, 4.0, 6.0])
     ma20_neg_cutoff = st.sidebar.number_input(
         "Avoid if 20MADist below this %",
         value=saved_scoring.get('ma20_neg_cutoff', -6.0), step=0.5, key="sc_ma20_neg"
@@ -432,7 +432,7 @@ def main():
 
     # 5: 10MADist
     st.sidebar.subheader("5️⃣ 10MADist — Max 2 pts")
-    ma10_defaults = saved_scoring.get('ma10_tiers', [1.0, 3.0])
+    ma10_defaults = saved_scoring.get('ma10_tiers', [5.0, 6.0])
     ma10_neg_cutoff = st.sidebar.number_input(
         "Avoid if 10MADist below this %",
         value=saved_scoring.get('ma10_neg_cutoff', -6.0), step=0.5, key="sc_ma10_neg"
