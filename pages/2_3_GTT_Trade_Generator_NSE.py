@@ -1191,6 +1191,10 @@ def main():
                 tier_a_symbols = tier_a_df['Symbol'].dropna().unique().tolist()
                 tier_a_tv_string = ",".join([f"nse:{s}" for s in tier_a_symbols])
 
+                tier_b_df = sorted_df[sorted_df['Tier'] == '🟢 B']
+                tier_b_symbols = tier_b_df['Symbol'].dropna().unique().tolist()
+                tier_b_tv_string = ",".join([f"nse:{s}" for s in tier_b_symbols])
+
                 tier_ab_df = sorted_df[sorted_df['Tier'].isin(['🟢 A', '🟡 B'])]
                 tier_ab_symbols = tier_ab_df['Symbol'].dropna().unique().tolist()
                 tier_ab_tv_string = ",".join([f"nse:{s}" for s in tier_ab_symbols])
@@ -1208,12 +1212,12 @@ def main():
                         st.info("No Tier A stocks.")
 
                 with copy_col2:
-                    st.markdown(f"**Tier A + B** — `{len(tier_ab_symbols)} symbols`")
+                    st.markdown(f"Tier B only** — `{len(tier_ab_symbols)} symbols`")
                     if tier_ab_symbols:
-                        st.code(tier_ab_tv_string, language=None)
-                        st.caption(f"Click the 📋 icon above to copy {len(tier_ab_symbols)} symbols.")
+                        st.code(tier_b_tv_string, language=None)
+                        st.caption(f"Click the 📋 icon above to copy {len(tier_b_symbols)} symbols.")
                     else:
-                        st.info("No Tier A/B stocks.")
+                        st.info("No Tier B stocks.")
 
                 with copy_col3:
                     st.markdown(f"**All filtered** — `{len(all_symbols_sorted)} symbols`")
