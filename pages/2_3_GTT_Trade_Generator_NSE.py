@@ -216,14 +216,16 @@ def fetch_weekly_scan(url):
         st.error(f"Error fetching Weekly scan: {str(e)}")
         return None
 
+
 def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
-    check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)", key="check_today_bo")
+    check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)",
+                                 key="check_today_bo")
 
+    # ── Default masks if Advanced Filters are NOT checked ──
     if not modify:
         mask = pd.Series(True, index=df.index)
         if scan_mode == "Post Breakout":
-            # Keep your strict Post Breakout filters
             if '_chg_percentclose' in df.columns:
                 mask = mask & (df['_chg_percentclose'].fillna(0) > 0)
             if 'Adr' in df.columns:
@@ -235,23 +237,33 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             if '_avgvol_mln' in df.columns:
                 mask = mask & (df['_avgvol_mln'].fillna(0) > 20)
         else:
-            # Anticipation Mode Defaults:
-            # 1. Coiled tight today (_nr4 <= 3)
-            if '_nr4' in df.columns:
-                mask = mask & (df['_nr4'].fillna(999) <= 3.0)
-            # 2. Sector leadership (Sector_Percentile >= 60)
+            # Anticipation Mode Defaults (Under the hood)
+            tightness_col = '_nr4' if '_nr4' in df.columns else '_nr4_previous'
+            if tightness_col in df.columns:
+                mask = mask & (df[tightness_col].fillna(999) <= 3.0)
             if 'Sector_Percentile' in df.columns:
                 mask = mask & (df['Sector_Percentile'].fillna(0) >= 60)
-            # 3. Enough volatility for 1:4 RR (ADR >= 4)
             if 'Adr' in df.columns:
                 mask = mask & (df['Adr'].fillna(0) >= 4)
-            # 4. Basic liquidity (keeping a modest floor so micro-caps don't clutter)
             if '_avgvol_mln' in df.columns:
                 mask = mask & (df['_avgvol_mln'].fillna(0) >= 10)
+            if 'Tier' in df.columns:
+                mask = mask & (df['Tier'].isin(['🟢 A', '🟡 B']))  # Default to Tier A/B
         df = df[mask].copy()
+
+    # ── Advanced Filters UI (Sliders) ──
+    if modify:
+        df = df.copy()
         with st.container():
-            default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS',
-                            '_avgvol_mln'] if scan_mode == "Post Breakout" else ['_nr4', '_chg_percentclose', 'Sector_Percentile']
+            # Determine tightness column and default UI filters based on mode
+            tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+
+            if scan_mode == "Post Breakout":
+                default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS', '_avgvol_mln']
+            else:
+                # Anticipation: defaults to Nr4, Sector Pctile, Adr, and Tier
+                default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier']
+
             to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
             for column in to_filter_columns:
@@ -265,7 +277,12 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                     unique_non_nan = list(col_series.dropna().unique())
                     NAN_LABEL = "⚠️ (blank / NaN)"
                     select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
-                    default_selection = list(select_options)
+
+                    # Default to Tier A & B if the column is Tier
+                    if column == 'Tier':
+                        default_selection = ['🟢 A', '🟡 B']
+                    else:
+                        default_selection = list(select_options)
 
                     user_cat_input = right.multiselect(
                         f"Values for {column}", select_options, default=default_selection
@@ -288,14 +305,30 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
                     _min = float(clean.min())
                     _max = float(clean.max())
-                    step = (_max - _min) / 100 if (_max - _min) > 0 else 1
+                    step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
 
+                    # Custom default minimums (e.g., Nr4 starts at 3.0 max, Adr at 4.0, Sector at 60)
                     custom_defaults = {
                         '_chg_percentclose': 2.00, 'Adr': 4.0, 'Ti65': 1.05,
-                        'Avg_RS': 92.0, '_avgvol_mln': 20.0, 'Sector_Percentile': 70.00
+                        'Avg_RS': 92.0, '_avgvol_mln': 20.0, 'Sector_Percentile': 60.00,
+                        '_nr4': 3.0, '_nr4_previous': 3.0
                     }
+
+                    # Force slider upper bound to be wider than data so user can adjust it manually
+                    custom_max_bounds = {
+                        '_nr4': 5.0, '_nr4_previous': 5.0,
+                        '_chg_percentclose': 20.0, 'Adr': 15.0,
+                        'Sector_Percentile': 100.0, 'Avg_RS': 100.0
+                    }
+                    _max = max(_max, custom_max_bounds.get(column, _max))
+
                     desired_min = custom_defaults.get(column, _min)
-                    default_min = max(desired_min, _min)
+                    default_min = max(desired_min, _min) if desired_min <= _max else _min
+
+                    # Ensure min is not greater than max
+                    if default_min > _max:
+                        default_min = _min
+
                     user_num_input = right.slider(
                         f"Values for {column}", _min, _max, (default_min, _max), step=step
                     )
@@ -330,9 +363,12 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             df = df[df['_chg_percentclose'].fillna(0) > 0]
         if 'Vol_Score' in df.columns:
             df = df[df['Vol_Score'].fillna(0) >= 1]
-        if '_nr4_previous' in df.columns:
-            df['_nr4_previous'] = pd.to_numeric(df['_nr4_previous'], errors='coerce')
-            df = df.sort_values(by='_nr4_previous', ascending=True, na_position='last')
+
+        # Sort by the correct tightness column
+        sort_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+        if sort_tightness_col in df.columns:
+            df[sort_tightness_col] = pd.to_numeric(df[sort_tightness_col], errors='coerce')
+            df = df.sort_values(by=sort_tightness_col, ascending=True, na_position='last')
 
     return df
 
