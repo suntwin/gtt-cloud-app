@@ -250,7 +250,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS', '_avgvol_mln']
         else:
             # Anticipation: defaults to Nr4, Sector Pctile, Adr, and Tier
-            default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier']
+            default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier','_avgvol_mln']
 
         to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
@@ -313,7 +313,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                     '_chg_percentclose': (2.0, _max),
                     'Ti65': (1.05, _max),
                     'Avg_RS': (92.0, _max),
-                    '_avgvol_mln': (20.0, _max)
+                    '_avgvol_mln': (10.0, _max)
                 }
 
                 default_range = custom_ranges.get(column, (_min, _max))
