@@ -219,159 +219,153 @@ def fetch_weekly_scan(url):
 
 def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
-    check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)",
-                                 key="check_today_bo")
 
-    # ── Default masks if Advanced Filters are NOT checked ──
+    # "Check Today Breakouts" button is only relevant for Post Breakout
+    check_today_bo = False
+    if scan_mode == "Post Breakout":
+        check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)",
+                                     key="check_today_bo")
+
+    # ── If Advanced Filters are NOT checked, return df with NO hidden masks ──
     if not modify:
-        mask = pd.Series(True, index=df.index)
-        if scan_mode == "Post Breakout":
+        # Apply Today Breakouts filter if checked in Post Breakout mode
+        if check_today_bo:
             if '_chg_percentclose' in df.columns:
-                mask = mask & (df['_chg_percentclose'].fillna(0) > 0)
-            if 'Adr' in df.columns:
-                mask = mask & (df['Adr'].fillna(0) > 5)
-            if 'Ti65' in df.columns:
-                mask = mask & (df['Ti65'].fillna(0) > 1.05)
-            if 'Avg_RS' in df.columns:
-                mask = mask & (df['Avg_RS'].fillna(0) > 94.5)
-            if '_avgvol_mln' in df.columns:
-                mask = mask & (df['_avgvol_mln'].fillna(0) > 20)
-        else:
-            # Anticipation Mode Defaults (Under the hood)
-            tightness_col = '_nr4' if '_nr4' in df.columns else '_nr4_previous'
-            if tightness_col in df.columns:
-                mask = mask & (df[tightness_col].fillna(999) <= 3.0)
-            if 'Sector_Percentile' in df.columns:
-                mask = mask & (df['Sector_Percentile'].fillna(0) >= 60)
-            if 'Adr' in df.columns:
-                mask = mask & (df['Adr'].fillna(0) >= 4)
-            if '_avgvol_mln' in df.columns:
-                mask = mask & (df['_avgvol_mln'].fillna(0) >= 10)
-            if 'Tier' in df.columns:
-                mask = mask & (df['Tier'].isin(['🟢 A', '🟡 B']))  # Default to Tier A/B
-        df = df[mask].copy()
+                df = df[df['_chg_percentclose'].fillna(0) > 0]
+            if 'Vol_Score' in df.columns:
+                df = df[df['Vol_Score'].fillna(0) >= 1]
+            sort_tightness_col = '_nr4_previous'
+            if sort_tightness_col in df.columns:
+                df[sort_tightness_col] = pd.to_numeric(df[sort_tightness_col], errors='coerce')
+                df = df.sort_values(by=sort_tightness_col, ascending=True, na_position='last')
+        return df
 
     # ── Advanced Filters UI (Sliders) ──
-    if modify:
-        df = df.copy()
-        with st.container():
-            # Determine tightness column and default UI filters based on mode
-            tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+    df = df.copy()
+    with st.container():
+        # Determine tightness column and default UI filters based on mode
+        tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
 
-            if scan_mode == "Post Breakout":
-                default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS', '_avgvol_mln']
-            else:
-                # Anticipation: defaults to Nr4, Sector Pctile, Adr, and Tier
-                default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier']
+        if scan_mode == "Post Breakout":
+            default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS', '_avgvol_mln']
+        else:
+            # Anticipation: defaults to Nr4, Sector Pctile, Adr, and Tier
+            default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier']
 
-            to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
+        to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
-            for column in to_filter_columns:
-                left, right = st.columns((1, 20))
-                left.write("↳")
+        for column in to_filter_columns:
+            left, right = st.columns((1, 20))
+            left.write("↳")
 
-                col_series = df[column]
-                has_nans = col_series.isna().any()
+            col_series = df[column]
+            has_nans = col_series.isna().any()
 
-                if is_categorical_dtype(col_series) or col_series.dropna().nunique() < 10:
-                    unique_non_nan = list(col_series.dropna().unique())
-                    NAN_LABEL = "⚠️ (blank / NaN)"
-                    select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
+            if is_categorical_dtype(col_series) or col_series.dropna().nunique() < 10:
+                unique_non_nan = list(col_series.dropna().unique())
+                NAN_LABEL = "⚠️ (blank / NaN)"
+                select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
 
-                    # Default to Tier A & B if the column is Tier
-                    if column == 'Tier':
-                        default_selection = ['🟢 A', '🟡 B']
-                    else:
-                        default_selection = list(select_options)
-
-                    user_cat_input = right.multiselect(
-                        f"Values for {column}", select_options, default=default_selection
-                    )
-
-                    nan_selected = NAN_LABEL in user_cat_input
-                    real_vals = [v for v in user_cat_input if v != NAN_LABEL]
-
-                    if nan_selected:
-                        mask = col_series.isna() | col_series.isin(real_vals)
-                    else:
-                        mask = ~col_series.isna() & col_series.isin(real_vals)
-                    df = df[mask]
-
-                elif is_numeric_dtype(col_series):
-                    clean = col_series.dropna()
-                    if clean.empty:
-                        right.info(f"Column **{column}** has no numeric values")
-                        continue
-
-                    _min = float(clean.min())
-                    _max = float(clean.max())
-                    step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
-
-                    # Custom default minimums (e.g., Nr4 starts at 3.0 max, Adr at 4.0, Sector at 60)
-                    custom_defaults = {
-                        '_chg_percentclose': 2.00, 'Adr': 4.0, 'Ti65': 1.05,
-                        'Avg_RS': 92.0, '_avgvol_mln': 20.0, 'Sector_Percentile': 60.00,
-                        '_nr4': 3.0, '_nr4_previous': 3.0
-                    }
-
-                    # Force slider upper bound to be wider than data so user can adjust it manually
-                    custom_max_bounds = {
-                        '_nr4': 5.0, '_nr4_previous': 5.0,
-                        '_chg_percentclose': 20.0, 'Adr': 15.0,
-                        'Sector_Percentile': 100.0, 'Avg_RS': 100.0
-                    }
-                    _max = max(_max, custom_max_bounds.get(column, _max))
-
-                    desired_min = custom_defaults.get(column, _min)
-                    default_min = max(desired_min, _min) if desired_min <= _max else _min
-
-                    # Ensure min is not greater than max
-                    if default_min > _max:
-                        default_min = _min
-
-                    user_num_input = right.slider(
-                        f"Values for {column}", _min, _max, (default_min, _max), step=step
-                    )
-
-                    if has_nans:
-                        keep_nans = right.checkbox(
-                            f"Keep rows where **{column}** is blank",
-                            value=True,
-                            key=f"keep_nan_{column}"
-                        )
-                    else:
-                        keep_nans = False
-
-                    in_range = col_series.between(*user_num_input)
-                    if keep_nans:
-                        mask = in_range | col_series.isna()
-                    else:
-                        mask = in_range
-                    df = df[mask]
-
+                # Default to Tier A & B if the column is Tier
+                if column == 'Tier':
+                    default_selection = ['🟢 A', '🟡 B']
                 else:
-                    user_text_input = right.text_input(f"Substring or regex in {column}")
-                    if user_text_input:
-                        text_mask = col_series.astype(str).str.contains(
-                            user_text_input, case=False, na=False
-                        )
-                        df = df[text_mask | col_series.isna()]
+                    default_selection = list(select_options)
 
-    # ── Apply Today Breakouts Filter & Sort ──
+                user_cat_input = right.multiselect(
+                    f"Values for {column}", select_options, default=default_selection
+                )
+
+                nan_selected = NAN_LABEL in user_cat_input
+                real_vals = [v for v in user_cat_input if v != NAN_LABEL]
+
+                if nan_selected:
+                    mask = col_series.isna() | col_series.isin(real_vals)
+                else:
+                    mask = ~col_series.isna() & col_series.isin(real_vals)
+                df = df[mask]
+
+            elif is_numeric_dtype(col_series):
+                clean = col_series.dropna()
+                if clean.empty:
+                    right.info(f"Column **{column}** has no numeric values")
+                    continue
+
+                _min = float(clean.min())
+                _max = float(clean.max())
+                step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
+
+                # Force slider upper bound to be wider than data so user can adjust it manually
+                custom_max_bounds = {
+                    '_nr4': 5.0, '_nr4_previous': 5.0,
+                    '_chg_percentclose': 20.0, 'Adr': 15.0,
+                    'Sector_Percentile': 100.0, 'Avg_RS': 100.0
+                }
+                _max = max(_max, custom_max_bounds.get(column, _max))
+
+                # Define default ranges for the slider handles
+                # Format: (min_handle, max_handle)
+                custom_ranges = {
+                    '_nr4': (0.0, 3.0),
+                    '_nr4_previous': (0.0, 3.0),
+                    'Adr': (4.0, _max),
+                    'Sector_Percentile': (60.0, 100.0),
+                    '_chg_percentclose': (2.0, _max),
+                    'Ti65': (1.05, _max),
+                    'Avg_RS': (92.0, _max),
+                    '_avgvol_mln': (20.0, _max)
+                }
+
+                default_range = custom_ranges.get(column, (_min, _max))
+                default_min = max(float(default_range[0]), _min)
+                default_max = min(float(default_range[1]), _max)
+
+                # Ensure min is not greater than max
+                if default_min > default_max:
+                    default_min = _min
+                    default_max = _max
+
+                user_num_input = right.slider(
+                    f"Values for {column}", _min, _max, (default_min, default_max), step=step
+                )
+
+                if has_nans:
+                    keep_nans = right.checkbox(
+                        f"Keep rows where **{column}** is blank",
+                        value=True,
+                        key=f"keep_nan_{column}"
+                    )
+                else:
+                    keep_nans = False
+
+                in_range = col_series.between(*user_num_input)
+                if keep_nans:
+                    mask = in_range | col_series.isna()
+                else:
+                    mask = in_range
+                df = df[mask]
+
+            else:
+                user_text_input = right.text_input(f"Substring or regex in {column}")
+                if user_text_input:
+                    text_mask = col_series.astype(str).str.contains(
+                        user_text_input, case=False, na=False
+                    )
+                    df = df[text_mask | col_series.isna()]
+
+    # ── Apply Today Breakouts Filter & Sort (Only if checked in Post Breakout) ──
     if check_today_bo:
         if '_chg_percentclose' in df.columns:
             df = df[df['_chg_percentclose'].fillna(0) > 0]
         if 'Vol_Score' in df.columns:
             df = df[df['Vol_Score'].fillna(0) >= 1]
 
-        # Sort by the correct tightness column
-        sort_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+        sort_tightness_col = '_nr4_previous'
         if sort_tightness_col in df.columns:
             df[sort_tightness_col] = pd.to_numeric(df[sort_tightness_col], errors='coerce')
             df = df.sort_values(by=sort_tightness_col, ascending=True, na_position='last')
 
     return df
-
 # --- 3. MAIN APPLICATION ---
 def main():
     custom_css = """
