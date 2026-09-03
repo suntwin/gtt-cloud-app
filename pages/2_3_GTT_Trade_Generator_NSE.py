@@ -714,7 +714,7 @@ def main():
                 actionable_df['TClose_Score'] = 0
                 actionable_df['MA20_Score'] = 0
                 actionable_df['MA10_Score'] = 0
-                else:
+            else:
                 # ── Determine Tightness Column based on Scanner Mode ──
                 # Anticipation = Coiled setups (use _nr4). Post Breakout = BO setups (use _nr4_previous)
                 tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
