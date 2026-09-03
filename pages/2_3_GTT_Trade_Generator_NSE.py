@@ -308,7 +308,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 custom_ranges = {
                     '_nr4': (0.0, 3.0),
                     '_nr4_previous': (0.0, 3.0),
-                    'Adr': (4.0, _max),
+                    'Adr': (2.0, _max),
                     'Sector_Percentile': (60.0, 100.0),
                     '_chg_percentclose': (2.0, _max),
                     'Ti65': (1.05, _max),
