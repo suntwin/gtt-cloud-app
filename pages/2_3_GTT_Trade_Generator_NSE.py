@@ -1191,13 +1191,13 @@ def main():
                 tier_a_symbols = tier_a_df['Symbol'].dropna().unique().tolist()
                 tier_a_tv_string = ",".join([f"nse:{s}" for s in tier_a_symbols])
 
-                tier_b_df = sorted_df[sorted_df['Tier'] == '🟢 B']
+                tier_b_df = sorted_df[sorted_df['Tier'] == '🟡 B']
                 tier_b_symbols = tier_b_df['Symbol'].dropna().unique().tolist()
                 tier_b_tv_string = ",".join([f"nse:{s}" for s in tier_b_symbols])
 
-                tier_ab_df = sorted_df[sorted_df['Tier'].isin(['🟢 A', '🟡 B'])]
-                tier_ab_symbols = tier_ab_df['Symbol'].dropna().unique().tolist()
-                tier_ab_tv_string = ",".join([f"nse:{s}" for s in tier_ab_symbols])
+                # tier_ab_df = sorted_df[sorted_df['Tier'].isin(['🟢 A', '🟡 B'])]
+                # tier_ab_symbols = tier_ab_df['Symbol'].dropna().unique().tolist()
+                # tier_ab_tv_string = ",".join([f"nse:{s}" for s in tier_ab_symbols])
                 st.markdown("---")
                 st.subheader("📋 Copy Symbols to TradingView")
 
