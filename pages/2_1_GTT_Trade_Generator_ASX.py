@@ -1134,34 +1134,25 @@ def main():
 
             # ══════════════════════════════════════════════════════════════════
             # COPY SYMBOL LIST TO TRADINGVIEW
-            # Uses filtered_df (the data we passed into AgGrid), NOT
-            # grid_response['data'] which returns a list in some
-            # st-aggrid versions and causes TypeError.
-            #
-            # Order: filtered_df['Symbol'].unique() already preserves the
-            # table's row order (Tier -> Total_Score sort applied earlier via
-            # display_df.sort_values(), then filter_dataframe()'s masks, which
-            # don't reorder rows) — that's the same order shown in the grid.
-            # Do NOT alphabetically sort this list (fixed 2026-08-17) — an
-            # earlier version wrapped it in sorted(..., key=str.upper), which
-            # silently threw away the Tier/score ordering and copied the
-            # symbols alphabetically instead of as displayed.
+            # FIX: We now use grid_response['data'] which captures the
+            # exact sorting and filtering applied by the user inside the
+            # AgGrid UI.
             # ══════════════════════════════════════════════════════════════════
-            if not filtered_df.empty and 'Symbol' in filtered_df.columns and 'Tier' in filtered_df.columns:
-                all_symbols_sorted = filtered_df['Symbol'].dropna().unique().tolist()
+            sorted_df = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response[
+                'data'].empty else filtered_df
+
+            if not sorted_df.empty and 'Symbol' in sorted_df.columns and 'Tier' in sorted_df.columns:
+                all_symbols_sorted = sorted_df['Symbol'].dropna().unique().tolist()
 
                 all_tv_string = ",".join([f"{s}" for s in all_symbols_sorted])
 
-
-
-                tier_a_df = filtered_df[filtered_df['Tier'] == '🟢 A']
+                tier_a_df = sorted_df[sorted_df['Tier'] == '🟢 A']
                 tier_a_symbols = tier_a_df['Symbol'].dropna().unique().tolist()
                 tier_a_tv_string = ",".join([f"{s}" for s in tier_a_symbols])
 
-                tier_ab_df = filtered_df[filtered_df['Tier'].isin(['🟢 A', '🟡 B'])]
+                tier_ab_df = sorted_df[sorted_df['Tier'].isin(['🟢 A', '🟡 B'])]
                 tier_ab_symbols = tier_ab_df['Symbol'].dropna().unique().tolist()
                 tier_ab_tv_string = ",".join([f"{s}" for s in tier_ab_symbols])
-
                 st.markdown("---")
                 st.subheader("📋 Copy Symbols to TradingView")
 
