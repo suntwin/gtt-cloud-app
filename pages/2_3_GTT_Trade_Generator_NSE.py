@@ -251,7 +251,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         df = df[mask].copy()
         with st.container():
             default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS',
-                            '_avgvol_mln'] if scan_mode == "Post Breakout" else ['_nr4_previous', '_chg_percentclose', 'Sector_Percentile']
+                            '_avgvol_mln'] if scan_mode == "Post Breakout" else ['_nr4', '_chg_percentclose', 'Sector_Percentile']
             to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
             for column in to_filter_columns:
@@ -834,12 +834,16 @@ def main():
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
 
-            # Convert _nr4_previous to numeric to ensure proper sorting
-            display_df['_nr4_previous'] = pd.to_numeric(display_df['_nr4_previous'], errors='coerce')
-            # Sort by Tier first, then by Tightness (_nr4_previous ascending = tightest on top).
-            # NaNs are pushed to the bottom.
-            display_df = display_df.sort_values(by=['_tier_sort_key', '_nr4_previous'], ascending=[True, True],
-                                                na_position='last')
+            # Determine which tightness column to sort by
+            sort_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+            if sort_tightness_col in display_df.columns:
+                display_df[sort_tightness_col] = pd.to_numeric(display_df[sort_tightness_col], errors='coerce')
+                # Sort by Tier first, then by Tightness (ascending = tightest on top).
+                display_df = display_df.sort_values(by=['_tier_sort_key', sort_tightness_col], ascending=[True, True],
+                                                    na_position='last')
+            else:
+                display_df = display_df.sort_values(by=['_tier_sort_key'], ascending=[True])
+
             display_df = display_df.drop(columns=['_tier_sort_key'], errors='ignore')
             st.session_state.gtt_display_df = display_df
 
@@ -912,10 +916,12 @@ def main():
                 else:
                     gb.configure_column(col, minWidth=50, maxWidth=80, cellStyle=dynamic_jscode)
 
-            nr4_prev_highlight_jscode = JsCode(
+            tightness_highlight_jscode = JsCode(
                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
-            if '_nr4_previous' in filtered_df.columns:
-                gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75, cellStyle=nr4_prev_highlight_jscode)
+            active_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+            if active_tightness_col in filtered_df.columns:
+                gb.configure_column(active_tightness_col, minWidth=55, maxWidth=75,
+                                    cellStyle=tightness_highlight_jscode)
 
             if '_chg_percentclose' in filtered_df.columns:
                 valid_chg = filtered_df[filtered_df['_chg_percentclose'] > 0]['_chg_percentclose']
