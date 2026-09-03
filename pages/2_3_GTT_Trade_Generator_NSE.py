@@ -222,19 +222,33 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
     if not modify:
         mask = pd.Series(True, index=df.index)
-        if '_chg_percentclose' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['_chg_percentclose'].fillna(0) > 0)
-        if 'Adr' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['Adr'].fillna(0) > 5)
-        if 'Ti65' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['Ti65'].fillna(0) > 1.05)
-        if 'Avg_RS' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['Avg_RS'].fillna(0) > 94.5)
-        if '_avgvol_mln' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['_avgvol_mln'].fillna(0) > 20)
+        if scan_mode == "Post Breakout":
+            # Keep your strict Post Breakout filters
+            if '_chg_percentclose' in df.columns:
+                mask = mask & (df['_chg_percentclose'].fillna(0) > 0)
+            if 'Adr' in df.columns:
+                mask = mask & (df['Adr'].fillna(0) > 5)
+            if 'Ti65' in df.columns:
+                mask = mask & (df['Ti65'].fillna(0) > 1.05)
+            if 'Avg_RS' in df.columns:
+                mask = mask & (df['Avg_RS'].fillna(0) > 94.5)
+            if '_avgvol_mln' in df.columns:
+                mask = mask & (df['_avgvol_mln'].fillna(0) > 20)
+        else:
+            # Anticipation Mode Defaults:
+            # 1. Coiled tight today (_nr4 <= 3)
+            if '_nr4' in df.columns:
+                mask = mask & (df['_nr4'].fillna(999) <= 3.0)
+            # 2. Sector leadership (Sector_Percentile >= 60)
+            if 'Sector_Percentile' in df.columns:
+                mask = mask & (df['Sector_Percentile'].fillna(0) >= 60)
+            # 3. Enough volatility for 1:4 RR (ADR >= 4)
+            if 'Adr' in df.columns:
+                mask = mask & (df['Adr'].fillna(0) >= 4)
+            # 4. Basic liquidity (keeping a modest floor so micro-caps don't clutter)
+            if '_avgvol_mln' in df.columns:
+                mask = mask & (df['_avgvol_mln'].fillna(0) >= 10)
         df = df[mask].copy()
-    else:
-        df = df.copy()
         with st.container():
             default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS',
                             '_avgvol_mln'] if scan_mode == "Post Breakout" else ['_nr4_previous', '_chg_percentclose', 'Sector_Percentile']
@@ -700,35 +714,45 @@ def main():
                 actionable_df['TClose_Score'] = 0
                 actionable_df['MA20_Score'] = 0
                 actionable_df['MA10_Score'] = 0
-            else:
+                else:
+                # ── Determine Tightness Column based on Scanner Mode ──
+                # Anticipation = Coiled setups (use _nr4). Post Breakout = BO setups (use _nr4_previous)
+                tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+                if tightness_col not in actionable_df.columns:
+                    tightness_col = '_nr4_previous'  # Fallback
+
                 # ── Criteria 1: Tightness Score ──
                 # NaN → 999 so pd.cut puts it in the 0-pt bin (no data = no reward)
-                nr4_prev_filled = actionable_df['_nr4_previous'].fillna(999)
+                nr4_filled = actionable_df[tightness_col].fillna(999)
                 actionable_df['Tight_Score'] = pd.cut(
-                    nr4_prev_filled,
+                    nr4_filled,
                     bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
                     labels=[4, 3, 2, 1, 0]
                 ).astype(int)
 
                 # ── Criteria 2: BO Volume Score ──
-                rvol_ratio = np.where(
-                    actionable_df['_avgvol_mln'] > 0,
-                    actionable_df['dvol'] / actionable_df['_avgvol_mln'],
-                    0
-                )
-                actionable_df['Vol_Score'] = pd.cut(
-                    rvol_ratio,
-                    bins=[-float('inf'), v3, v2, v1, float('inf')],
-                    labels=[0, 1, 2, 3]
-                ).astype(int)
+                # If Anticipation mode, there is no BO volume yet. Skip calculation and assign 0.
+                if scan_mode == "Anticipation":
+                    actionable_df['Vol_Score'] = 0
+                else:
+                    rvol_ratio = np.where(
+                        actionable_df['_avgvol_mln'] > 0,
+                        actionable_df['dvol'] / actionable_df['_avgvol_mln'],
+                        0
+                    )
+                    actionable_df['Vol_Score'] = pd.cut(
+                        rvol_ratio,
+                        bins=[-float('inf'), v3, v2, v1, float('inf')],
+                        labels=[0, 1, 2, 3]
+                    ).astype(int)
 
                 # ── Criteria 3: TightCloses Bonus ──
+                # (This remains the same)
                 actionable_df['TClose_Score'] = np.where(
                     actionable_df['W_TightCloses'].fillna(0) >= 1,
                     tclose_pts,
                     0
                 )
-
                 # ── Criteria 4a: 20MADist Score ──
                 # Step 1: fill NaN with 999 so pd.cut works (NaN → 0 pts)
                 # Step 2: score by absolute distance
