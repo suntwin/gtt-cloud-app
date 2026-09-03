@@ -1212,8 +1212,8 @@ def main():
                         st.info("No Tier A stocks.")
 
                 with copy_col2:
-                    st.markdown(f"Tier B only** — `{len(tier_ab_symbols)} symbols`")
-                    if tier_ab_symbols:
+                    st.markdown(f"**Tier B only** — `{len(tier_b_symbols)} symbols`")
+                    if tier_b_symbols:
                         st.code(tier_b_tv_string, language=None)
                         st.caption(f"Click the 📋 icon above to copy {len(tier_b_symbols)} symbols.")
                     else:
