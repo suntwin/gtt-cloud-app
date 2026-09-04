@@ -217,17 +217,43 @@ def fetch_weekly_scan(url):
 
 def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
-    check_mcap = st.checkbox("Mid/Large Cap Only (Market Cap >= $500M)", key="check_mcap_daily")
 
-    # ── If Advanced Filters are NOT checked, return df with NO hidden masks ──
+    # ── Market Cap Checkboxes ──
+    st.markdown("**Market Cap Filter (Millions $)**")
+    mc_cols = st.columns(5)
+    mcap_all = mc_cols[0].checkbox("All", key="mcap_all")
+    mcap_500 = mc_cols[1].checkbox(">500", key="mcap_500")
+    mcap_100_500 = mc_cols[2].checkbox("100-500", key="mcap_100_500")
+    mcap_50_100 = mc_cols[3].checkbox("50-100", key="mcap_50_100")
+    mcap_10_50 = mc_cols[4].checkbox("10-50", key="mcap_10_50")
+
+    # If no specific ranges selected, default to All
+    if not any([mcap_500, mcap_100_500, mcap_50_100, mcap_10_50]):
+        mcap_all = True
+
+    mask_mcap = pd.Series(False, index=df.index)
+    if mcap_all:
+        mask_mcap = pd.Series(True, index=df.index)
+    else:
+        if 'cap' in df.columns:
+            if mcap_500:
+                mask_mcap = mask_mcap | (df['cap'].fillna(0) >= 500)
+            if mcap_100_500:
+                mask_mcap = mask_mcap | ((df['cap'].fillna(0) >= 100) & (df['cap'].fillna(0) < 500))
+            if mcap_50_100:
+                mask_mcap = mask_mcap | ((df['cap'].fillna(0) >= 50) & (df['cap'].fillna(0) < 100))
+            if mcap_10_50:
+                mask_mcap = mask_mcap | ((df['cap'].fillna(0) >= 10) & (df['cap'].fillna(0) < 50))
+        else:
+            mask_mcap = pd.Series(True, index=df.index)
+
+    df = df[mask_mcap].copy()
+
+    # ── If Advanced Filters are NOT checked, return df ──
     if not modify:
-        # Apply Market Cap Filter if checked
-        if check_mcap and 'cap' in df.columns:
-            df = df[df['cap'].fillna(0) >= 500]
         return df
 
     # ── Advanced Filters UI (Sliders) ──
-    df = df.copy()
     with st.container():
         tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
 
@@ -331,10 +357,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                         user_text_input, case=False, na=False
                     )
                     df = df[text_mask | col_series.isna()]
-
-    # ── Apply Market Cap Filter ──
-    if check_mcap and 'cap' in df.columns:
-        df = df[df['cap'].fillna(0) >= 500]
 
     return df
 
