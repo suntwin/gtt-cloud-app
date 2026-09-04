@@ -247,7 +247,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
 
         if scan_mode == "Post Breakout":
-            default_filt = ['_chg_percentclose', 'Adr', 'Ti65', 'Avg_RS', '_avgvol_mln']
+            default_filt = ['_chg_percentclose', 'Adr', 'Sector_Percentile', '_avgvol_mln']
         else:
             # Anticipation: defaults to Nr4, Sector Pctile, Adr, and Tier
             default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier','_avgvol_mln']
