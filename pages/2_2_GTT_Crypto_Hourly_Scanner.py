@@ -215,23 +215,18 @@ def fetch_weekly_daily_scan(url):
 # ════════════════════════════════════════════════════════════════════
 # 4. FILTER WIDGET
 # ════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# 4. FILTER WIDGET
+# ════════════════════════════════════════════════════════════════════
 def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
     check_mcap = st.checkbox("Mid/Large Cap Only (Market Cap >= $500M)", key="check_mcap_hourly")
 
     if not modify:
-        mask = pd.Series(True, index=df.index)
-        if '_chg_percentclose_hourly' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['_chg_percentclose_hourly'].fillna(0) > 0)
-        if 'Adr' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['Adr'].fillna(0) > 3)
-        if 'Ti65' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['Ti65'].fillna(0) > 1.05)
-        if 'Avg_Perf' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['Avg_Perf'].fillna(0) > 0)
-        if '_avgvol_mln_hourly' in df.columns and scan_mode == "Post Breakout":
-            mask = mask & (df['_avgvol_mln_hourly'].fillna(0) > 0.5)
-        df = df[mask].copy()
+        # ── NO HIDDEN FILTERS ──
+        # Show ALL setups, ranked purely by the existing scoring logic.
+        # Volume verification will be done manually on the charts.
+        pass
     else:
         df = df.copy()
         with st.container():
@@ -270,9 +265,11 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                     _min = float(clean.min())
                     _max = float(clean.max())
                     step = (_max - _min) / 100 if (_max - _min) > 0 else 1
+
+                    # Set default slider minimums to 0.0 so nothing is hidden by default
                     custom_defaults = {
-                        '_chg_percentclose_hourly': 1.0, 'Adr': 3.0, 'Ti65': 1.05,
-                        'Avg_Perf': 0.0, '_avgvol_mln_hourly': 0.5,
+                        '_chg_percentclose_hourly': 0.0, 'Adr': 0.0, 'Ti65': 0.0,
+                        'Avg_Perf': 0.0, '_avgvol_mln_hourly': 0.0,
                     }
                     desired_min = custom_defaults.get(column, _min)
                     default_min = max(desired_min, _min)
@@ -297,13 +294,12 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                         )
                         df = df[text_mask | col_series.isna()]
 
-    # ── Apply Market Cap Filter ──
+    # ── Apply Market Cap Filter (Only if checked) ──
     if check_mcap:
         if 'cap' in df.columns:
             df = df[df['cap'].fillna(0) >= 500]
 
     return df
-
 # ════════════════════════════════════════════════════════════════════
 # 5. MAIN APPLICATION
 # ════════════════════════════════════════════════════════════════════
