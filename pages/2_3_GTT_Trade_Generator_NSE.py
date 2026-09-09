@@ -488,12 +488,15 @@ def main():
             del st.session_state['last_refresh_ts']
     sector_df = load_sector_mapping(SECTOR_FILE)
 
-    scan_mode = st.radio("Select Scanner Mode", ("Anticipation", "Post Breakout"), horizontal=True)
-    if scan_mode == "Post Breakout":
-        st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
-    else:
-        st.markdown("Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
-
+    # scan_mode = st.radio("Select Scanner Mode", ("Anticipation", "Post Breakout"), horizontal=True)
+    # if scan_mode == "Post Breakout":
+    #     st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
+    # else:
+    #     st.markdown("Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
+    # Disable Anticipation mode to only buy confirmed breakouts
+    scan_mode = "Post Breakout"
+    st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
+    st.info("🔒 Anticipation mode disabled. Scanner is locked to **confirmed breakouts** only.")
     # ══════════════════════════════════════════════════════════════════
     # UNIFIED SCORING SYSTEM CONFIGURATION (Sidebar)
     # ══════════════════════════════════════════════════════════════════
