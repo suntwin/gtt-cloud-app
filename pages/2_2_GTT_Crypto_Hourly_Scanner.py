@@ -356,14 +356,12 @@ def main():
         if 'last_refresh_ts' in st.session_state:
             del st.session_state['last_refresh_ts']
 
-    scan_mode = st.radio(
-        "Select Scanner Mode",
-        ("Anticipation", "Post Breakout"), horizontal=True
-    )
-    if scan_mode == "Post Breakout":
-        st.markdown("Hourly crypto scanner for confirmed breakouts (Boom Boom / 1-2-3 / Coiled Spring).")
-    else:
-        st.markdown("Anticipation scanner for coiled hourly setups as they break. ⚠️ Wait for volume confirmation.")
+    # ════════════════════════════════════════════════════════════════
+    # DISABLED ANTICIPATION MODE - LOCKED TO POST BREAKOUT
+    # ════════════════════════════════════════════════════════════════
+    scan_mode = "Post Breakout"
+    st.markdown("Hourly crypto scanner for confirmed breakouts (Boom Boom / 1-2-3 / Coiled Spring).")
+    st.info("🔒 Anticipation mode disabled. Scanner is locked to **confirmed breakouts** only.")
 
     # ════════════════════════════════════════════════════════════════
     # SCORING CONFIG (Sidebar)
