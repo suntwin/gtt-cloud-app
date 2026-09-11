@@ -1,3 +1,40 @@
+Here is the
+adapted ** US
+Stock
+Scanner **
+with all the exact same features (Supabase cloud database, "Saved Breakouts" tab, direct addition from the main scanner, curated columns with short headers to prevent horizontal scrolling, TradingView copy button, and Anticipation mode disabled).
+
+I
+have
+changed
+the
+TradingView
+copy
+prefix
+from
+
+`nse: ` to
+just
+the
+raw
+ticker(TradingView
+resolves
+US
+tickers
+automatically) and separated
+the
+Supabase
+`user_id`
+to
+`"us_user"`
+so
+your
+US and NSE
+watchlists
+don
+'t mix.
+
+```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,63 +46,37 @@ from pandas.api.types import (
     is_numeric_dtype,
     is_object_dtype,
 )
-from st_aggrid import AgGrid, GridOptionsBuilder
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+import os
+import json
+import time
+from datetime import datetime
 
-st.set_page_config(page_title="GTT Trade Generator", page_icon="⚡", layout="wide")
+# ── Supabase Integration ──
+from supabase import create_client, Client
 
+SUPABASE_URL = "https://uroqarbpyrloymijbqaa.supabase.co"
+SUPABASE_KEY = "sb_publishable_bPnWVx9S7zI0_FdK8RCbRg_Gfc2Vqzt"
 
-import pandas as pd
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    st.error(f"Database connection failed: {e}")
+    supabase = None
 
-def merge_rs_dataframes(dfs_to_merge, rs_cols=['RS_1M', 'RS_3M', 'RS_6M']):
-    if not dfs_to_merge:
-        return pd.DataFrame()
-
-    base_cols = [c for c in dfs_to_merge[0].columns if c not in rs_cols]
-
-    processed = []
-    for df in dfs_to_merge:
-        rs_present = [c for c in df.columns if c in rs_cols]
-        processed.append(df[base_cols + rs_present].copy())
-
-    merged = processed[0]
-    for df in processed[1:]:
-        merge_keys = [c for c in base_cols if c in df.columns]
-        merged = pd.merge(merged, df, on=merge_keys, how='outer')
-
-    for col in rs_cols:
-        if col not in merged.columns:
-            merged[col] = 0.0
-        else:
-            merged[col] = merged[col].fillna(0.0)
-
-    return merged
+st.set_page_config(page_title="GTT Trade Generator (US)", page_icon="⚡", layout="wide")
 
 # --- 1. CONFIGURATION & ENDPOINTS ---
 gtt_endpoints = {
-    "1M": "https://api.marketinout.com/run/screen?key=bf8de0c5ffbc473a",
-    "3M": "https://api.marketinout.com/run/screen?key=0d2c7ce302f54823",
-    "6M": "https://api.marketinout.com/run/screen?key=6f77cbad54154132"
+    "1M": "https://api.marketinout.com/run/screen?key=dbf1d7c7f45c4fac",
+    # Assuming same keys, change if US uses different ones
+    "3M": "https://api.marketinout.com/run/screen?key=29d147cbc8f1466b",
+    "6M": "https://api.marketinout.com/run/screen?key=c53af41692ff4949"
 }
 
-# --- WEEKLY BASE-FORMATION ENDPOINT (added 2026-07-09) ---
-# Separate MarketInOut show-only formula scan on @weekly timeframe. See
-# wiki/topics/WeeklyBaseFormation.md in the Trading project for the formula and
-# the numeric-criteria writeup this feeds.
-#
-# IMPORTANT (fixed 2026-07-09): the raw API is inconsistent about whether it emits
-# the trade timestamp as ONE combined "date time" field or as TWO separate
-# pipe-delimited Date/Time fields -- confirmed by comparing IOLCP's row (came back
-# combined) against MANALIPETC/APARINDS (came back split). A fixed leading-field
-# column list silently shifted every metric one slot to the right whenever a row
-# had the combined form -- e.g. Weeklyvolratio's value landing under the
-# Pctof10wkhigh header. fetch_weekly_scan() below no longer assumes a fixed leading
-# -field count: it always takes Symbol as the first field, Last as the second, and
-# the 11 show()-column metrics as the LAST 11 fields of the row, discarding
-# whatever timestamp field(s) sit in between.
-weekly_endpoint = "https://api.marketinout.com/run/screen?key=931618ac0a5c4c42"
+weekly_endpoint = "https://api.marketinout.com/run/screen?key=64e86ed22d834681"
 
 weekly_metric_columns = [
     'Wema10', 'Dist_wema10_pct', 'Weeklyclose_chg_pct', 'Tightcloses_of4',
@@ -74,46 +85,54 @@ weekly_metric_columns = [
 ]
 
 gtt_columns = [
-    'Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln','_bo_engulfing_cndl',
+    'Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln', '_bo_engulfing_cndl',
     '_circuit', '_days_since_bo', '_bo_dollar_vol_mln', '_rvol_to_float', 'Adr', 'Ti65',
     '_avg_vol_float_ratio', '_20madist', '_10wmadist', '_10madist',
-    '_nr4', '_nr4_previous', '_rs', '_period_perf','_insideday'
+    '_nr4', '_nr4_previous', '_rs', '_period_perf', '_insideday'
 ]
-
-import os
-import json
-from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
-SECTOR_FILE = os.path.join(PROJECT_DIR, "TradingView", "Symbols_USA.csv")
-
-COLUMN_PREFS_FILE = os.path.join(BASE_DIR, "gtt_column_prefs.json")
-SCORING_PREFS_FILE = os.path.join(BASE_DIR, "gtt_scoring_prefs.json")
+SECTOR_FILE = os.path.join(PROJECT_DIR, "TradingView", "Symbols_US.csv")  # Changed to US file
+SCORING_PREFS_FILE = os.path.join(BASE_DIR, "gtt_us_scoring_prefs.json")
 
 
-def load_column_prefs():
-    if os.path.exists(COLUMN_PREFS_FILE):
-        try:
-            with open(COLUMN_PREFS_FILE, 'r') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def save_column_prefs(prefs):
+# ════════════════════════════════════════════════════════════════════
+# 2. DATABASE & HELPER FUNCTIONS
+# ════════════════════════════════════════════════════════════════════
+def load_column_prefs(table_key):
+    if not supabase: return None
     try:
-        with open(COLUMN_PREFS_FILE, 'w') as f:
-            json.dump(prefs, f, indent=2)
+        # Using 'us_user' to keep US watchlist separate from NSE
+        response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id",
+                                                                                                          "us_user").execute()
+        if response.data:
+            return response.data[0]['visible_columns']
+        return None
+    except Exception:
+        return None
+
+
+def save_column_prefs(table_key, cols):
+    if not supabase: return
+    try:
+        existing = supabase.table("column_prefs").select("id").eq("table_key", table_key).eq("user_id",
+                                                                                             "us_user").execute()
+        if existing.data:
+            supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id",
+                                                                                                           "us_user").execute()
+        else:
+            supabase.table("column_prefs").insert(
+                {"user_id": "us_user", "table_key": table_key, "visible_columns": cols}).execute()
     except Exception as e:
-        st.warning(f"Could not save column preferences: {e}")
+        st.warning(f"Could not save column preferences to cloud: {e}")
 
 
 def get_persisted_columns(table_key, all_cols, default_hidden_cols):
-    prefs = load_column_prefs()
     default_visible = [c for c in all_cols if c not in default_hidden_cols]
-    saved = prefs.get(table_key, default_visible)
+    saved = load_column_prefs(table_key)
+    if saved is None:
+        return default_visible
     saved = [c for c in saved if c in all_cols]
     return saved if saved else default_visible
 
@@ -136,7 +155,6 @@ def save_scoring_prefs(prefs):
         st.warning(f"Could not save scoring preferences: {e}")
 
 
-# --- 2. UTILITY FUNCTIONS ---
 @st.cache_data(ttl=3600)
 def load_sector_mapping(file_path):
     if not os.path.exists(file_path):
@@ -169,9 +187,9 @@ def fetch_gtt_scan(url, name):
             else:
                 df.columns = gtt_columns + [f'Extra_{i}' for i in range(len(gtt_columns), len(df.columns))]
 
-            df['Symbol'] = df['Symbol'].str.upper().str.replace('.NS', '', regex=False)
+            # US Stocks typically don't need .NS stripping, but standardizing just in case
+            df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
 
-            # ── Numeric cols that get fillna(0) ──
             numeric_cols_fillna = [
                 'Last', '_days_since_bo', '_nr4', '_rs', 'Adr', 'Ti65', 'dvol',
                 '_avgvol_mln', '_bo_dollar_vol_mln', '_bo_engulfing_cndl', '_avg_vol_float_ratio',
@@ -181,13 +199,10 @@ def fetch_gtt_scan(url, name):
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-            # ── Numeric cols that KEEP NaN (so scoring can distinguish
-            #    "no data" from "value is 0"). NaN → 0 pts in scoring. ──
             numeric_cols_keep_nan = ['_20madist', '_10wmadist', '_10madist', '_nr4_previous']
             for col in numeric_cols_keep_nan:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-                    # Leave NaN as NaN — scoring handles it explicitly
 
             return df
         return None
@@ -220,7 +235,7 @@ def fetch_weekly_scan(url):
                 return None
 
             df = pd.DataFrame(rows, columns=['Symbol', 'Last'] + weekly_metric_columns)
-            df['Symbol'] = df['Symbol'].str.upper().str.replace('.NS', '', regex=False)
+            df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
 
             numeric_cols = ['Last'] + weekly_metric_columns
             for col in numeric_cols:
@@ -233,18 +248,38 @@ def fetch_weekly_scan(url):
         return None
 
 
+def _is_categorical(series):
+    try:
+        from pandas.api.types import is_categorical_dtype
+        return is_categorical_dtype(series)
+    except (ImportError, AttributeError, TypeError):
+        return isinstance(series.dtype, pd.CategoricalDtype)
+
+
+def clean_df_for_json(df):
+    df = df.copy()
+    df = df.replace([np.inf, -np.inf], np.nan)
+    for col in df.columns:
+        if df[col].isna().any():
+            df[col] = df[col].astype(object)
+            df.loc[df[col].isna(), col] = None
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].apply(
+                lambda x: x.item() if hasattr(x, 'item') and x is not None else x
+            )
+    return df
+
+
 def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
 
-    # "Check Today Breakouts" button is only relevant for Post Breakout
     check_today_bo = False
     if scan_mode == "Post Breakout":
         check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)",
                                      key="check_today_bo")
 
-    # ── If Advanced Filters are NOT checked, return df with NO hidden masks ──
     if not modify:
-        # Apply Today Breakouts filter if checked in Post Breakout mode
         if check_today_bo:
             if '_chg_percentclose' in df.columns:
                 df = df[df['_chg_percentclose'].fillna(0) > 0]
@@ -256,33 +291,29 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 df = df.sort_values(by=sort_tightness_col, ascending=True, na_position='last')
         return df
 
-    # ── Advanced Filters UI (Sliders) ──
     df = df.copy()
     with st.container():
-        # Determine tightness column and default UI filters based on mode
         tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
 
         if scan_mode == "Post Breakout":
             default_filt = ['_chg_percentclose', 'Adr', 'Sector_Percentile', '_avgvol_mln']
         else:
-            # Anticipation: defaults to Nr4, Sector Pctile, Adr, and Tier
-            default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier','_avgvol_mln']
+            default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier', '_avgvol_mln']
 
         to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
         for column in to_filter_columns:
             left, right = st.columns((1, 20))
-            left.write("↳")
+            left.write(" ")
 
             col_series = df[column]
             has_nans = col_series.isna().any()
 
-            if is_categorical_dtype(col_series) or col_series.dropna().nunique() < 10:
+            if _is_categorical(col_series) or col_series.dropna().nunique() < 10:
                 unique_non_nan = list(col_series.dropna().unique())
                 NAN_LABEL = "⚠️ (blank / NaN)"
                 select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
 
-                # Default to Tier A & B if the column is Tier
                 if column == 'Tier':
                     default_selection = ['🟢 A', '🟡 B']
                 else:
@@ -311,7 +342,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 _max = float(clean.max())
                 step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
 
-                # Force slider upper bound to be wider than data so user can adjust it manually
                 custom_max_bounds = {
                     '_nr4': 5.0, '_nr4_previous': 5.0,
                     '_chg_percentclose': 20.0, 'Adr': 15.0,
@@ -319,8 +349,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 }
                 _max = max(_max, custom_max_bounds.get(column, _max))
 
-                # Define default ranges for the slider handles
-                # Format: (min_handle, max_handle)
                 custom_ranges = {
                     '_nr4': (0.0, 3.0),
                     '_nr4_previous': (0.0, 3.0),
@@ -336,7 +364,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 default_min = max(float(default_range[0]), _min)
                 default_max = min(float(default_range[1]), _max)
 
-                # Ensure min is not greater than max
                 if default_min > default_max:
                     default_min = _min
                     default_max = _max
@@ -369,7 +396,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                     )
                     df = df[text_mask | col_series.isna()]
 
-    # ── Apply Today Breakouts Filter & Sort (Only if checked in Post Breakout) ──
     if check_today_bo:
         if '_chg_percentclose' in df.columns:
             df = df[df['_chg_percentclose'].fillna(0) > 0]
@@ -382,6 +408,8 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             df = df.sort_values(by=sort_tightness_col, ascending=True, na_position='last')
 
     return df
+
+
 # --- 3. MAIN APPLICATION ---
 def main():
     custom_css = """
@@ -403,12 +431,10 @@ def main():
         .stDataFrame {
             font-size: 14px !important;
         }
-        .css-1d391kg, .css-1Outsk {
-            padding-top: 1rem !important;
-        }
     </style>
     """
-    st.title("⚡ GTT Trade Generator (USA)")
+    st.markdown(custom_css, unsafe_allow_html=True)
+    st.title("⚡ GTT Trade Generator (US)")
 
     file_age = get_file_age_days(SECTOR_FILE)
     if file_age is not None:
@@ -419,125 +445,81 @@ def main():
         else:
             st.sidebar.warning(f"⚠️ Sector data loaded {file_age} days ago. Update recommended!")
     else:
-        st.sidebar.error("⚠️ Symbols_USA.csv not found!")
+        st.sidebar.error("⚠️ Symbols_US.csv not found!")
 
-    # ══════════════════════════════════════════════════════════════════
-    # AUTO-REFRESH TOGGLE (always visible, independent of sector file)
-    # ══════════════════════════════════════════════════════════════════
-    # AUTO-REFRESH TOGGLE
-    # Uses a "Refresh Now" button that JS clicks when the timer expires.
-    # This triggers a proper Streamlit rerun (preserving session_state),
-    # NOT a full page reload (which loses all filters/state).
-    # ══════════════════════════════════════════════════════════════════
     st.sidebar.markdown("---")
     auto_refresh = st.sidebar.checkbox("🔄 Auto-refresh every 10 min", value=False, key="auto_refresh_toggle")
-
-    # Always-visible refresh button (also clicked by JS timer automatically)
     refresh_clicked = st.sidebar.button("🔁 Refresh Now", key="manual_refresh_btn")
 
     if auto_refresh:
-        import time
-        import streamlit.components.v1 as components
-
-        AUTO_REFRESH_INTERVAL = 600  # seconds (change to 600 for 10 min)
-
+        AUTO_REFRESH_INTERVAL = 600
         if 'last_refresh_ts' not in st.session_state:
             st.session_state.last_refresh_ts = time.time()
-
         elapsed = time.time() - st.session_state.last_refresh_ts
-
-        # ── If interval elapsed or user clicked Refresh Now ──
         if elapsed >= AUTO_REFRESH_INTERVAL or refresh_clicked:
             st.session_state.last_refresh_ts = time.time()
             st.cache_data.clear()
-
-        # ── Recalculate remaining ──
         elapsed = time.time() - st.session_state.last_refresh_ts
         remaining = max(0, int(AUTO_REFRESH_INTERVAL - elapsed))
-
-        # ── Last refreshed time ──
         last_refresh_dt = datetime.fromtimestamp(st.session_state.last_refresh_ts)
         st.sidebar.caption(f"🕐 Last refreshed: {last_refresh_dt.strftime('%H:%M:%S')}")
-
-        # ── Live countdown timer ──
-        # When it hits 0, it clicks the "Refresh Now" button in the parent page.
-        # This triggers a proper rerun preserving all session_state.
         mins, secs = divmod(remaining, 60)
         countdown_html = f"""
-        <div style="font-size: 13px; color: #888; padding: 2px 0; font-family: 'Source Sans Pro', sans-serif;">
+        <div style="font-size:13px;color:#888;padding:2px 0;font-family:'Source Sans Pro',sans-serif;">
             ⏱️ Next refresh in <span id="cd-m">{mins}</span>m <span id="cd-s">{secs:02d}</span>s
         </div>
         <script>
-            let totalSeconds = {remaining};
-            const minEl = document.getElementById('cd-m');
-            const secEl = document.getElementById('cd-s');
-            const timer = setInterval(function() {{
+            let totalSeconds={remaining};
+            const minEl=document.getElementById('cd-m'); const secEl=document.getElementById('cd-s');
+            const timer=setInterval(function(){{
                 totalSeconds--;
-                if (totalSeconds <= 0) {{
-                    clearInterval(timer);
-                    minEl.textContent = '0';
-                    secEl.textContent = '00';
-                    // Click the "Refresh Now" button in the parent Streamlit page
-                    // This triggers a proper rerun preserving session_state
-                    const buttons = window.top.document.querySelectorAll('button');
-                    for (const btn of buttons) {{
-                        if (btn.textContent.includes('Refresh Now')) {{
-                            btn.click();
-                            return;
-                        }}
+                if(totalSeconds<=0){{
+                    clearInterval(timer); minEl.textContent='0'; secEl.textContent='00';
+                    const buttons=window.top.document.querySelectorAll('button');
+                    for(const btn of buttons){{
+                        if(btn.textContent.includes('Refresh Now')){{btn.click();return;}}
                     }}
-                    // Fallback if button not found
                     window.top.location.reload();
                 }} else {{
-                    const m = Math.floor(totalSeconds / 60);
-                    const s = totalSeconds % 60;
-                    minEl.textContent = m;
-                    secEl.textContent = (s < 10 ? '0' : '') + s;
+                    const m=Math.floor(totalSeconds/60); const s=totalSeconds%60;
+                    minEl.textContent=m; secEl.textContent=(s<10?'0':'')+s;
                 }}
-            }}, 1000);
+            }},1000);
         </script>
         """
-        components.html(countdown_html, height=30)
-
+        st.sidebar.markdown(countdown_html, unsafe_allow_html=True)
     else:
         if 'last_refresh_ts' in st.session_state:
             del st.session_state['last_refresh_ts']
+
     sector_df = load_sector_mapping(SECTOR_FILE)
 
-    # scan_mode = st.radio("Select Scanner Mode", ("Anticipation", "Post Breakout"), horizontal=True)
-    # if scan_mode == "Post Breakout":
-    #     st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
-    # else:
-    #     st.markdown("Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
     scan_mode = "Post Breakout"
-    # ══════════════════════════════════════════════════════════════════
-    # UNIFIED SCORING SYSTEM CONFIGURATION (Sidebar)
-    # ══════════════════════════════════════════════════════════════════
+    st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
+    st.info("🔒 Anticipation mode disabled. Scanner is locked to **confirmed breakouts** only.")
+
     st.sidebar.header("⚙️ Scoring System Config")
     saved_scoring = load_scoring_prefs()
 
-    # ── Criteria 1: Tightness (_nr4_previous) — Max 4 pts ──
     st.sidebar.subheader("1️⃣ Tightness (_nr4_prev) — Max 4 pts")
     tight_defaults = saved_scoring.get('tightness_thresholds', [4.0, 6.0, 8.0, 10.0])
     t_raw = [
         st.sidebar.number_input("_nr4_prev < this → 4 pts", value=tight_defaults[0], step=0.5, key="sc_t1"),
         st.sidebar.number_input("_nr4_prev < this → 3 pts", value=tight_defaults[1], step=0.5, key="sc_t2"),
         st.sidebar.number_input("_nr4_prev < this → 2 pts", value=tight_defaults[2], step=0.5, key="sc_t3"),
-        st.sidebar.number_input("_nr4_prev < this → 1 pt",  value=tight_defaults[3], step=0.5, key="sc_t4"),
+        st.sidebar.number_input("_nr4_prev < this → 1 pt", value=tight_defaults[3], step=0.5, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
-    # ── Criteria 2: BO Volume (dvol/avg) — Max 3 pts ──
     st.sidebar.subheader("2️⃣ BO Volume (dvol/avg) — Max 3 pts")
     vol_defaults = saved_scoring.get('vol_thresholds', [3.0, 2.0, 1.5])
     v_raw = [
         st.sidebar.number_input("dvol/avg > this → 3 pts", value=vol_defaults[0], step=0.5, key="sc_v1"),
         st.sidebar.number_input("dvol/avg > this → 2 pts", value=vol_defaults[1], step=0.5, key="sc_v2"),
-        st.sidebar.number_input("dvol/avg > this → 1 pt",  value=vol_defaults[2], step=0.5, key="sc_v3"),
+        st.sidebar.number_input("dvol/avg > this → 1 pt", value=vol_defaults[2], step=0.5, key="sc_v3"),
     ]
     v3, v2, v1 = sorted(v_raw)
 
-    # ── Criteria 3: TightCloses Bonus — Brownie Pts ──
     st.sidebar.subheader("3️⃣ TightCloses Bonus — Brownie Pts")
     tclose_pts = st.sidebar.number_input(
         "Points if W_TightCloses ≥ 1",
@@ -545,7 +527,6 @@ def main():
         min_value=0, max_value=5, step=1, key="sc_tclose"
     )
 
-    # ── Criteria 4a: 20MADist — Max 3 pts ──
     st.sidebar.subheader("4️⃣ 20MADist — Max 3 pts")
     ma20_defaults = saved_scoring.get('ma20_tiers', [2.0, 4.0, 6.0])
     ma20_neg_cutoff = st.sidebar.number_input(
@@ -556,11 +537,10 @@ def main():
     ma20_raw = [
         st.sidebar.number_input("abs(20MADist) < this → 3 pts", value=ma20_defaults[0], step=0.5, key="sc_ma20_1"),
         st.sidebar.number_input("abs(20MADist) < this → 2 pts", value=ma20_defaults[1], step=0.5, key="sc_ma20_2"),
-        st.sidebar.number_input("abs(20MADist) < this → 1 pt",  value=ma20_defaults[2], step=0.5, key="sc_ma20_3"),
+        st.sidebar.number_input("abs(20MADist) < this → 1 pt", value=ma20_defaults[2], step=0.5, key="sc_ma20_3"),
     ]
     ma20_t1, ma20_t2, ma20_t3 = sorted(ma20_raw)
 
-    # ── Criteria 4b: 10MADist — Max 2 pts ──
     st.sidebar.subheader("5️⃣ 10MADist — Max 2 pts")
     ma10_defaults = saved_scoring.get('ma10_tiers', [4.0, 6.0])
     ma10_neg_cutoff = st.sidebar.number_input(
@@ -570,11 +550,10 @@ def main():
     )
     ma10_raw = [
         st.sidebar.number_input("abs(10MADist) < this → 2 pts", value=ma10_defaults[0], step=0.5, key="sc_ma10_1"),
-        st.sidebar.number_input("abs(10MADist) < this → 1 pt",  value=ma10_defaults[1], step=0.5, key="sc_ma10_2"),
+        st.sidebar.number_input("abs(10MADist) < this → 1 pt", value=ma10_defaults[1], step=0.5, key="sc_ma10_2"),
     ]
     ma10_t1, ma10_t2 = sorted(ma10_raw)
 
-    # ── Tier Thresholds ──
     st.sidebar.subheader("🏷️ Tier Thresholds")
     tier_a = st.sidebar.number_input(
         "Tier A (🟢) min score",
@@ -587,7 +566,6 @@ def main():
         min_value=1, max_value=14, step=1, key="sc_tier_b"
     )
 
-    # ── Save Scoring Config ──
     if st.sidebar.button("💾 Save scoring config", key="save_scoring_btn"):
         prefs_to_save = {
             'tightness_thresholds': t_raw,
@@ -613,17 +591,9 @@ def main():
         nr4_threshold = st.number_input("Max Tightness Range (NR4 %)", min_value=1.0, max_value=50.0, value=8.0,
                                         step=0.5)
 
-    # ── Determine if we should fetch data ──
-
-    # 1. User explicitly clicks the button
-    # 2. Auto-refresh is on AND interval elapsed (normal rerun with session_state intact)
-    # 3. Auto-refresh is on AND no data exists (post page-reload — session_state was cleared)
-
     manual_fetch = st.button("Generate GTT Trading Plan", type="primary")
     auto_fetch = auto_refresh and ('gtt_base_df' in st.session_state)
     should_fetch = manual_fetch or auto_fetch or refresh_clicked
-
-
 
     if should_fetch:
         fetch_label = "Auto-refreshing scans..." if auto_fetch and not manual_fetch else "Fetching and merging multi-timeframe scans..."
@@ -715,7 +685,7 @@ def main():
                     st.session_state.weekly_full_df = weekly_full
 
                     weekly_subset = weekly_df[['Symbol', 'Pctof10wkhigh', 'Weeklyclose_chg_pct',
-                                                'Tightcloses_of4', 'Insidebars_of8']].rename(columns={
+                                               'Tightcloses_of4', 'Insidebars_of8']].rename(columns={
                         'Pctof10wkhigh': 'W_PctOf10wkHigh',
                         'Weeklyclose_chg_pct': 'W_CloseChg_Pct',
                         'Tightcloses_of4': 'W_TightCloses',
@@ -731,24 +701,17 @@ def main():
                 st.error("Failed to retrieve base 1M scan data.")
                 st.session_state.gtt_base_df = None
 
-    # --- TABS UI ---
-    tab1, tab2, tab3 = st.tabs(["🎯 GTT Scanner", "🏛️ Market Themes & Leaders", "📅 Weekly Base Watch"])
+    tab1, tab2, tab3 = st.tabs(["🎯 GTT Scanner", "🏛️ Market Themes & Leaders", "🌟 Saved Breakouts"])
 
-    # --- TAB 1: SCANNER ---
     with tab1:
         if 'gtt_base_df' in st.session_state and st.session_state.gtt_base_df is not None:
             actionable_df = st.session_state.gtt_base_df.copy()
 
-            # ══════════════════════════════════════════════════════════════════
-            # UNIFIED SCORING CALCULATION
-            # Key rule: NaN (no data) → 0 pts always. Never reward missing data.
-            # ══════════════════════════════════════════════════════════════════
-
             thresholds_ok = (
-                len(set([t1, t2, t3, t4])) >= 4 and
-                len(set([v1, v2, v3])) >= 3 and
-                len(set([ma20_t1, ma20_t2, ma20_t3])) >= 3 and
-                len(set([ma10_t1, ma10_t2])) >= 2
+                    len(set([t1, t2, t3, t4])) >= 4 and
+                    len(set([v1, v2, v3])) >= 3 and
+                    len(set([ma20_t1, ma20_t2, ma20_t3])) >= 3 and
+                    len(set([ma10_t1, ma10_t2])) >= 2
             )
 
             if not thresholds_ok:
@@ -761,14 +724,8 @@ def main():
                 actionable_df['MA20_Score'] = 0
                 actionable_df['MA10_Score'] = 0
             else:
-                # ── Determine Tightness Column based on Scanner Mode ──
-                # Anticipation = Coiled setups (use _nr4). Post Breakout = BO setups (use _nr4_previous)
-                tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
-                if tightness_col not in actionable_df.columns:
-                    tightness_col = '_nr4_previous'  # Fallback
+                tightness_col = '_nr4_previous'
 
-                # ── Criteria 1: Tightness Score ──
-                # NaN → 999 so pd.cut puts it in the 0-pt bin (no data = no reward)
                 nr4_filled = actionable_df[tightness_col].fillna(999)
                 actionable_df['Tight_Score'] = pd.cut(
                     nr4_filled,
@@ -776,33 +733,23 @@ def main():
                     labels=[4, 3, 2, 1, 0]
                 ).astype(int)
 
-                # ── Criteria 2: BO Volume Score ──
-                # If Anticipation mode, there is no BO volume yet. Skip calculation and assign 0.
-                if scan_mode == "Anticipation":
-                    actionable_df['Vol_Score'] = 0
-                else:
-                    rvol_ratio = np.where(
-                        actionable_df['_avgvol_mln'] > 0,
-                        actionable_df['dvol'] / actionable_df['_avgvol_mln'],
-                        0
-                    )
-                    actionable_df['Vol_Score'] = pd.cut(
-                        rvol_ratio,
-                        bins=[-float('inf'), v3, v2, v1, float('inf')],
-                        labels=[0, 1, 2, 3]
-                    ).astype(int)
+                rvol_ratio = np.where(
+                    actionable_df['_avgvol_mln'] > 0,
+                    actionable_df['dvol'] / actionable_df['_avgvol_mln'],
+                    0
+                )
+                actionable_df['Vol_Score'] = pd.cut(
+                    rvol_ratio,
+                    bins=[-float('inf'), v3, v2, v1, float('inf')],
+                    labels=[0, 1, 2, 3]
+                ).astype(int)
 
-                # ── Criteria 3: TightCloses Bonus ──
-                # (This remains the same)
                 actionable_df['TClose_Score'] = np.where(
                     actionable_df['W_TightCloses'].fillna(0) >= 1,
                     tclose_pts,
                     0
                 )
-                # ── Criteria 4a: 20MADist Score ──
-                # Step 1: fill NaN with 999 so pd.cut works (NaN → 0 pts)
-                # Step 2: score by absolute distance
-                # Step 3: override to 0 if original was NaN or below negative cutoff
+
                 ma20_filled = actionable_df['_20madist'].fillna(999)
                 ma20_abs = ma20_filled.abs()
                 ma20_base_score = pd.cut(
@@ -813,7 +760,6 @@ def main():
                 ma20_is_invalid = actionable_df['_20madist'].isna() | (actionable_df['_20madist'] < ma20_neg_cutoff)
                 actionable_df['MA20_Score'] = np.where(ma20_is_invalid, 0, ma20_base_score)
 
-                # ── Criteria 4b: 10MADist Score ──
                 ma10_filled = actionable_df['_10madist'].fillna(999)
                 ma10_abs = ma10_filled.abs()
                 ma10_base_score = pd.cut(
@@ -824,16 +770,14 @@ def main():
                 ma10_is_invalid = actionable_df['_10madist'].isna() | (actionable_df['_10madist'] < ma10_neg_cutoff)
                 actionable_df['MA10_Score'] = np.where(ma10_is_invalid, 0, ma10_base_score)
 
-                # ── Total Score ──
                 actionable_df['Total_Score'] = (
-                    actionable_df['Tight_Score'] +
-                    actionable_df['Vol_Score'] +
-                    actionable_df['TClose_Score'] +
-                    actionable_df['MA20_Score'] +
-                    actionable_df['MA10_Score']
+                        actionable_df['Tight_Score'] +
+                        actionable_df['Vol_Score'] +
+                        actionable_df['TClose_Score'] +
+                        actionable_df['MA20_Score'] +
+                        actionable_df['MA10_Score']
                 )
 
-                # ── Tier Assignment ──
                 conditions = [
                     actionable_df['Total_Score'] >= tier_a,
                     actionable_df['Total_Score'] >= tier_b,
@@ -841,11 +785,37 @@ def main():
                 choices = ['🟢 A', '🟡 B']
                 actionable_df['Tier'] = np.select(conditions, choices, default='🔴 Ignore')
 
+            tier_order_map = {'🟢 A': 0, '🟡 B': 1, '🔴 Ignore': 2, '🔴 Error': 3}
+            if 'prev_scan_data' in st.session_state and st.session_state.prev_scan_data is not None:
+                prev = st.session_state.prev_scan_data
+                actionable_df['Change'] = ''
+                for idx, row in actionable_df.iterrows():
+                    symbol = row['Symbol']
+                    cur_tier, cur_score = row['Tier'], row['Total_Score']
+                    if symbol not in prev:
+                        actionable_df.at[idx, 'Change'] = '🆕'
+                    else:
+                        prev_tier, prev_score = prev[symbol]['tier'], prev[symbol]['score']
+                        cur_rank = tier_order_map.get(cur_tier, 9)
+                        prev_rank = tier_order_map.get(prev_tier, 9)
+                        if cur_rank < prev_rank:
+                            actionable_df.at[idx, 'Change'] = '⬆️'
+                        elif cur_rank > prev_rank:
+                            actionable_df.at[idx, 'Change'] = '⬇️'
+                        elif cur_score > prev_score:
+                            actionable_df.at[idx, 'Change'] = '📈'
+                        elif cur_score < prev_score:
+                            actionable_df.at[idx, 'Change'] = '📉'
+                st.session_state.dropped_symbols = set(prev.keys()) - set(actionable_df['Symbol'])
+            else:
+                actionable_df['Change'] = ''
+                st.session_state.dropped_symbols = set()
 
+            st.session_state.prev_scan_data = {
+                row['Symbol']: {'tier': row['Tier'], 'score': int(row['Total_Score'])}
+                for _, row in actionable_df.iterrows()
+            }
 
-            # Move Tier to front
-
-            # Move Tier to front
             cols = list(actionable_df.columns)
             cols.insert(0, cols.pop(cols.index('Tier')))
             actionable_df = actionable_df[cols]
@@ -853,12 +823,12 @@ def main():
             st.session_state.gtt_scored_df = actionable_df.copy()
 
             columns_to_show = [
-                'Tier','Total_Score',
+                'Tier', 'Change', 'Total_Score',
                 'Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score',
-                '_nr4_previous','_chg_percentclose', 'W_TightCloses', 'W_InsideBars', 'W_PctOf10wkHigh',
+                '_nr4_previous', '_chg_percentclose', 'W_TightCloses', 'W_InsideBars', 'W_PctOf10wkHigh',
                 'dvol', '_avgvol_mln',
                 '_20madist', '_10madist',
-                'Symbol', 'Sector', 'Industry',  'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
+                'Symbol', 'Sector', 'Industry', 'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
                 'Adr', 'Ti65', '_nr4',
                 '_bo_engulfing_cndl', '_days_since_bo',
                 '_bo_dollar_vol_mln', '_circuit', '_avg_vol_float_ratio',
@@ -874,17 +844,14 @@ def main():
                 columns_to_show.insert(columns_to_show.index('Sector_Total') + 1, 'Sector_Percentile')
 
             valid_cols = [c for c in columns_to_show if c in actionable_df.columns]
-            # ── Sort: Tier A first, then B, then Ignore; within each tier, sorted by tightness (_nr4_previous) ──
             tier_sort_order = {'🟢 A': 0, '🟡 B': 1, '🔴 Ignore': 2, '🔴 Error': 3}
             actionable_df['_tier_sort_key'] = actionable_df['Tier'].map(tier_sort_order).fillna(9)
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
 
-            # Determine which tightness column to sort by
-            sort_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+            sort_tightness_col = '_nr4_previous'
             if sort_tightness_col in display_df.columns:
                 display_df[sort_tightness_col] = pd.to_numeric(display_df[sort_tightness_col], errors='coerce')
-                # Sort by Tier first, then by Tightness (ascending = tightest on top).
                 display_df = display_df.sort_values(by=['_tier_sort_key', sort_tightness_col], ascending=[True, True],
                                                     na_position='last')
             else:
@@ -895,11 +862,8 @@ def main():
 
             st.success(f"Generated {len(st.session_state.gtt_display_df)} actionable GTT setups.")
 
-
-
             filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode)
 
-            # ── Persisted column visibility ──
             main_table_default_hidden = [
                 'RS_6M', 'RS_3M', 'RS_1M',
                 'Industry',
@@ -913,13 +877,11 @@ def main():
                 selected_main_cols = st.multiselect(
                     "Columns to show in the table below",
                     options=all_main_cols,
-                    default=get_persisted_columns('main_table', all_main_cols, main_table_default_hidden),
+                    default=get_persisted_columns('us_main_table', all_main_cols, main_table_default_hidden),
                     key="main_table_col_select",
                 )
                 if st.button("💾 Save as my default column set", key="save_main_cols_btn"):
-                    prefs = load_column_prefs()
-                    prefs['main_table'] = selected_main_cols
-                    save_column_prefs(prefs)
+                    save_column_prefs('us_main_table', selected_main_cols)
                     st.success("Saved — this set will load by default next time.")
             hidden_main_cols = [c for c in all_main_cols if c not in selected_main_cols]
 
@@ -933,6 +895,7 @@ def main():
             gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
             gb.configure_side_bar()
             gb.configure_grid_options(enableBrowserTooltips=True)
+            gb.configure_selection(selection_mode='multiple', use_checkbox=True)
 
             for col in filtered_df.columns:
                 gb.configure_column(col, headerTooltip=col)
@@ -957,14 +920,14 @@ def main():
                     }}
                 """)
                 if col == 'Avg_RS':
-                    gb.configure_column(col,minWidth=60, maxWidth=90,
+                    gb.configure_column(col, minWidth=60, maxWidth=90,
                                         cellStyle=dynamic_jscode)
                 else:
                     gb.configure_column(col, minWidth=50, maxWidth=80, cellStyle=dynamic_jscode)
 
             tightness_highlight_jscode = JsCode(
                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
-            active_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+            active_tightness_col = '_nr4_previous'
             if active_tightness_col in filtered_df.columns:
                 gb.configure_column(active_tightness_col, minWidth=55, maxWidth=75,
                                     cellStyle=tightness_highlight_jscode)
@@ -1023,7 +986,6 @@ def main():
                 if col in filtered_df.columns:
                     gb.configure_column(col, minWidth=70, maxWidth=110)
 
-            # ── 20MADist / 10MADist heatmap ──
             ma_dist_jscode = JsCode("""
                 function(params) {
                     const val = params.value;
@@ -1041,7 +1003,6 @@ def main():
             if '_10madist' in filtered_df.columns:
                 gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
 
-            # ── Score column styling ──
             score_col_style = JsCode("""
                 function(params) {
                     const val = params.value;
@@ -1056,7 +1017,6 @@ def main():
                 if sc_col in filtered_df.columns:
                     gb.configure_column(sc_col, minWidth=45, maxWidth=60, cellStyle=score_col_style)
 
-            # ── Weekly column styling ──
             wk_pct_jscode = JsCode("""
                 function(params) {
                     const val = params.value; if (val === null || val === undefined || isNaN(val)) return null;
@@ -1076,12 +1036,11 @@ def main():
             if 'W_InsideBars' in filtered_df.columns:
                 gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
 
-            # ── Header shortening (FIXED: comma not 0) ──
             header_shortening = {
                 'Change': 'Chg',
                 '_chg_percentclose': 'Chg %',
-                '_avgvol_mln': 'AvgVolMln',
-                '_bo_dollar_vol_mln': 'BO$VolMln',
+                '_avgvol_mln': 'AvgVolcr',
+                '_bo_dollar_vol_mln': 'BO$Volcr',
                 '_avg_vol_float_ratio': 'VolFloatR',
                 '_bo_engulfing_cndl': 'BOEngulf',
                 '_days_since_bo': 'DaysSinceBO',
@@ -1111,13 +1070,8 @@ def main():
                     return null;
                 }
             """)
-            # gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode, pinned='left')
             gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode, pinned='left')
-            # ── Change column styling ──
-
-
             gb.configure_column('Total_Score', minWidth=55, maxWidth=70)
-
 
             if 'Sector_Rank' in filtered_df.columns:
                 gb.configure_column('Sector_Rank', hide=True)
@@ -1138,7 +1092,7 @@ def main():
             }
             """)
             gb.configure_column('Symbol', cellRenderer=symbol_renderer_jscode, minWidth=150, maxWidth=180,
-                                pinned='left')
+                                pinned='left', checkboxSelection=True)
 
             if 'Sector' in filtered_df.columns:
                 gb.configure_column('Sector', minWidth=120, maxWidth=150)
@@ -1148,58 +1102,51 @@ def main():
             for col in hidden_main_cols:
                 gb.configure_column(col, hide=True)
 
-
             go = gb.build()
-            loud_message_1 = "Confirm volume on 1 hour if it matches previous swing or close"
-            loud_message_2 = "SEPA identification is Key for Swing to Work"
 
-            st.markdown(f"""
-                            <style>
-                            @keyframes pulse-warning {{
-                                0% {{ box-shadow: 0 0 0 0 rgba(255, 25, 25, 0.7); }}
-                                70% {{ box-shadow: 0 0 0 15px rgba(255, 25, 25, 0); }}
-                                100% {{ box-shadow: 0 0 0 0 rgba(255, 25, 25, 0); }}
-                            }}
-
-                            .loud-alert {{
-                                background-color: #dc143c; 
-                                color: #ffffff; 
-                                font-size: 20px; 
-                                font-weight: 800; 
-                                padding: 12px 20px; 
-                                border-radius: 8px;
-                                text-align: center;
-                                border: 3px solid #ffd700; 
-                                margin: 15px 0px;
-                                text-transform: uppercase; 
-                                letter-spacing: 0.5px;
-                                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                                animation: pulse-warning 2s infinite; 
-                            }}
-                            </style>
-
-                            <div class="loud-alert">
-                                🚨 {loud_message_1} 🚨<br>
-                                🚨 {loud_message_2} 🚨
-                            </div>
-                        """, unsafe_allow_html=True)
-
-            grid_response = AgGrid(filtered_df, gridOptions=go, height=600, width='100%',
+            safe_df = clean_df_for_json(filtered_df)
+            grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%',
                                    update_mode=GridUpdateMode.MODEL_CHANGED,
                                    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
                                    allow_unsafe_jscode=True)
 
-            # ══════════════════════════════════════════════════════════════════
-            # COPY SYMBOL LIST TO TRADINGVIEW
-            # FIX: We now use grid_response['data'] which captures the
-            # exact sorting and filtering applied by the user inside the
-            # AgGrid UI.
-            # ══════════════════════════════════════════════════════════════════
-            sorted_df = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response['data'].empty else filtered_df
+            selected_rows = grid_response['selected_rows']
+            if selected_rows is not None and len(selected_rows) > 0:
+                if isinstance(selected_rows, pd.DataFrame):
+                    selected_symbols = selected_rows['Symbol'].tolist()
+                else:
+                    selected_symbols = [row.get('Symbol') for row in selected_rows if row is not None]
+
+                st.markdown(f"**{len(selected_symbols)} symbols selected.**")
+                if st.button("➕ Add selected to Saved Breakouts"):
+                    try:
+                        response = supabase.table("saved_breakouts").select("symbol").eq("user_id", "us_user").execute()
+                        existing_symbols = [b['symbol'] for b in response.data]
+                    except:
+                        existing_symbols = []
+
+                    new_added = 0
+                    for sym in selected_symbols:
+                        if sym not in existing_symbols:
+                            try:
+                                supabase.table("saved_breakouts").insert({
+                                    "symbol": sym,
+                                    "saved_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                    "user_id": "us_user"
+                                }).execute()
+                                new_added += 1
+                            except Exception as e:
+                                st.error(f"Failed to save {sym}: {e}")
+                    if new_added > 0:
+                        st.success(f"Added {new_added} new ticker(s) to Saved Breakouts! Check the tab above.")
+                    else:
+                        st.info("All selected tickers are already in Saved Breakouts.")
+
+            sorted_df = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response[
+                'data'].empty else filtered_df
 
             if not sorted_df.empty and 'Symbol' in sorted_df.columns and 'Tier' in sorted_df.columns:
                 all_symbols_sorted = sorted_df['Symbol'].dropna().unique().tolist()
-
                 all_tv_string = ",".join([f"{s}" for s in all_symbols_sorted])
 
                 tier_a_df = sorted_df[sorted_df['Tier'] == '🟢 A']
@@ -1235,56 +1182,20 @@ def main():
                     st.markdown(f"**All filtered** — `{len(all_symbols_sorted)} symbols`")
                     if all_symbols_sorted:
                         if st.button("📋 Copy All", key="copy_all"):
-                           st.code(all_tv_string, language=None)
-                           st.caption(f"Click the 📋 icon above to copy {len(all_symbols_sorted)} symbols.")
+                            st.code(all_tv_string, language=None)
+                            st.caption(f"Click the 📋 icon above to copy {len(all_symbols_sorted)} symbols.")
                     else:
                         st.info("No symbols in view.")
 
         else:
             st.info("Click 'Generate GTT Trading Plan' to load data.")
 
-    # --- TAB 2: MARKET THEMES ---
-    # with tab2:
-    #     if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
-    #         scored_df = st.session_state.gtt_scored_df.copy()
-    #         if 'Sector' in scored_df.columns:
-    #             tier_ab = scored_df[scored_df['Tier'].isin(['🟢 A', '🟡 B'])].copy()
-    #             if not tier_ab.empty:
-    #                 sector_summary = tier_ab.groupby('Sector').agg(
-    #                     Tier_A_Count=('Tier', lambda x: (x == '🟢 A').sum()),
-    #                     Tier_B_Count=('Tier', lambda x: (x == '🟡 B').sum()),
-    #                     Total_Count=('Symbol', 'count'),
-    #                     Avg_RS=('Avg_RS', 'mean'),
-    #                     Avg_Total_Score=('Total_Score', 'mean'),
-    #                 ).round(2).sort_values('Total_Count', ascending=False)
-    #
-    #                 st.subheader("Sector Concentration (Tier A + B stocks)")
-    #                 st.dataframe(sector_summary, use_container_width=True)
-    #
-    #                 st.subheader("Top Setups by Sector")
-    #                 for sector in sector_summary.head(10).index:
-    #                     sector_stocks = tier_ab[tier_ab['Sector'] == sector].sort_values('Total_Score', ascending=False)
-    #                     display_cols = [c for c in ['Symbol', 'Tier', 'Total_Score', 'Last',
-    #                                                  '_chg_percentclose', 'Avg_RS', 'Adr',
-    #                                                  '_nr4_previous', '_20madist', '_10madist',
-    #                                                  'W_TightCloses'] if c in sector_stocks.columns]
-    #                     with st.expander(f"🏛️ {sector} ({len(sector_stocks)} stocks)"):
-    #                         st.dataframe(sector_stocks[display_cols].head(15), use_container_width=True, hide_index=True)
-    #             else:
-    #                 st.info("No Tier A or B stocks found.")
-    #         else:
-    #             st.info("No sector data available.")
-    #     else:
-    #         st.info("Generate data first.")
-    #
-    # --- TAB 2: MARKET THEMES & LEADERS (with heatmaps, same as main scanner) ---
     with tab2:
         if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
             scored_df = st.session_state.gtt_scored_df.copy()
             if 'Sector' in scored_df.columns:
                 tier_ab = scored_df[scored_df['Tier'].isin(['🟢 A', '🟡 B'])].copy()
                 if not tier_ab.empty:
-                    # ── Sector summary aggregation ──
                     sector_summary = tier_ab.groupby('Sector').agg(
                         Tier_A_Count=('Tier', lambda x: (x == '🟢 A').sum()),
                         Tier_B_Count=('Tier', lambda x: (x == '🟡 B').sum()),
@@ -1295,7 +1206,6 @@ def main():
 
                     st.subheader("Sector Concentration (Tier A + B stocks)")
 
-                    # ── Build AgGrid for sector summary with RS + Score heatmaps ──
                     ss_gb = GridOptionsBuilder.from_dataframe(sector_summary)
                     ss_gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
                     ss_gb.configure_side_bar()
@@ -1303,7 +1213,6 @@ def main():
                     for col in sector_summary.columns:
                         ss_gb.configure_column(col, headerTooltip=col)
 
-                    # Avg_RS heatmap (same red→green dynamic gradient as Tab 1)
                     if 'Avg_RS' in sector_summary.columns:
                         valid_rs = sector_summary[sector_summary['Avg_RS'] > 0]['Avg_RS']
                         rs_min = float(valid_rs.min()) if not valid_rs.empty else 0
@@ -1323,7 +1232,6 @@ def main():
                         """)
                         ss_gb.configure_column('Avg_RS', minWidth=70, maxWidth=100, cellStyle=rs_jscode)
 
-                    # Avg_Total_Score heatmap
                     if 'Avg_Total_Score' in sector_summary.columns:
                         valid_sc = sector_summary[sector_summary['Avg_Total_Score'] > 0]['Avg_Total_Score']
                         sc_min = float(valid_sc.min()) if not valid_sc.empty else 0
@@ -1350,7 +1258,6 @@ def main():
                            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
                            allow_unsafe_jscode=True)
 
-                    # ── Top setups by sector (one AgGrid per sector, same styling as main scanner) ──
                     st.subheader("Top Setups by Sector")
                     for sector in sector_summary.head(10)['Sector'].tolist():
                         sector_stocks = tier_ab[tier_ab['Sector'] == sector].sort_values(
@@ -1368,13 +1275,13 @@ def main():
 
                         with st.expander(f"🏛️ {sector} ({len(sector_stocks)} stocks)"):
                             gb = GridOptionsBuilder.from_dataframe(sector_display)
-                            gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
+                            gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70,
+                                                        flex=0)
                             gb.configure_side_bar()
                             gb.configure_grid_options(enableBrowserTooltips=True)
                             for col in sector_display.columns:
                                 gb.configure_column(col, headerTooltip=col)
 
-                            # ── RS heatmap (same dynamic gradient as Tab 1) ──
                             for col in ['Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M']:
                                 if col not in sector_display.columns:
                                     continue
@@ -1399,13 +1306,12 @@ def main():
                                 else:
                                     gb.configure_column(col, minWidth=50, maxWidth=80, cellStyle=dynamic_jscode)
 
-                            # ── _nr4_previous yellow highlight ──
                             nr4_prev_highlight_jscode = JsCode(
                                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
                             if '_nr4_previous' in sector_display.columns:
-                                gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75, cellStyle=nr4_prev_highlight_jscode)
+                                gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75,
+                                                    cellStyle=nr4_prev_highlight_jscode)
 
-                            # ── _chg_percentclose pink→purple gradient ──
                             if '_chg_percentclose' in sector_display.columns:
                                 valid_chg = sector_display[sector_display['_chg_percentclose'] > 0]['_chg_percentclose']
                                 chg_min = float(valid_chg.min()) if not valid_chg.empty else 0.0
@@ -1420,18 +1326,20 @@ def main():
                                         return {{ 'backgroundColor': 'rgb(' + r + ',' + g + ',' + b + ')', 'color': ratio > 0.5 ? 'white' : 'black', 'fontWeight': ratio >= 0.8 ? 'bold' : 'normal' }};
                                     }}
                                 """)
-                                gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110, cellStyle=chg_jscode,
+                                gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110,
+                                                    cellStyle=chg_jscode,
                                                     filter='agNumberColumnFilter',
-                                                    filterParams={'filterOptions': ['greaterThan', 'lessThan', 'equals', 'inRange'],
+                                                    filterParams={'filterOptions': ['greaterThan', 'lessThan', 'equals',
+                                                                                    'inRange'],
                                                                   'defaultOption': 'greaterThan', 'defaultValues': [0]})
 
                             for col in ['Adr', 'Ti65', '_nr4']:
                                 if col in sector_display.columns:
                                     gb.configure_column(col, minWidth=55, maxWidth=75)
 
-                            # ── dvol / _avgvol_mln rvol heatmap ──
                             if 'dvol' in sector_display.columns and '_avgvol_mln' in sector_display.columns:
-                                valid_rvol = sector_display[(sector_display['dvol'] > 0) & (sector_display['_avgvol_mln'] > 0)].copy()
+                                valid_rvol = sector_display[
+                                    (sector_display['dvol'] > 0) & (sector_display['_avgvol_mln'] > 0)].copy()
                                 if not valid_rvol.empty:
                                     valid_rvol['rvol_ratio'] = valid_rvol['dvol'] / valid_rvol['_avgvol_mln']
                                     above_avg = valid_rvol[valid_rvol['rvol_ratio'] > 1.0]['rvol_ratio']
@@ -1456,13 +1364,12 @@ def main():
                                 gb.configure_column('dvol', minWidth=60, maxWidth=85, cellStyle=rvol_jscode)
                                 gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, cellStyle=rvol_jscode)
 
-                            # ── 20MADist / 10MADist heatmap ──
                             ma_dist_jscode = JsCode("""
                                 function(params) {
                                     const val = params.value;
                                     if (val === null || val === undefined || isNaN(val)) return null;
                                     const absVal = Math.abs(val);
-                                    if (val < -6) return { 'backgroundColor': '#f8d7la', 'color': '#721c24', 'fontWeight': 'bold' };
+                                    if (val < -6) return { 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' };
                                     if (absVal < 2) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
                                     if (absVal < 4) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
                                     if (absVal < 6) return { 'backgroundColor': '#d4edda', 'color': 'black' };
@@ -1474,7 +1381,6 @@ def main():
                             if '_10madist' in sector_display.columns:
                                 gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
 
-                            # ── Score column styling (green tiers) ──
                             score_col_style = JsCode("""
                                 function(params) {
                                     const val = params.value;
@@ -1489,7 +1395,6 @@ def main():
                                 if sc_col in sector_display.columns:
                                     gb.configure_column(sc_col, minWidth=45, maxWidth=60, cellStyle=score_col_style)
 
-                            # ── Weekly column styling ──
                             wk_pct_jscode = JsCode("""
                                 function(params) {
                                     const val = params.value; if (val === null || val === undefined || isNaN(val)) return null;
@@ -1500,15 +1405,18 @@ def main():
                                 }
                             """)
                             if 'W_PctOf10wkHigh' in sector_display.columns:
-                                gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95, maxWidth=120, cellStyle=wk_pct_jscode)
+                                gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95,
+                                                    maxWidth=120, cellStyle=wk_pct_jscode)
                             if 'W_CloseChg_Pct' in sector_display.columns:
-                                gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90, maxWidth=115)
+                                gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90,
+                                                    maxWidth=115)
                             if 'W_TightCloses' in sector_display.columns:
-                                gb.configure_column('W_TightCloses', headerName='Wk TightCl/4', minWidth=85, maxWidth=105)
+                                gb.configure_column('W_TightCloses', headerName='Wk TightCl/4', minWidth=85,
+                                                    maxWidth=105)
                             if 'W_InsideBars' in sector_display.columns:
-                                gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
+                                gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85,
+                                                    maxWidth=105)
 
-                            # ── Header shortening ──
                             header_shortening = {
                                 'Change': 'Chg',
                                 '_chg_percentclose': 'Chg %',
@@ -1526,7 +1434,6 @@ def main():
                                 if raw_col in sector_display.columns:
                                     gb.configure_column(raw_col, headerName=short_name)
 
-                            # ── Tier styling ──
                             tier_jscode = JsCode("""
                                 function(params) {
                                     if (!params.value) return null;
@@ -1537,9 +1444,9 @@ def main():
                                 }
                             """)
                             if 'Tier' in sector_display.columns:
-                                gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode, pinned='left')
+                                gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode,
+                                                    pinned='left')
 
-                            # ── Change column styling ──
                             if 'Change' in sector_display.columns:
                                 change_cell_jscode = JsCode("""
                                     function(params) {
@@ -1552,12 +1459,12 @@ def main():
                                         return null;
                                     }
                                 """)
-                                gb.configure_column('Change', minWidth=50, maxWidth=60, cellStyle=change_cell_jscode, headerName='Chg')
+                                gb.configure_column('Change', minWidth=50, maxWidth=60, cellStyle=change_cell_jscode,
+                                                    headerName='Chg')
 
                             if 'Total_Score' in sector_display.columns:
                                 gb.configure_column('Total_Score', minWidth=55, maxWidth=70)
 
-                            # ── Symbol renderer with (rank/total) ──
                             symbol_renderer_jscode = JsCode("""
                             function(params) {
                                 const symbol = params.value;
@@ -1570,7 +1477,8 @@ def main():
                             }
                             """)
                             if 'Symbol' in sector_display.columns:
-                                gb.configure_column('Symbol', cellRenderer=symbol_renderer_jscode, minWidth=150, maxWidth=180, pinned='left')
+                                gb.configure_column('Symbol', cellRenderer=symbol_renderer_jscode, minWidth=150,
+                                                    maxWidth=180, pinned='left')
 
                             if 'Sector_Rank' in sector_display.columns:
                                 gb.configure_column('Sector_Rank', hide=True)
@@ -1583,7 +1491,6 @@ def main():
                             if 'Industry' in sector_display.columns:
                                 gb.configure_column('Industry', minWidth=120, maxWidth=150)
 
-                            # ── Row-level highlight for new/upgraded stocks ──
                             row_style_jscode = JsCode("""
                                 function(params) {
                                     if (!params.data) return null;
@@ -1596,7 +1503,8 @@ def main():
                             gb.configure_grid_options(getRowStyle=row_style_jscode)
 
                             go = gb.build()
-                            AgGrid(sector_display, gridOptions=go, height=400, width='100%',
+                            safe_sector_df = clean_df_for_json(sector_display)
+                            AgGrid(safe_sector_df, gridOptions=go, height=400, width='100%',
                                    update_mode=GridUpdateMode.MODEL_CHANGED,
                                    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
                                    allow_unsafe_jscode=True)
@@ -1606,27 +1514,188 @@ def main():
                 st.info("No sector data available.")
         else:
             st.info("Generate data first.")
-    # # --- TAB 3: WEEKLY BASE WATCH ---
+
     with tab3:
-        if 'weekly_full_df' in st.session_state and st.session_state.weekly_full_df is not None:
-            weekly_df = st.session_state.weekly_full_df.copy()
-            st.subheader("Weekly Base Formation Watch")
-            st.markdown("Stocks with tight weekly bases independent of daily RS filter.")
+        st.subheader("Saved Exceptional Breakouts")
+        st.caption("Track multi-day bases and retests. Stored securely in your Supabase cloud database.")
 
-            w_col1, w_col2 = st.columns(2)
-            with w_col1:
-                min_tightcloses = st.slider("Min TightCloses_of4", 0, 4, 1, key="wc_tight")
-            with w_col2:
-                min_pct_10wk = st.slider("Min PctOf10wkHigh", 0.0, 1.0, 0.85, step=0.05, key="wc_pct")
+        try:
+            response = supabase.table("saved_breakouts").select("*").eq("user_id", "us_user").execute()
+            saved_breakouts = response.data
+        except Exception as e:
+            saved_breakouts = []
+            st.error(f"Database error: {e}")
 
-            if 'Tightcloses_of4' in weekly_df.columns:
-                weekly_df = weekly_df[weekly_df['Tightcloses_of4'].fillna(0) >= min_tightcloses]
-            if 'Pctof10wkhigh' in weekly_df.columns:
-                weekly_df = weekly_df[weekly_df['Pctof10wkhigh'].fillna(0) >= min_pct_10wk]
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            new_ticker = st.text_input("Enter Ticker to Track manually (e.g., AAPL, TSLA):",
+                                       key="save_ticker_input").upper().strip()
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("💾 Save Ticker", key="save_ticker_btn") and new_ticker:
+                exists = any(b['symbol'] == new_ticker for b in saved_breakouts)
+                if not exists:
+                    try:
+                        supabase.table("saved_breakouts").insert({
+                            "symbol": new_ticker,
+                            "saved_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "user_id": "us_user"
+                        }).execute()
+                        st.success(f"Saved {new_ticker} to cloud!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
+                else:
+                    st.warning("Ticker already saved.")
 
-            st.dataframe(weekly_df, use_container_width=True, hide_index=True)
+        st.markdown("---")
+
+        if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None and saved_breakouts:
+            live_df = st.session_state.gtt_scored_df.copy()
+
+            saved_df = pd.DataFrame(saved_breakouts)
+            saved_df = saved_df.rename(columns={'symbol': 'Symbol', 'saved_date': 'Saved_On'})
+
+            merged_df = saved_df[['Symbol', 'Saved_On']].merge(live_df, on='Symbol', how='left')
+
+            merged_df['Status'] = merged_df['Total_Score'].apply(
+                lambda x: '🟢 Active in Scanner' if pd.notna(x) and x > 0 else '❌ Dropped from Scanner')
+
+            # Explicitly select columns to avoid huge scrolling table
+            columns_to_show_tab3 = [
+                'Symbol', 'Saved_On', 'Status',
+                'Tier', 'Change', 'Total_Score',
+                '_nr4_previous', '_chg_percentclose', 'Adr', 'Ti65', '_nr4',
+                'Avg_RS', 'Sector', 'Sector_Percentile',
+                '_avgvol_mln', '_20madist', '_10madist',
+                'W_TightCloses', 'W_PctOf10wkHigh', 'Last'
+            ]
+            available_cols_tab3 = [c for c in columns_to_show_tab3 if c in merged_df.columns]
+            merged_df = merged_df[available_cols_tab3]
+
+            for col in merged_df.columns:
+                if col not in ['Symbol', 'Saved_On', 'Status', 'Tier', 'Change']:
+                    merged_df[col] = merged_df[col].fillna('N/A')
+
+            if 'Tier' not in merged_df.columns:
+                merged_df['Tier'] = '⚪ Dropped'
+            else:
+                merged_df['Tier'] = merged_df['Tier'].fillna('⚪ Dropped')
+
+            if 'Change' not in merged_df.columns:
+                merged_df['Change'] = ''
+            else:
+                merged_df['Change'] = merged_df['Change'].fillna('')
+
+            st.markdown("---")
+            st.subheader("📋 Copy Saved Symbols to TradingView")
+            all_saved_symbols = merged_df['Symbol'].dropna().unique().tolist()
+            all_tv_string = ",".join([f"{s}" for s in all_saved_symbols])
+
+            copy_col1, copy_col2 = st.columns([1, 2])
+            with copy_col1:
+                if st.button("📋 Copy All Saved Symbols"):
+                    st.code(all_tv_string, language=None)
+                    st.caption(f"Click the 📋 icon above to copy {len(all_saved_symbols)} symbols.")
+
+            st.markdown("---")
+
+            st.markdown("#### Manage Watchlist")
+            cols_to_drop = st.multiselect("Select tickers to remove:", merged_df['Symbol'].tolist(), key="remove_saved")
+            if st.button("🗑️ Remove Selected", key="remove_saved_btn"):
+                try:
+                    for sym in cols_to_drop:
+                        supabase.table("saved_breakouts").delete().eq("symbol", sym).eq("user_id", "us_user").execute()
+                    st.success("Removed selected tickers from cloud.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to delete: {e}")
+
+            st.markdown("#### Live Tracked Data (Updates on Scanner Run)")
+
+            gb3 = GridOptionsBuilder.from_dataframe(merged_df)
+            gb3.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
+            gb3.configure_side_bar()
+            gb3.configure_grid_options(enableBrowserTooltips=True)
+
+            if 'Symbol' in merged_df.columns:
+                gb3.configure_column('Symbol', minWidth=90, maxWidth=130, pinned='left')
+
+            status_style = JsCode("""
+                function(params) {
+                    if (!params.value) return null;
+                    if (params.value.includes('Active')) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                    if (params.value.includes('Dropped')) return { 'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold' };
+                    return null;
+                }
+            """)
+            gb3.configure_column('Status', minWidth=120, maxWidth=150, cellStyle=status_style)
+
+            score_col_style = JsCode("""
+                function(params) {
+                    const val = params.value;
+                    if (val === null || val === undefined || isNaN(val)) return null;
+                    if (val >= 3) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                    if (val >= 2) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                    if (val >= 1) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                    return null;
+                }
+            """)
+            tier_style = JsCode("""
+                function(params) {
+                    const val = params.value;
+                    if (!val) return null;
+                    if (val.includes('A')) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                    if (val.includes('B')) return { 'backgroundColor': '#ffc107', 'color': 'black', 'fontWeight': 'bold' };
+                    return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
+                }
+            """)
+            if 'Total_Score' in merged_df.columns:
+                gb3.configure_column('Total_Score', minWidth=55, maxWidth=70, cellStyle=score_col_style)
+            if 'Tier' in merged_df.columns:
+                gb3.configure_column('Tier', minWidth=55, maxWidth=75, cellStyle=tier_style)
+            if '_nr4_previous' in merged_df.columns:
+                gb3.configure_column('_nr4_previous', minWidth=55, maxWidth=75,
+                                     cellStyle=JsCode(
+                                         "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
+            if '_chg_percentclose' in merged_df.columns:
+                gb3.configure_column('_chg_percentclose', minWidth=80, maxWidth=110)
+            if 'Adr' in merged_df.columns:
+                gb3.configure_column('Adr', minWidth=55, maxWidth=75)
+            if 'Ti65' in merged_df.columns:
+                gb3.configure_column('Ti65', minWidth=55, maxWidth=75)
+            if 'Avg_RS' in merged_df.columns:
+                gb3.configure_column('Avg_RS', minWidth=55, maxWidth=75)
+
+            # Apply Header Shortening to prevent scrolling
+            header_shortening = {
+                'Change': 'Chg',
+                '_chg_percentclose': 'Chg %',
+                '_avgvol_mln': 'AvgVolcr',
+                'Sector_Percentile': 'SectPctile',
+                '_nr4_previous': 'NR4Prev',
+                '_10madist': '10MADist',
+                '_20madist': '20MADist',
+                'W_PctOf10wkHigh': 'Wk % of 10wHi',
+                'W_TightCloses': 'Wk TightCl/4'
+            }
+            for raw_col, short_name in header_shortening.items():
+                if raw_col in merged_df.columns:
+                    gb3.configure_column(raw_col, headerName=short_name)
+
+            safe_merged_df = clean_df_for_json(merged_df)
+            AgGrid(safe_merged_df, gridOptions=gb3.build(),
+                   update_mode=GridUpdateMode.MODEL_CHANGED,
+                   fit_columns_on_grid_load=False,
+                   height=600, theme='streamlit', key='us_saved_breakouts_grid',
+                   allow_unsafe_jscode=True)
+
+        elif not saved_breakouts:
+            st.info("No saved breakouts yet. Select rows in the main scanner or add a ticker manually above.")
         else:
-            st.info("Generate data first.")
+            st.warning("Click 'Generate GTT Trading Plan' first to pull live data for your saved tickers.")
+
 
 if __name__ == "__main__":
     main()
