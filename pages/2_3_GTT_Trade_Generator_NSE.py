@@ -264,7 +264,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
         for column in to_filter_columns:
             left, right = st.columns((1, 20))
-            # Removed unicode arrow to fix 'Double_arrow_right' text bug
             left.write(" ")
 
             col_series = df[column]
@@ -408,7 +407,6 @@ def main():
     else:
         st.sidebar.error("⚠️ Symbols_NSE.csv not found!")
 
-    # ── Auto-refresh toggle ──
     st.sidebar.markdown("---")
     auto_refresh = st.sidebar.checkbox("🔄 Auto-refresh every 10 min", value=False, key="auto_refresh_toggle")
     refresh_clicked = st.sidebar.button("🔁 Refresh Now", key="manual_refresh_btn")
@@ -456,20 +454,13 @@ def main():
 
     sector_df = load_sector_mapping(SECTOR_FILE)
 
-    # ══════════════════════════════════════════════════════════════════
-    # DISABLED ANTICIPATION MODE - LOCKED TO POST BREAKOUT
-    # ══════════════════════════════════════════════════════════════════
     scan_mode = "Post Breakout"
     st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
     st.info("🔒 Anticipation mode disabled. Scanner is locked to **confirmed breakouts** only.")
 
-    # ══════════════════════════════════════════════════════════════════
-    # UNIFIED SCORING SYSTEM CONFIGURATION (Sidebar)
-    # ════════════════════════════════════════════════════════════════════
     st.sidebar.header("⚙️ Scoring System Config")
     saved_scoring = load_scoring_prefs()
 
-    # ── Criteria 1: Tightness (_nr4_previous) — Max 4 pts ──
     st.sidebar.subheader("1️⃣ Tightness (_nr4_prev) — Max 4 pts")
     tight_defaults = saved_scoring.get('tightness_thresholds', [4.0, 6.0, 8.0, 10.0])
     t_raw = [
@@ -480,7 +471,6 @@ def main():
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
-    # ── Criteria 2: BO Volume (dvol/avg) — Max 3 pts ──
     st.sidebar.subheader("2️⃣ BO Volume (dvol/avg) — Max 3 pts")
     vol_defaults = saved_scoring.get('vol_thresholds', [3.0, 2.0, 1.5])
     v_raw = [
@@ -490,7 +480,6 @@ def main():
     ]
     v3, v2, v1 = sorted(v_raw)
 
-    # ── Criteria 3: TightCloses Bonus — Brownie Pts ──
     st.sidebar.subheader("3️⃣ TightCloses Bonus — Brownie Pts")
     tclose_pts = st.sidebar.number_input(
         "Points if W_TightCloses ≥ 1",
@@ -498,7 +487,6 @@ def main():
         min_value=0, max_value=5, step=1, key="sc_tclose"
     )
 
-    # ── Criteria 4a: 20MADist — Max 3 pts ──
     st.sidebar.subheader("4️⃣ 20MADist — Max 3 pts")
     ma20_defaults = saved_scoring.get('ma20_tiers', [2.0, 4.0, 6.0])
     ma20_neg_cutoff = st.sidebar.number_input(
@@ -513,7 +501,6 @@ def main():
     ]
     ma20_t1, ma20_t2, ma20_t3 = sorted(ma20_raw)
 
-    # ── Criteria 4b: 10MADist — Max 2 pts ──
     st.sidebar.subheader("5️⃣ 10MADist — Max 2 pts")
     ma10_defaults = saved_scoring.get('ma10_tiers', [4.0, 6.0])
     ma10_neg_cutoff = st.sidebar.number_input(
@@ -527,7 +514,6 @@ def main():
     ]
     ma10_t1, ma10_t2 = sorted(ma10_raw)
 
-    # ── Tier Thresholds ──
     st.sidebar.subheader("🏷️ Tier Thresholds")
     tier_a = st.sidebar.number_input(
         "Tier A (🟢) min score",
@@ -540,7 +526,6 @@ def main():
         min_value=1, max_value=14, step=1, key="sc_tier_b"
     )
 
-    # ── Save Scoring Config ──
     if st.sidebar.button("💾 Save scoring config", key="save_scoring_btn"):
         prefs_to_save = {
             'tightness_thresholds': t_raw,
@@ -566,7 +551,6 @@ def main():
         nr4_threshold = st.number_input("Max Tightness Range (NR4 %)", min_value=1.0, max_value=50.0, value=8.0,
                                         step=0.5)
 
-    # ── Determine if we should fetch data ──
     manual_fetch = st.button("Generate GTT Trading Plan", type="primary")
     auto_fetch = auto_refresh and ('gtt_base_df' in st.session_state)
     should_fetch = manual_fetch or auto_fetch or refresh_clicked
@@ -677,10 +661,8 @@ def main():
                 st.error("Failed to retrieve base 1M scan data.")
                 st.session_state.gtt_base_df = None
 
-    # --- TABS UI ---
     tab1, tab2, tab3 = st.tabs(["🎯 GTT Scanner", "🏛️ Market Themes & Leaders", "🌟 Saved Breakouts"])
 
-    # --- TAB 1: SCANNER ---
     with tab1:
         if 'gtt_base_df' in st.session_state and st.session_state.gtt_base_df is not None:
             actionable_df = st.session_state.gtt_base_df.copy()
@@ -763,7 +745,6 @@ def main():
                 choices = ['🟢 A', '🟡 B']
                 actionable_df['Tier'] = np.select(conditions, choices, default='🔴 Ignore')
 
-            # Change Tracking
             tier_order_map = {'🟢 A': 0, '🟡 B': 1, '🔴 Ignore': 2, '🔴 Error': 3}
             if 'prev_scan_data' in st.session_state and st.session_state.prev_scan_data is not None:
                 prev = st.session_state.prev_scan_data
@@ -874,7 +855,6 @@ def main():
             gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
             gb.configure_side_bar()
             gb.configure_grid_options(enableBrowserTooltips=True)
-            # Enable Row Selection
             gb.configure_selection(selection_mode='multiple', use_checkbox=True)
 
             for col in filtered_df.columns:
@@ -1090,7 +1070,6 @@ def main():
                                    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
                                    allow_unsafe_jscode=True)
 
-            # Add to Saved Breakouts directly from Scanner
             selected_rows = grid_response['selected_rows']
             if selected_rows is not None and len(selected_rows) > 0:
                 if isinstance(selected_rows, pd.DataFrame):
@@ -1124,7 +1103,6 @@ def main():
                     else:
                         st.info("All selected tickers are already in Saved Breakouts.")
 
-            # Copy Symbol List
             sorted_df = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response[
                 'data'].empty else filtered_df
 
@@ -1173,7 +1151,6 @@ def main():
         else:
             st.info("Click 'Generate GTT Trading Plan' to load data.")
 
-    # --- TAB 2: MARKET THEMES & LEADERS ---
     with tab2:
         if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
             scored_df = st.session_state.gtt_scored_df.copy()
@@ -1499,7 +1476,6 @@ def main():
         else:
             st.info("Generate data first.")
 
-    # --- TAB 3: SAVED BREAKOUTS ---
     with tab3:
         st.subheader("Saved Exceptional Breakouts")
         st.caption("Track multi-day bases and retests. Stored securely in your Supabase cloud database.")
@@ -1547,6 +1523,18 @@ def main():
             merged_df['Status'] = merged_df['Total_Score'].apply(
                 lambda x: '🟢 Active in Scanner' if pd.notna(x) and x > 0 else '❌ Dropped from Scanner')
 
+            # Explicitly select columns to avoid huge scrolling table
+            columns_to_show_tab3 = [
+                'Symbol', 'Saved_On', 'Status',
+                'Tier', 'Change', 'Total_Score',
+                '_nr4_previous', '_chg_percentclose', 'Adr', 'Ti65', '_nr4',
+                'Avg_RS', 'Sector', 'Sector_Percentile',
+                '_avgvol_mln', '_20madist', '_10madist',
+                'W_TightCloses', 'W_PctOf10wkHigh', 'Last'
+            ]
+            available_cols_tab3 = [c for c in columns_to_show_tab3 if c in merged_df.columns]
+            merged_df = merged_df[available_cols_tab3]
+
             for col in merged_df.columns:
                 if col not in ['Symbol', 'Saved_On', 'Status', 'Tier', 'Change']:
                     merged_df[col] = merged_df[col].fillna('N/A')
@@ -1561,10 +1549,18 @@ def main():
             else:
                 merged_df['Change'] = merged_df['Change'].fillna('')
 
-            cols = list(merged_df.columns)
-            cols.insert(1, cols.pop(cols.index('Status')))
-            cols.insert(2, cols.pop(cols.index('Saved_On')))
-            merged_df = merged_df[cols]
+            st.markdown("---")
+            st.subheader("📋 Copy Saved Symbols to TradingView")
+            all_saved_symbols = merged_df['Symbol'].dropna().unique().tolist()
+            all_tv_string = ",".join([f"nse:{s}" for s in all_saved_symbols])
+
+            copy_col1, copy_col2 = st.columns([1, 2])
+            with copy_col1:
+                if st.button("📋 Copy All Saved Symbols"):
+                    st.code(all_tv_string, language=None)
+                    st.caption(f"Click the 📋 icon above to copy {len(all_saved_symbols)} symbols.")
+
+            st.markdown("---")
 
             st.markdown("#### Manage Watchlist")
             cols_to_drop = st.multiselect("Select tickers to remove:", merged_df['Symbol'].tolist(), key="remove_saved")
@@ -1633,6 +1629,22 @@ def main():
                 gb3.configure_column('Ti65', minWidth=55, maxWidth=75)
             if 'Avg_RS' in merged_df.columns:
                 gb3.configure_column('Avg_RS', minWidth=55, maxWidth=75)
+
+            # Apply Header Shortening to prevent scrolling
+            header_shortening = {
+                'Change': 'Chg',
+                '_chg_percentclose': 'Chg %',
+                '_avgvol_mln': 'AvgVolcr',
+                'Sector_Percentile': 'SectPctile',
+                '_nr4_previous': 'NR4Prev',
+                '_10madist': '10MADist',
+                '_20madist': '20MADist',
+                'W_PctOf10wkHigh': 'Wk % of 10wHi',
+                'W_TightCloses': 'Wk TightCl/4'
+            }
+            for raw_col, short_name in header_shortening.items():
+                if raw_col in merged_df.columns:
+                    gb3.configure_column(raw_col, headerName=short_name)
 
             safe_merged_df = clean_df_for_json(merged_df)
             AgGrid(safe_merged_df, gridOptions=gb3.build(),
