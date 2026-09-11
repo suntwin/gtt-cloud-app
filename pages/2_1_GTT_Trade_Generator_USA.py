@@ -33,13 +33,14 @@ except Exception as e:
     supabase = None
 
 # --- 1. CONFIGURATION & ENDPOINTS ---
+# TODO: REPLACE THESE WITH YOUR ACTUAL US MARKETINOUT URLS
 gtt_endpoints = {
-    "1M": "https://api.marketinout.com/run/screen?key=dbf1d7c7f45c4fac",
-    "3M": "https://api.marketinout.com/run/screen?key=29d147cbc8f1466b",
-    "6M": "https://api.marketinout.com/run/screen?key=c53af41692ff4949"
+    "1M": "YOUR_US_1M_URL",
+    "3M": "YOUR_US_3M_URL",
+    "6M": "YOUR_US_6M_URL"
 }
 
-weekly_endpoint = "https://api.marketinout.com/run/screen?key=64e86ed22d834681"
+weekly_endpoint = "YOUR_US_WEEKLY_URL"
 
 weekly_metric_columns = [
     'Wema10', 'Dist_wema10_pct', 'Weeklyclose_chg_pct', 'Tightcloses_of4',
@@ -149,6 +150,7 @@ def fetch_gtt_scan(url, name):
             else:
                 df.columns = gtt_columns + [f'Extra_{i}' for i in range(len(gtt_columns), len(df.columns))]
 
+            # Removed .NS strip for US stocks
             df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
 
             numeric_cols_fillna = [
@@ -264,10 +266,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
         for column in to_filter_columns:
-            left, right = st.columns((1, 20))
-            # Removed unicode arrow to fix text bug
-            left.write(" ")
-
             col_series = df[column]
             has_nans = col_series.isna().any()
 
@@ -281,7 +279,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 else:
                     default_selection = list(select_options)
 
-                user_cat_input = right.multiselect(
+                user_cat_input = st.multiselect(
                     f"Values for {column}", select_options, default=default_selection
                 )
 
@@ -297,7 +295,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             elif is_numeric_dtype(col_series):
                 clean = col_series.dropna()
                 if clean.empty:
-                    right.info(f"Column **{column}** has no numeric values")
+                    st.info(f"Column **{column}** has no numeric values")
                     continue
 
                 _min = float(clean.min())
@@ -330,12 +328,12 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                     default_min = _min
                     default_max = _max
 
-                user_num_input = right.slider(
+                user_num_input = st.slider(
                     f"Values for {column}", _min, _max, (default_min, default_max), step=step
                 )
 
                 if has_nans:
-                    keep_nans = right.checkbox(
+                    keep_nans = st.checkbox(
                         f"Keep rows where **{column}** is blank",
                         value=True,
                         key=f"keep_nan_{column}"
@@ -351,7 +349,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 df = df[mask]
 
             else:
-                user_text_input = right.text_input(f"Substring or regex in {column}")
+                user_text_input = st.text_input(f"Substring or regex in {column}")
                 if user_text_input:
                     text_mask = col_series.astype(str).str.contains(
                         user_text_input, case=False, na=False
