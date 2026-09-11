@@ -35,12 +35,12 @@ except Exception as e:
 # --- 1. CONFIGURATION & ENDPOINTS ---
 # TODO: REPLACE THESE WITH YOUR ACTUAL US MARKETINOUT URLS
 gtt_endpoints = {
-    "1M": "YOUR_US_1M_URL",
-    "3M": "YOUR_US_3M_URL",
-    "6M": "YOUR_US_6M_URL"
+    "1M": "https://api.marketinout.com/run/screen?key=bf8de0c5ffbc473a",
+    "3M": "https://api.marketinout.com/run/screen?key=0d2c7ce302f54823",
+    "6M": "https://api.marketinout.com/run/screen?key=6f77cbad54154132"
 }
 
-weekly_endpoint = "YOUR_US_WEEKLY_URL"
+weekly_endpoint = "https://api.marketinout.com/run/screen?key=931618ac0a5c4c42"
 
 weekly_metric_columns = [
     'Wema10', 'Dist_wema10_pct', 'Weeklyclose_chg_pct', 'Tightcloses_of4',
@@ -57,7 +57,7 @@ gtt_columns = [
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
-SECTOR_FILE = os.path.join(PROJECT_DIR, "TradingView", "Symbols_US.csv")
+SECTOR_FILE = os.path.join(PROJECT_DIR, "TradingView", "Symbols_USA.csv")
 SCORING_PREFS_FILE = os.path.join(BASE_DIR, "gtt_us_scoring_prefs.json")
 
 
