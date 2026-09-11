@@ -1,40 +1,3 @@
-Here is the
-adapted ** US
-Stock
-Scanner **
-with all the exact same features (Supabase cloud database, "Saved Breakouts" tab, direct addition from the main scanner, curated columns with short headers to prevent horizontal scrolling, TradingView copy button, and Anticipation mode disabled).
-
-I
-have
-changed
-the
-TradingView
-copy
-prefix
-from
-
-`nse: ` to
-just
-the
-raw
-ticker(TradingView
-resolves
-US
-tickers
-automatically) and separated
-the
-Supabase
-`user_id`
-to
-`"us_user"`
-so
-your
-US and NSE
-watchlists
-don
-'t mix.
-
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -54,6 +17,9 @@ import json
 import time
 from datetime import datetime
 
+# st.set_page_config MUST be the first Streamlit command
+st.set_page_config(page_title="GTT Trade Generator (US)", page_icon="⚡", layout="wide")
+
 # ── Supabase Integration ──
 from supabase import create_client, Client
 
@@ -66,12 +32,9 @@ except Exception as e:
     st.error(f"Database connection failed: {e}")
     supabase = None
 
-st.set_page_config(page_title="GTT Trade Generator (US)", page_icon="⚡", layout="wide")
-
 # --- 1. CONFIGURATION & ENDPOINTS ---
 gtt_endpoints = {
     "1M": "https://api.marketinout.com/run/screen?key=dbf1d7c7f45c4fac",
-    # Assuming same keys, change if US uses different ones
     "3M": "https://api.marketinout.com/run/screen?key=29d147cbc8f1466b",
     "6M": "https://api.marketinout.com/run/screen?key=c53af41692ff4949"
 }
@@ -93,7 +56,7 @@ gtt_columns = [
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
-SECTOR_FILE = os.path.join(PROJECT_DIR, "TradingView", "Symbols_US.csv")  # Changed to US file
+SECTOR_FILE = os.path.join(PROJECT_DIR, "TradingView", "Symbols_US.csv")
 SCORING_PREFS_FILE = os.path.join(BASE_DIR, "gtt_us_scoring_prefs.json")
 
 
@@ -103,7 +66,6 @@ SCORING_PREFS_FILE = os.path.join(BASE_DIR, "gtt_us_scoring_prefs.json")
 def load_column_prefs(table_key):
     if not supabase: return None
     try:
-        # Using 'us_user' to keep US watchlist separate from NSE
         response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id",
                                                                                                           "us_user").execute()
         if response.data:
@@ -187,7 +149,6 @@ def fetch_gtt_scan(url, name):
             else:
                 df.columns = gtt_columns + [f'Extra_{i}' for i in range(len(gtt_columns), len(df.columns))]
 
-            # US Stocks typically don't need .NS stripping, but standardizing just in case
             df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
 
             numeric_cols_fillna = [
@@ -304,6 +265,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
         for column in to_filter_columns:
             left, right = st.columns((1, 20))
+            # Removed unicode arrow to fix text bug
             left.write(" ")
 
             col_series = df[column]
@@ -1562,7 +1524,6 @@ def main():
             merged_df['Status'] = merged_df['Total_Score'].apply(
                 lambda x: '🟢 Active in Scanner' if pd.notna(x) and x > 0 else '❌ Dropped from Scanner')
 
-            # Explicitly select columns to avoid huge scrolling table
             columns_to_show_tab3 = [
                 'Symbol', 'Saved_On', 'Status',
                 'Tier', 'Change', 'Total_Score',
@@ -1668,7 +1629,6 @@ def main():
             if 'Avg_RS' in merged_df.columns:
                 gb3.configure_column('Avg_RS', minWidth=55, maxWidth=75)
 
-            # Apply Header Shortening to prevent scrolling
             header_shortening = {
                 'Change': 'Chg',
                 '_chg_percentclose': 'Chg %',
