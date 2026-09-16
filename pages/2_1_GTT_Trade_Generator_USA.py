@@ -246,10 +246,10 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 df = df[df['_chg_percentclose'].fillna(0) > 0]
             if 'Vol_Score' in df.columns:
                 df = df[df['Vol_Score'].fillna(0) >= 1]
-            sort_tightness_col = '_nr4_previous'
-            if sort_tightness_col in df.columns:
-                df[sort_tightness_col] = pd.to_numeric(df[sort_tightness_col], errors='coerce')
-                df = df.sort_values(by=sort_tightness_col, ascending=True, na_position='last')
+            # If checked, sort by the new relative tightness ratio
+            if '_rel_tightness' in df.columns:
+                df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
+                df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
         return df
 
     df = df.copy()
@@ -360,10 +360,9 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         if 'Vol_Score' in df.columns:
             df = df[df['Vol_Score'].fillna(0) >= 1]
 
-        sort_tightness_col = '_nr4_previous'
-        if sort_tightness_col in df.columns:
-            df[sort_tightness_col] = pd.to_numeric(df[sort_tightness_col], errors='coerce')
-            df = df.sort_values(by=sort_tightness_col, ascending=True, na_position='last')
+        if '_rel_tightness' in df.columns:
+            df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
+            df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
     return df
 
@@ -452,9 +451,6 @@ def main():
 
     sector_df = load_sector_mapping(SECTOR_FILE)
 
-    # ══════════════════════════════════════════════════════════════════
-    # RE-ENABLED ANTICIPATION MODE
-    # ══════════════════════════════════════════════════════════════════
     scan_mode = st.radio("Select Scanner Mode", ("Anticipation", "Post Breakout"), horizontal=True)
     if scan_mode == "Post Breakout":
         st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
@@ -692,12 +688,12 @@ def main():
                 # Determine Tightness Column based on Scanner Mode
                 tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
 
-                # ── Criteria 1: RELATIVE Tightness Score ──
-                # Ratio = tightness_col / Adr
+                # ── Calculate Relative Tightness Ratio ──
                 safe_adr = actionable_df['Adr'].replace(0, np.nan)
-                relative_tightness = actionable_df[tightness_col] / safe_adr
+                actionable_df['_rel_tightness'] = (actionable_df[tightness_col] / safe_adr).round(2)
 
-                rel_tight_filled = relative_tightness.fillna(999)
+                # ── Criteria 1: RELATIVE Tightness Score ──
+                rel_tight_filled = actionable_df['_rel_tightness'].fillna(999)
 
                 # Ratio Thresholds:
                 # < 0.30x ADR  -> 4 pts (Extreme VCP contraction)
@@ -713,7 +709,6 @@ def main():
                 ).astype(int)
 
                 # ── Criteria 2: BO Volume Score ──
-                # If Anticipation mode, there is no BO volume yet. Skip calculation and assign 0.
                 if scan_mode == "Anticipation":
                     actionable_df['Vol_Score'] = 0
                 else:
@@ -811,10 +806,12 @@ def main():
 
             st.session_state.gtt_scored_df = actionable_df.copy()
 
+            # Added '_rel_tightness' right after '_nr4_previous'
             columns_to_show = [
                 'Tier', 'Change', 'Total_Score',
                 'Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score',
-                '_nr4_previous', '_chg_percentclose', 'W_TightCloses', 'W_InsideBars', 'W_PctOf10wkHigh',
+                '_nr4_previous', '_rel_tightness', '_chg_percentclose', 'W_TightCloses', 'W_InsideBars',
+                'W_PctOf10wkHigh',
                 'dvol', '_avgvol_mln',
                 '_20madist', '_10madist',
                 'Symbol', 'Sector', 'Industry', 'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
@@ -838,7 +835,8 @@ def main():
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
 
-            sort_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+            # Now we sort by the new Relative Tightness Ratio (ascending = tightest on top)
+            sort_tightness_col = '_rel_tightness'
             if sort_tightness_col in display_df.columns:
                 display_df[sort_tightness_col] = pd.to_numeric(display_df[sort_tightness_col], errors='coerce')
                 display_df = display_df.sort_values(by=['_tier_sort_key', sort_tightness_col], ascending=[True, True],
@@ -914,11 +912,11 @@ def main():
                 else:
                     gb.configure_column(col, minWidth=50, maxWidth=80, cellStyle=dynamic_jscode)
 
+            # Apply yellow highlight to the new relative tightness column
             tightness_highlight_jscode = JsCode(
                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
-            active_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
-            if active_tightness_col in filtered_df.columns:
-                gb.configure_column(active_tightness_col, minWidth=55, maxWidth=75,
+            if '_rel_tightness' in filtered_df.columns:
+                gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight',
                                     cellStyle=tightness_highlight_jscode)
 
             if '_chg_percentclose' in filtered_df.columns:
@@ -1255,7 +1253,7 @@ def main():
                             'Symbol', 'Tier', 'Change', 'Total_Score',
                             'Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score',
                             'Last', '_chg_percentclose', 'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
-                            'Adr', 'Ti65', '_nr4', '_nr4_previous',
+                            'Adr', 'Ti65', '_nr4', '_nr4_previous', '_rel_tightness',
                             'dvol', '_avgvol_mln', '_20madist', '_10madist',
                             'W_TightCloses', 'W_InsideBars', 'W_PctOf10wkHigh', 'W_CloseChg_Pct',
                             'Sector', 'Industry', 'Sector_Rank', 'Sector_Total', 'Sector_Percentile'
@@ -1299,6 +1297,9 @@ def main():
                                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
                             if '_nr4_previous' in sector_display.columns:
                                 gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75,
+                                                    cellStyle=nr4_prev_highlight_jscode)
+                            if '_rel_tightness' in sector_display.columns:
+                                gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight',
                                                     cellStyle=nr4_prev_highlight_jscode)
 
                             if '_chg_percentclose' in sector_display.columns:
@@ -1554,7 +1555,7 @@ def main():
             columns_to_show_tab3 = [
                 'Symbol', 'Saved_On', 'Status',
                 'Tier', 'Change', 'Total_Score',
-                '_nr4_previous', '_chg_percentclose', 'Adr', 'Ti65', '_nr4',
+                '_nr4_previous', '_rel_tightness', '_chg_percentclose', 'Adr', 'Ti65', '_nr4',
                 'Avg_RS', 'Sector', 'Sector_Percentile',
                 '_avgvol_mln', '_20madist', '_10madist',
                 'W_TightCloses', 'W_PctOf10wkHigh', 'Last'
@@ -1645,6 +1646,10 @@ def main():
                 gb3.configure_column('Tier', minWidth=55, maxWidth=75, cellStyle=tier_style)
             if '_nr4_previous' in merged_df.columns:
                 gb3.configure_column('_nr4_previous', minWidth=55, maxWidth=75,
+                                     cellStyle=JsCode(
+                                         "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
+            if '_rel_tightness' in merged_df.columns:
+                gb3.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight',
                                      cellStyle=JsCode(
                                          "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
             if '_chg_percentclose' in merged_df.columns:
