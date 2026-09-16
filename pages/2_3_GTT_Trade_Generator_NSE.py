@@ -33,7 +33,6 @@ except Exception as e:
     supabase = None
 
 # --- 1. CONFIGURATION & ENDPOINTS ---
-# --- 1. CONFIGURATION & ENDPOINTS ---
 gtt_endpoints = {
     "1M": "https://api.marketinout.com/run/screen?key=dbf1d7c7f45c4fac",
     "3M": "https://api.marketinout.com/run/screen?key=29d147cbc8f1466b",
@@ -67,8 +66,7 @@ SCORING_PREFS_FILE = os.path.join(BASE_DIR, "gtt_us_scoring_prefs.json")
 def load_column_prefs(table_key):
     if not supabase: return None
     try:
-        response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id",
-                                                                                                          "us_user").execute()
+        response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id", "us_user").execute()
         if response.data:
             return response.data[0]['visible_columns']
         return None
@@ -79,14 +77,11 @@ def load_column_prefs(table_key):
 def save_column_prefs(table_key, cols):
     if not supabase: return
     try:
-        existing = supabase.table("column_prefs").select("id").eq("table_key", table_key).eq("user_id",
-                                                                                             "us_user").execute()
+        existing = supabase.table("column_prefs").select("id").eq("table_key", table_key).eq("user_id", "us_user").execute()
         if existing.data:
-            supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id",
-                                                                                                           "us_user").execute()
+            supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id", "us_user").execute()
         else:
-            supabase.table("column_prefs").insert(
-                {"user_id": "us_user", "table_key": table_key, "visible_columns": cols}).execute()
+            supabase.table("column_prefs").insert({"user_id": "us_user", "table_key": table_key, "visible_columns": cols}).execute()
     except Exception as e:
         st.warning(f"Could not save column preferences to cloud: {e}")
 
@@ -232,157 +227,26 @@ def clean_df_for_json(df):
             )
     return df
 
-    def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
-        modify = st.checkbox("Add Advanced Filters")
 
-        check_today_bo = False
-        if scan_mode == "Post Breakout":
-            check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)",
-                                         key="check_today_bo")
+def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
+    modify = st.checkbox("Add Advanced Filters")
 
-        check_tight_flags = False
-        if scan_mode == "Anticipation":
-            check_tight_flags = st.checkbox("Check high Tight flags (ADR >= 6.0, AvgVol >= 10, Rel Tight <= 0.6)",
-                                            key="check_tight_flags")
+    check_today_bo = False
+    if scan_mode == "Post Breakout":
+        check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)",
+                                     key="check_today_bo")
 
-        if not modify:
-            if check_today_bo:
-                if '_chg_percentclose' in df.columns:
-                    df = df[df['_chg_percentclose'].fillna(0) > 0]
-                if 'Vol_Score' in df.columns:
-                    df = df[df['Vol_Score'].fillna(0) >= 1]
-                if '_rel_tightness' in df.columns:
-                    df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
-                    df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+    check_tight_flags = False
+    if scan_mode == "Anticipation":
+        check_tight_flags = st.checkbox("Check high Tight flags (ADR >= 6.0, AvgVol >= 10, Rel Tight <= 0.6)",
+                                        key="check_tight_flags")
 
-            if check_tight_flags:
-                if 'Adr' in df.columns:
-                    df = df[df['Adr'].fillna(0) >= 6.0]
-                if '_avgvol_mln' in df.columns:
-                    df = df[df['_avgvol_mln'].fillna(0) >= 10.0]
-                if '_rel_tightness' in df.columns:
-                    df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
-                    df = df[df['_rel_tightness'].fillna(999) <= 0.6]
-                    df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
-
-            return df
-
-        df = df.copy()
-        with st.container():
-            tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
-
-            if scan_mode == "Post Breakout":
-                default_filt = ['_chg_percentclose', 'Adr', 'Sector_Percentile', '_avgvol_mln']
-            else:
-                default_filt = [tightness_col, 'Sector_Percentile', 'Adr', 'Tier', '_avgvol_mln']
-
-            to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
-
-            for column in to_filter_columns:
-                col_series = df[column]
-                has_nans = col_series.isna().any()
-
-                if _is_categorical(col_series) or col_series.dropna().nunique() < 10:
-                    unique_non_nan = list(col_series.dropna().unique())
-                    NAN_LABEL = "(blank / NaN)"
-                    select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
-
-                    if column == 'Tier':
-                        # FIX: Only set defaults that actually exist in select_options
-                        default_selection = [t for t in ['A', 'B'] if t in select_options]
-                        if not default_selection:
-                            default_selection = list(select_options)
-                    else:
-                        default_selection = list(select_options)
-
-                    user_cat_input = st.multiselect(
-                        f"Values for {column}", select_options, default=default_selection
-                    )
-
-                    nan_selected = NAN_LABEL in user_cat_input
-                    real_vals = [v for v in user_cat_input if v != NAN_LABEL]
-
-                    if nan_selected:
-                        mask = col_series.isna() | col_series.isin(real_vals)
-                    else:
-                        mask = ~col_series.isna() & col_series.isin(real_vals)
-                    df = df[mask]
-
-                elif is_numeric_dtype(col_series):
-                    clean = col_series.dropna()
-                    if clean.empty:
-                        st.info(f"Column **{column}** has no numeric values")
-                        continue
-
-                    _min = float(clean.min())
-                    _max = float(clean.max())
-
-                    # FIX: Ensure _max is strictly greater than _min to prevent slider errors
-                    if _max <= _min:
-                        _max = _min + 0.1
-
-                    step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
-
-                    custom_max_bounds = {
-                        '_nr4': 5.0, '_nr4_previous': 5.0,
-                        '_chg_percentclose': 20.0, 'Adr': 15.0,
-                        'Sector_Percentile': 100.0, 'Avg_RS': 100.0
-                    }
-                    _max = max(_max, custom_max_bounds.get(column, _max))
-
-                    custom_ranges = {
-                        '_nr4': (0.0, 3.0),
-                        '_nr4_previous': (0.0, 3.0),
-                        'Adr': (2.0, _max),
-                        'Sector_Percentile': (60.0, 100.0),
-                        '_chg_percentclose': (2.0, _max),
-                        'Ti65': (1.05, _max),
-                        'Avg_RS': (92.0, _max),
-                        '_avgvol_mln': (10.0, _max)
-                    }
-
-                    default_range = custom_ranges.get(column, (_min, _max))
-                    default_min = max(float(default_range[0]), _min)
-                    default_max = min(float(default_range[1]), _max)
-
-                    if default_min > default_max:
-                        default_min = _min
-                        default_max = _max
-
-                    user_num_input = st.slider(
-                        f"Values for {column}", _min, _max, (default_min, default_max), step=step
-                    )
-
-                    if has_nans:
-                        keep_nans = st.checkbox(
-                            f"Keep rows where **{column}** is blank",
-                            value=True,
-                            key=f"keep_nan_{column}"
-                        )
-                    else:
-                        keep_nans = False
-
-                    in_range = col_series.between(*user_num_input)
-                    if keep_nans:
-                        mask = in_range | col_series.isna()
-                    else:
-                        mask = in_range
-                    df = df[mask]
-
-                else:
-                    user_text_input = st.text_input(f"Substring or regex in {column}")
-                    if user_text_input:
-                        text_mask = col_series.astype(str).str.contains(
-                            user_text_input, case=False, na=False
-                        )
-                        df = df[text_mask | col_series.isna()]
-
+    if not modify:
         if check_today_bo:
             if '_chg_percentclose' in df.columns:
                 df = df[df['_chg_percentclose'].fillna(0) > 0]
             if 'Vol_Score' in df.columns:
                 df = df[df['Vol_Score'].fillna(0) >= 1]
-
             if '_rel_tightness' in df.columns:
                 df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
                 df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
@@ -420,7 +284,10 @@ def clean_df_for_json(df):
                 select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
 
                 if column == 'Tier':
-                    default_selection = ['A', 'B']
+                    # FIX: Only set defaults that actually exist in select_options
+                    default_selection = [t for t in ['A', 'B'] if t in select_options]
+                    if not default_selection:
+                        default_selection = list(select_options)
                 else:
                     default_selection = list(select_options)
 
@@ -445,6 +312,11 @@ def clean_df_for_json(df):
 
                 _min = float(clean.min())
                 _max = float(clean.max())
+
+                # FIX: Ensure _max is strictly greater than _min to prevent slider errors
+                if _max <= _min:
+                    _max = _min + 0.1
+
                 step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
 
                 custom_max_bounds = {
@@ -522,6 +394,7 @@ def clean_df_for_json(df):
             df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
     return df
+
 
 # --- 3. MAIN APPLICATION ---
 def main():
@@ -611,8 +484,7 @@ def main():
     if scan_mode == "Post Breakout":
         st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
     else:
-        st.markdown(
-            "Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
+        st.markdown("Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
 
     st.sidebar.header("Scoring System Config")
     saved_scoring = load_scoring_prefs()
@@ -1306,8 +1178,8 @@ def main():
                     st.markdown(f"**All filtered** — `{len(all_symbols_sorted)} symbols`")
                     if all_symbols_sorted:
                         if st.button("Copy All", key="copy_all"):
-                            st.code(all_tv_string, language=None)
-                            st.caption(f"Click the icon above to copy {len(all_symbols_sorted)} symbols.")
+                           st.code(all_tv_string, language=None)
+                           st.caption(f"Click the icon above to copy {len(all_symbols_sorted)} symbols.")
                     else:
                         st.info("No symbols in view.")
 
