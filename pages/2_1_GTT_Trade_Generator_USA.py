@@ -246,7 +246,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 df = df[df['_chg_percentclose'].fillna(0) > 0]
             if 'Vol_Score' in df.columns:
                 df = df[df['Vol_Score'].fillna(0) >= 1]
-            # If checked, sort by the new relative tightness ratio
             if '_rel_tightness' in df.columns:
                 df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
                 df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
@@ -264,6 +263,10 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
         for column in to_filter_columns:
+            left, right = st.columns((1, 20))
+            # FIX: Replaced broken unicode arrow with a standard emoji that renders correctly
+            left.markdown("➡")
+
             col_series = df[column]
             has_nans = col_series.isna().any()
 
@@ -277,7 +280,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 else:
                     default_selection = list(select_options)
 
-                user_cat_input = st.multiselect(
+                user_cat_input = right.multiselect(
                     f"Values for {column}", select_options, default=default_selection
                 )
 
@@ -293,7 +296,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             elif is_numeric_dtype(col_series):
                 clean = col_series.dropna()
                 if clean.empty:
-                    st.info(f"Column **{column}** has no numeric values")
+                    right.info(f"Column **{column}** has no numeric values")
                     continue
 
                 _min = float(clean.min())
@@ -326,12 +329,12 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                     default_min = _min
                     default_max = _max
 
-                user_num_input = st.slider(
+                user_num_input = right.slider(
                     f"Values for {column}", _min, _max, (default_min, default_max), step=step
                 )
 
                 if has_nans:
-                    keep_nans = st.checkbox(
+                    keep_nans = right.checkbox(
                         f"Keep rows where **{column}** is blank",
                         value=True,
                         key=f"keep_nan_{column}"
@@ -347,7 +350,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 df = df[mask]
 
             else:
-                user_text_input = st.text_input(f"Substring or regex in {column}")
+                user_text_input = right.text_input(f"Substring or regex in {column}")
                 if user_text_input:
                     text_mask = col_series.astype(str).str.contains(
                         user_text_input, case=False, na=False
@@ -685,22 +688,12 @@ def main():
                 actionable_df['MA20_Score'] = 0
                 actionable_df['MA10_Score'] = 0
             else:
-                # Determine Tightness Column based on Scanner Mode
                 tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
 
-                # ── Calculate Relative Tightness Ratio ──
                 safe_adr = actionable_df['Adr'].replace(0, np.nan)
                 actionable_df['_rel_tightness'] = (actionable_df[tightness_col] / safe_adr).round(2)
 
-                # ── Criteria 1: RELATIVE Tightness Score ──
                 rel_tight_filled = actionable_df['_rel_tightness'].fillna(999)
-
-                # Ratio Thresholds:
-                # < 0.30x ADR  -> 4 pts (Extreme VCP contraction)
-                # < 0.45x ADR  -> 3 pts (Very Good contraction)
-                # < 0.60x ADR  -> 2 pts (Moderate contraction)
-                # < 0.80x ADR  -> 1 pt  (Slight contraction)
-                # > 0.80x ADR  -> 0 pts (Expanding volatility, no base)
 
                 actionable_df['Tight_Score'] = pd.cut(
                     rel_tight_filled,
@@ -708,7 +701,6 @@ def main():
                     labels=[4, 3, 2, 1, 0]
                 ).astype(int)
 
-                # ── Criteria 2: BO Volume Score ──
                 if scan_mode == "Anticipation":
                     actionable_df['Vol_Score'] = 0
                 else:
@@ -723,14 +715,12 @@ def main():
                         labels=[0, 1, 2, 3]
                     ).astype(int)
 
-                # ── Criteria 3: TightCloses Bonus ──
                 actionable_df['TClose_Score'] = np.where(
                     actionable_df['W_TightCloses'].fillna(0) >= 1,
                     tclose_pts,
                     0
                 )
 
-                # ── Criteria 4a: 20MADist Score ──
                 ma20_filled = actionable_df['_20madist'].fillna(999)
                 ma20_abs = ma20_filled.abs()
                 ma20_base_score = pd.cut(
@@ -741,7 +731,6 @@ def main():
                 ma20_is_invalid = actionable_df['_20madist'].isna() | (actionable_df['_20madist'] < ma20_neg_cutoff)
                 actionable_df['MA20_Score'] = np.where(ma20_is_invalid, 0, ma20_base_score)
 
-                # ── Criteria 4b: 10MADist Score ──
                 ma10_filled = actionable_df['_10madist'].fillna(999)
                 ma10_abs = ma10_filled.abs()
                 ma10_base_score = pd.cut(
@@ -752,7 +741,6 @@ def main():
                 ma10_is_invalid = actionable_df['_10madist'].isna() | (actionable_df['_10madist'] < ma10_neg_cutoff)
                 actionable_df['MA10_Score'] = np.where(ma10_is_invalid, 0, ma10_base_score)
 
-                # ── Total Score ──
                 actionable_df['Total_Score'] = (
                         actionable_df['Tight_Score'] +
                         actionable_df['Vol_Score'] +
@@ -761,7 +749,6 @@ def main():
                         actionable_df['MA10_Score']
                 )
 
-                # ── Tier Assignment ──
                 conditions = [
                     actionable_df['Total_Score'] >= tier_a,
                     actionable_df['Total_Score'] >= tier_b,
@@ -806,7 +793,6 @@ def main():
 
             st.session_state.gtt_scored_df = actionable_df.copy()
 
-            # Added '_rel_tightness' right after '_nr4_previous'
             columns_to_show = [
                 'Tier', 'Change', 'Total_Score',
                 'Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score',
@@ -835,7 +821,6 @@ def main():
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
 
-            # Now we sort by the new Relative Tightness Ratio (ascending = tightest on top)
             sort_tightness_col = '_rel_tightness'
             if sort_tightness_col in display_df.columns:
                 display_df[sort_tightness_col] = pd.to_numeric(display_df[sort_tightness_col], errors='coerce')
@@ -912,7 +897,6 @@ def main():
                 else:
                     gb.configure_column(col, minWidth=50, maxWidth=80, cellStyle=dynamic_jscode)
 
-            # Apply yellow highlight to the new relative tightness column
             tightness_highlight_jscode = JsCode(
                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
             if '_rel_tightness' in filtered_df.columns:
