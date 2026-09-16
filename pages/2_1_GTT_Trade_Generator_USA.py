@@ -240,6 +240,11 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)",
                                      key="check_today_bo")
 
+    check_tight_flags = False
+    if scan_mode == "Anticipation":
+        check_tight_flags = st.checkbox("Check high Tight flags (ADR >= 6.0, AvgVol >= 10, Rel Tight <= 0.6)",
+                                        key="check_tight_flags")
+
     if not modify:
         if check_today_bo:
             if '_chg_percentclose' in df.columns:
@@ -249,6 +254,18 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             if '_rel_tightness' in df.columns:
                 df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
                 df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+
+        if check_tight_flags:
+            if 'Adr' in df.columns:
+                df = df[df['Adr'].fillna(0) >= 6.0]
+            if '_avgvol_mln' in df.columns:
+                df = df[df['_avgvol_mln'].fillna(0) >= 10.0]
+            if '_rel_tightness' in df.columns:
+                df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
+                # Filter for ratio <= 0.6 (using 999 for NaNs so they are excluded)
+                df = df[df['_rel_tightness'].fillna(999) <= 0.6]
+                df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+
         return df
 
     df = df.copy()
@@ -263,7 +280,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
         for column in to_filter_columns:
-            # FIX: Completely removed the two-column layout and all unicode arrows/emojis.
             col_series = df[column]
             has_nans = col_series.isna().any()
 
@@ -364,8 +380,17 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
             df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
-    return df
+    if check_tight_flags:
+        if 'Adr' in df.columns:
+            df = df[df['Adr'].fillna(0) >= 6.0]
+        if '_avgvol_mln' in df.columns:
+            df = df[df['_avgvol_mln'].fillna(0) >= 10.0]
+        if '_rel_tightness' in df.columns:
+            df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
+            df = df[df['_rel_tightness'].fillna(999) <= 0.6]
+            df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
+    return df
 
 # --- 3. MAIN APPLICATION ---
 def main():
