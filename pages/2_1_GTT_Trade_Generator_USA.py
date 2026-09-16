@@ -263,10 +263,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
 
         for column in to_filter_columns:
-            left, right = st.columns((1, 20))
-            # FIX: Replaced broken unicode arrow with a standard emoji that renders correctly
-            left.markdown("➡")
-
+            # FIX: Removed the left/right columns and the unicode arrow completely.
             col_series = df[column]
             has_nans = col_series.isna().any()
 
@@ -280,7 +277,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 else:
                     default_selection = list(select_options)
 
-                user_cat_input = right.multiselect(
+                user_cat_input = st.multiselect(
                     f"Values for {column}", select_options, default=default_selection
                 )
 
@@ -296,7 +293,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
             elif is_numeric_dtype(col_series):
                 clean = col_series.dropna()
                 if clean.empty:
-                    right.info(f"Column **{column}** has no numeric values")
+                    st.info(f"Column **{column}** has no numeric values")
                     continue
 
                 _min = float(clean.min())
@@ -329,12 +326,12 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                     default_min = _min
                     default_max = _max
 
-                user_num_input = right.slider(
+                user_num_input = st.slider(
                     f"Values for {column}", _min, _max, (default_min, default_max), step=step
                 )
 
                 if has_nans:
-                    keep_nans = right.checkbox(
+                    keep_nans = st.checkbox(
                         f"Keep rows where **{column}** is blank",
                         value=True,
                         key=f"keep_nan_{column}"
@@ -350,7 +347,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 df = df[mask]
 
             else:
-                user_text_input = right.text_input(f"Substring or regex in {column}")
+                user_text_input = st.text_input(f"Substring or regex in {column}")
                 if user_text_input:
                     text_mask = col_series.astype(str).str.contains(
                         user_text_input, case=False, na=False
