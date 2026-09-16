@@ -232,7 +232,7 @@ def clean_df_for_json(df):
             )
     return df
 
-def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
+    def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
         modify = st.checkbox("Add Advanced Filters")
 
         check_today_bo = False
