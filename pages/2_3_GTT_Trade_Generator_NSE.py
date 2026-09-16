@@ -253,7 +253,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
         if check_tight_flags:
             if 'Adr' in df.columns:
-                df = df[df['Adr'].fillna(0) >= 6.0]
+                df = df[df['Adr'].fillna(0) >= 4.0]
             if '_avgvol_mln' in df.columns:
                 df = df[df['_avgvol_mln'].fillna(0) >= 10.0]
             if '_rel_tightness' in df.columns:
