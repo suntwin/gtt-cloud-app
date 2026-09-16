@@ -33,7 +33,6 @@ except Exception as e:
     supabase = None
 
 # --- 1. CONFIGURATION & ENDPOINTS ---
-# TODO: REPLACE THESE WITH YOUR ACTUAL US MARKETINOUT URLS
 gtt_endpoints = {
     "1M": "https://api.marketinout.com/run/screen?key=bf8de0c5ffbc473a",
     "3M": "https://api.marketinout.com/run/screen?key=0d2c7ce302f54823",
@@ -150,7 +149,6 @@ def fetch_gtt_scan(url, name):
             else:
                 df.columns = gtt_columns + [f'Extra_{i}' for i in range(len(gtt_columns), len(df.columns))]
 
-            # Removed .NS strip for US stocks
             df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
 
             numeric_cols_fillna = [
@@ -454,20 +452,27 @@ def main():
 
     sector_df = load_sector_mapping(SECTOR_FILE)
 
-    scan_mode = "Post Breakout"
-    st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
-    st.info("🔒 Anticipation mode disabled. Scanner is locked to **confirmed breakouts** only.")
+    # ══════════════════════════════════════════════════════════════════
+    # RE-ENABLED ANTICIPATION MODE
+    # ══════════════════════════════════════════════════════════════════
+    scan_mode = st.radio("Select Scanner Mode", ("Anticipation", "Post Breakout"), horizontal=True)
+    if scan_mode == "Post Breakout":
+        st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
+    else:
+        st.markdown(
+            "Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
 
     st.sidebar.header("⚙️ Scoring System Config")
     saved_scoring = load_scoring_prefs()
 
-    st.sidebar.subheader("1️⃣ Tightness (_nr4_prev) — Max 4 pts")
+    st.sidebar.subheader("1️⃣ Tightness (Relative to ADR)")
+    st.sidebar.caption("Scores based on Ratio = Tightness / ADR. (e.g., NR4 < 0.30x ADR -> 4 pts)")
     tight_defaults = saved_scoring.get('tightness_thresholds', [4.0, 6.0, 8.0, 10.0])
     t_raw = [
-        st.sidebar.number_input("_nr4_prev < this → 4 pts", value=tight_defaults[0], step=0.5, key="sc_t1"),
-        st.sidebar.number_input("_nr4_prev < this → 3 pts", value=tight_defaults[1], step=0.5, key="sc_t2"),
-        st.sidebar.number_input("_nr4_prev < this → 2 pts", value=tight_defaults[2], step=0.5, key="sc_t3"),
-        st.sidebar.number_input("_nr4_prev < this → 1 pt", value=tight_defaults[3], step=0.5, key="sc_t4"),
+        st.sidebar.number_input("Absolute Threshold 1 (Ignored)", value=tight_defaults[0], step=0.5, key="sc_t1"),
+        st.sidebar.number_input("Absolute Threshold 2 (Ignored)", value=tight_defaults[1], step=0.5, key="sc_t2"),
+        st.sidebar.number_input("Absolute Threshold 3 (Ignored)", value=tight_defaults[2], step=0.5, key="sc_t3"),
+        st.sidebar.number_input("Absolute Threshold 4 (Ignored)", value=tight_defaults[3], step=0.5, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
@@ -684,32 +689,53 @@ def main():
                 actionable_df['MA20_Score'] = 0
                 actionable_df['MA10_Score'] = 0
             else:
-                tightness_col = '_nr4_previous'
+                # Determine Tightness Column based on Scanner Mode
+                tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
 
-                nr4_filled = actionable_df[tightness_col].fillna(999)
+                # ── Criteria 1: RELATIVE Tightness Score ──
+                # Ratio = tightness_col / Adr
+                safe_adr = actionable_df['Adr'].replace(0, np.nan)
+                relative_tightness = actionable_df[tightness_col] / safe_adr
+
+                rel_tight_filled = relative_tightness.fillna(999)
+
+                # Ratio Thresholds:
+                # < 0.30x ADR  -> 4 pts (Extreme VCP contraction)
+                # < 0.45x ADR  -> 3 pts (Very Good contraction)
+                # < 0.60x ADR  -> 2 pts (Moderate contraction)
+                # < 0.80x ADR  -> 1 pt  (Slight contraction)
+                # > 0.80x ADR  -> 0 pts (Expanding volatility, no base)
+
                 actionable_df['Tight_Score'] = pd.cut(
-                    nr4_filled,
-                    bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
+                    rel_tight_filled,
+                    bins=[-float('inf'), 0.30, 0.45, 0.60, 0.80, float('inf')],
                     labels=[4, 3, 2, 1, 0]
                 ).astype(int)
 
-                rvol_ratio = np.where(
-                    actionable_df['_avgvol_mln'] > 0,
-                    actionable_df['dvol'] / actionable_df['_avgvol_mln'],
-                    0
-                )
-                actionable_df['Vol_Score'] = pd.cut(
-                    rvol_ratio,
-                    bins=[-float('inf'), v3, v2, v1, float('inf')],
-                    labels=[0, 1, 2, 3]
-                ).astype(int)
+                # ── Criteria 2: BO Volume Score ──
+                # If Anticipation mode, there is no BO volume yet. Skip calculation and assign 0.
+                if scan_mode == "Anticipation":
+                    actionable_df['Vol_Score'] = 0
+                else:
+                    rvol_ratio = np.where(
+                        actionable_df['_avgvol_mln'] > 0,
+                        actionable_df['dvol'] / actionable_df['_avgvol_mln'],
+                        0
+                    )
+                    actionable_df['Vol_Score'] = pd.cut(
+                        rvol_ratio,
+                        bins=[-float('inf'), v3, v2, v1, float('inf')],
+                        labels=[0, 1, 2, 3]
+                    ).astype(int)
 
+                # ── Criteria 3: TightCloses Bonus ──
                 actionable_df['TClose_Score'] = np.where(
                     actionable_df['W_TightCloses'].fillna(0) >= 1,
                     tclose_pts,
                     0
                 )
 
+                # ── Criteria 4a: 20MADist Score ──
                 ma20_filled = actionable_df['_20madist'].fillna(999)
                 ma20_abs = ma20_filled.abs()
                 ma20_base_score = pd.cut(
@@ -720,6 +746,7 @@ def main():
                 ma20_is_invalid = actionable_df['_20madist'].isna() | (actionable_df['_20madist'] < ma20_neg_cutoff)
                 actionable_df['MA20_Score'] = np.where(ma20_is_invalid, 0, ma20_base_score)
 
+                # ── Criteria 4b: 10MADist Score ──
                 ma10_filled = actionable_df['_10madist'].fillna(999)
                 ma10_abs = ma10_filled.abs()
                 ma10_base_score = pd.cut(
@@ -730,6 +757,7 @@ def main():
                 ma10_is_invalid = actionable_df['_10madist'].isna() | (actionable_df['_10madist'] < ma10_neg_cutoff)
                 actionable_df['MA10_Score'] = np.where(ma10_is_invalid, 0, ma10_base_score)
 
+                # ── Total Score ──
                 actionable_df['Total_Score'] = (
                         actionable_df['Tight_Score'] +
                         actionable_df['Vol_Score'] +
@@ -738,6 +766,7 @@ def main():
                         actionable_df['MA10_Score']
                 )
 
+                # ── Tier Assignment ──
                 conditions = [
                     actionable_df['Total_Score'] >= tier_a,
                     actionable_df['Total_Score'] >= tier_b,
@@ -809,7 +838,7 @@ def main():
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
 
-            sort_tightness_col = '_nr4_previous'
+            sort_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
             if sort_tightness_col in display_df.columns:
                 display_df[sort_tightness_col] = pd.to_numeric(display_df[sort_tightness_col], errors='coerce')
                 display_df = display_df.sort_values(by=['_tier_sort_key', sort_tightness_col], ascending=[True, True],
@@ -887,7 +916,7 @@ def main():
 
             tightness_highlight_jscode = JsCode(
                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
-            active_tightness_col = '_nr4_previous'
+            active_tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
             if active_tightness_col in filtered_df.columns:
                 gb.configure_column(active_tightness_col, minWidth=55, maxWidth=75,
                                     cellStyle=tightness_highlight_jscode)
