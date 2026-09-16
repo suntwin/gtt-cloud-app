@@ -150,7 +150,7 @@ def fetch_gtt_scan(url, name):
             else:
                 df.columns = gtt_columns + [f'Extra_{i}' for i in range(len(gtt_columns), len(df.columns))]
 
-            df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
+            df['Symbol'] = df['Symbol'].str.upper().str.replace('.NS', '', regex=False)
 
             numeric_cols_fillna = [
                 'Last', '_days_since_bo', '_nr4', '_rs', 'Adr', 'Ti65', 'dvol',
