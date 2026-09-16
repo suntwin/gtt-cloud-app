@@ -842,7 +842,7 @@ def main():
                 'W_CloseChg_Pct',
             ]
             all_main_cols = list(filtered_df.columns)
-            with st.expander("🧩 Choose visible columns (saved as your default)"):
+            with st.expander("Choose visible columns (saved as your default)"):
                 selected_main_cols = st.multiselect(
                     "Columns to show in the table below",
                     options=all_main_cols,
@@ -1241,7 +1241,7 @@ def main():
                         ] if c in sector_stocks.columns]
                         sector_display = sector_stocks[display_cols].copy()
 
-                        with st.expander(f"🏛️ {sector} ({len(sector_stocks)} stocks)"):
+                        with st.expander(f"{sector} ({len(sector_stocks)} stocks)"):
                             gb = GridOptionsBuilder.from_dataframe(sector_display)
                             gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70,
                                                         flex=0)
