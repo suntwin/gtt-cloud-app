@@ -238,7 +238,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
     check_tight_flags = False
     if scan_mode == "Anticipation":
-        check_tight_flags = st.checkbox("Check high Tight flags (ADR >= 6.0, AvgVol >= 10, Rel Tight <= 0.6)",
+        check_tight_flags = st.checkbox("Check high Tight flags (ADR >= 4.0, AvgVol >= 10, Rel Tight <= 0.6)",
                                         key="check_tight_flags")
 
     if not modify:
