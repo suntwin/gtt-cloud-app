@@ -24,6 +24,18 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataRe
 
 st.set_page_config(page_title="GTT Crypto Hourly Scanner", page_icon="⚡", layout="wide")
 
+# ── Supabase Integration ──
+from supabase import create_client, Client
+
+SUPABASE_URL = "https://uroqarbpyrloymijbqaa.supabase.co"
+SUPABASE_KEY = "sb_publishable_bPnWVx9S7zI0_FdK8RCbRg_Gfc2Vqzt"
+
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    st.error(f"Database connection failed: {e}")
+    supabase = None
+
 # ════════════════════════════════════════════════════════════════════
 # 1. CONFIGURATION & ENDPOINTS
 # ════════════════════════════════════════════════════════════════════
@@ -60,35 +72,42 @@ gtt_columns = [
 ]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-COLUMN_PREFS_FILE = os.path.join(BASE_DIR, "crypto_column_prefs.json")
 SCORING_PREFS_FILE = os.path.join(BASE_DIR, "crypto_scoring_prefs.json")
 
 
 # ════════════════════════════════════════════════════════════════════
-# 2. PERSISTENCE & HELPER FUNCTIONS
+# 2. DATABASE & HELPER FUNCTIONS
 # ════════════════════════════════════════════════════════════════════
-def load_column_prefs():
-    if os.path.exists(COLUMN_PREFS_FILE):
-        try:
-            with open(COLUMN_PREFS_FILE, 'r') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def save_column_prefs(prefs):
+def load_column_prefs(table_key):
+    if not supabase:
+        return None
     try:
-        with open(COLUMN_PREFS_FILE, 'w') as f:
-            json.dump(prefs, f, indent=2)
+        response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id", "us_user").execute()
+        if response.data:
+            return response.data[0]['visible_columns']
+        return None
+    except Exception:
+        return None
+
+
+def save_column_prefs(table_key, cols):
+    if not supabase:
+        return
+    try:
+        existing = supabase.table("column_prefs").select("id").eq("table_key", table_key).eq("user_id", "us_user").execute()
+        if existing.data:
+            supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id", "us_user").execute()
+        else:
+            supabase.table("column_prefs").insert({"user_id": "us_user", "table_key": table_key, "visible_columns": cols}).execute()
     except Exception as e:
-        st.warning(f"Could not save column preferences: {e}")
+        st.warning(f"Could not save column preferences to cloud: {e}")
 
 
 def get_persisted_columns(table_key, all_cols, default_hidden_cols):
-    prefs = load_column_prefs()
     default_visible = [c for c in all_cols if c not in default_hidden_cols]
-    saved = prefs.get(table_key, default_visible)
+    saved = load_column_prefs(table_key)
+    if saved is None:
+        return default_visible
     saved = [c for c in saved if c in all_cols]
     return saved if saved else default_visible
 
@@ -157,7 +176,7 @@ def fetch_gtt_scan(url, name):
 
         numeric_fillna = [
             'Last', '_nr4', '_nr4_previous', 'Adr', 'Ti65',
-            'dvolhourly', 'dvoldaily', '_avgvol_mln_hourly', 'strongopen','cap'
+            'dvolhourly', 'dvoldaily', '_avgvol_mln_hourly', 'strongopen', 'cap'
         ]
         for col in numeric_fillna:
             if col in df.columns:
@@ -215,95 +234,206 @@ def fetch_weekly_daily_scan(url):
 # ════════════════════════════════════════════════════════════════════
 # 4. FILTER WIDGET
 # ════════════════════════════════════════════════════════════════════
-# ════════════════════════════════════════════════════════════════════
-# 4. FILTER WIDGET
-# ════════════════════════════════════════════════════════════════════
 def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
+
     check_mcap = st.checkbox("Mid/Large Cap Only (Market Cap >= $500M)", key="check_mcap_hourly")
 
+    check_today_bo = False
+    if scan_mode == "Post Breakout":
+        check_today_bo = st.checkbox(
+            "Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Rel Tightness)",
+            key="check_today_bo")
+
+    check_tight_flags = False
+    if scan_mode == "Anticipation":
+        check_tight_flags = st.checkbox(
+            "Check high Tight flags (ADR >= 4.0, AvgVol >= 1M, Rel Tight <= 0.6)",
+            key="check_tight_flags")
+
     if not modify:
-        # ── NO HIDDEN FILTERS ──
-        # Show ALL setups, ranked purely by the existing scoring logic.
-        # Volume verification will be done manually on the charts.
-        pass
-    else:
-        df = df.copy()
-        with st.container():
-            default_filt = (['_chg_percentclose_hourly', 'Adr', 'Ti65', 'Avg_Perf', '_avgvol_mln_hourly']
-                            if scan_mode == "Post Breakout"
-                            else ['_nr4_previous'])
-            to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
+        if check_today_bo:
+            if '_chg_percentclose_hourly' in df.columns:
+                df = df[df['_chg_percentclose_hourly'].fillna(0) > 0]
+            if 'Vol_Score' in df.columns:
+                df = df[df['Vol_Score'].fillna(0) >= 1]
+            if '_rel_tightness' in df.columns:
+                df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
+                df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
-            for column in to_filter_columns:
-                left, right = st.columns((1, 20))
-                left.write("↳")
-                col_series = df[column]
-                has_nans = col_series.isna().any()
+        if check_tight_flags:
+            if 'Adr' in df.columns:
+                df = df[df['Adr'].fillna(0) >= 4.0]
+            if '_avgvol_mln_hourly' in df.columns:
+                df = df[df['_avgvol_mln_hourly'].fillna(0) >= 1.0]
+            if '_rel_tightness' in df.columns:
+                df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
+                df = df[df['_rel_tightness'].fillna(999) <= 0.6]
+                df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
-                if _is_categorical(col_series) or col_series.dropna().nunique() < 10:
-                    unique_non_nan = list(col_series.dropna().unique())
-                    NAN_LABEL = "⚠️ (blank / NaN)"
-                    select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
-                    default_selection = list(select_options)
-                    user_cat_input = right.multiselect(
-                        f"Values for {column}", select_options, default=default_selection
-                    )
-                    nan_selected = NAN_LABEL in user_cat_input
-                    real_vals = [v for v in user_cat_input if v != NAN_LABEL]
-                    if nan_selected:
-                        mask = col_series.isna() | col_series.isin(real_vals)
-                    else:
-                        mask = ~col_series.isna() & col_series.isin(real_vals)
-                    df = df[mask]
+        if check_mcap:
+            if 'cap' in df.columns:
+                df = df[df['cap'].fillna(0) >= 500]
 
-                elif is_numeric_dtype(col_series):
-                    clean = col_series.dropna()
-                    if clean.empty:
-                        right.info(f"Column **{column}** has no numeric values")
-                        continue
-                    _min = float(clean.min())
-                    _max = float(clean.max())
-                    step = (_max - _min) / 100 if (_max - _min) > 0 else 1
+        return df
 
-                    # Set default slider minimums to 0.0 so nothing is hidden by default
-                    custom_defaults = {
-                        '_chg_percentclose_hourly': 0.0, 'Adr': 0.0, 'Ti65': 0.0,
-                        'Avg_Perf': 0.0, '_avgvol_mln_hourly': 0.0,
-                    }
-                    desired_min = custom_defaults.get(column, _min)
-                    default_min = max(desired_min, _min)
-                    user_num_input = right.slider(
-                        f"Values for {column}", _min, _max, (default_min, _max), step=step
-                    )
-                    if has_nans:
-                        keep_nans = right.checkbox(
-                            f"Keep rows where **{column}** is blank",
-                            value=True, key=f"keep_nan_{column}"
-                        )
-                    else:
-                        keep_nans = False
-                    in_range = col_series.between(*user_num_input)
-                    mask = (in_range | col_series.isna()) if keep_nans else in_range
-                    df = df[mask]
+    df = df.copy()
+    with st.container():
+        tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+
+        if scan_mode == "Post Breakout":
+            default_filt = ['_chg_percentclose_hourly', 'Adr', 'Avg_Perf', '_avgvol_mln_hourly']
+        else:
+            default_filt = ['_rel_tightness', 'Adr', 'Tier', '_avgvol_mln_hourly']
+
+        to_filter_columns = st.multiselect("Filter dataframe on", df.columns, default=default_filt)
+
+        for column in to_filter_columns:
+            left, right = st.columns((1, 20))
+            left.write("↳")
+            col_series = df[column]
+            has_nans = col_series.isna().any()
+
+            if _is_categorical(col_series) or col_series.dropna().nunique() < 10:
+                unique_non_nan = list(col_series.dropna().unique())
+                NAN_LABEL = "⚠️ (blank / NaN)"
+                select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
+
+                if column == 'Tier':
+                    default_selection = [t for t in ['🟢 A', '🟡 B'] if t in select_options]
+                    if not default_selection:
+                        default_selection = list(select_options)
                 else:
-                    user_text_input = right.text_input(f"Substring or regex in {column}")
-                    if user_text_input:
-                        text_mask = col_series.astype(str).str.contains(
-                            user_text_input, case=False, na=False
-                        )
-                        df = df[text_mask | col_series.isna()]
+                    default_selection = list(select_options)
 
-    # ── Apply Market Cap Filter (Only if checked) ──
+                user_cat_input = right.multiselect(
+                    f"Values for {column}", select_options, default=default_selection
+                )
+                nan_selected = NAN_LABEL in user_cat_input
+                real_vals = [v for v in user_cat_input if v != NAN_LABEL]
+                if nan_selected:
+                    mask = col_series.isna() | col_series.isin(real_vals)
+                else:
+                    mask = ~col_series.isna() & col_series.isin(real_vals)
+                df = df[mask]
+
+            elif is_numeric_dtype(col_series):
+                clean = col_series.dropna()
+                if clean.empty:
+                    right.info(f"Column **{column}** has no numeric values")
+                    continue
+                _min = float(clean.min())
+                _max = float(clean.max())
+
+                if _max <= _min:
+                    _max = _min + 0.1
+
+                step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
+
+                custom_max_bounds = {
+                    '_nr4': 5.0, '_nr4_previous': 5.0,
+                    '_chg_percentclose_hourly': 20.0, 'Adr': 15.0,
+                    'Avg_Perf': 100.0, 'cap': 5000.0,
+                    '_rel_tightness': 2.0
+                }
+                _max = max(_max, custom_max_bounds.get(column, _max))
+
+                custom_ranges = {
+                    '_nr4': (0.0, 3.0),
+                    '_nr4_previous': (0.0, 3.0),
+                    '_rel_tightness': (0.0, 1.0),
+                    'Adr': (2.0, _max),
+                    '_chg_percentclose_hourly': (0.0, _max),
+                    'Ti65': (1.05, _max),
+                    'Avg_Perf': (0.0, _max),
+                    '_avgvol_mln_hourly': (1.0, _max),
+                    'cap': (500.0, _max),
+                }
+
+                default_range = custom_ranges.get(column, (_min, _max))
+                default_min = max(float(default_range[0]), _min)
+                default_max = min(float(default_range[1]), _max)
+
+                if default_min > default_max:
+                    default_min = _min
+                    default_max = _max
+
+                user_num_input = right.slider(
+                    f"Values for {column}", _min, _max, (default_min, default_max), step=step
+                )
+
+                if has_nans:
+                    keep_nans = right.checkbox(
+                        f"Keep rows where **{column}** is blank",
+                        value=True, key=f"keep_nan_{column}"
+                    )
+                else:
+                    keep_nans = False
+                in_range = col_series.between(*user_num_input)
+                mask = (in_range | col_series.isna()) if keep_nans else in_range
+                df = df[mask]
+            else:
+                user_text_input = right.text_input(f"Substring or regex in {column}")
+                if user_text_input:
+                    text_mask = col_series.astype(str).str.contains(
+                        user_text_input, case=False, na=False
+                    )
+                    df = df[text_mask | col_series.isna()]
+
+    # ── Apply post filters ──
+    if check_today_bo:
+        if '_chg_percentclose_hourly' in df.columns:
+            df = df[df['_chg_percentclose_hourly'].fillna(0) > 0]
+        if 'Vol_Score' in df.columns:
+            df = df[df['Vol_Score'].fillna(0) >= 1]
+        if '_rel_tightness' in df.columns:
+            df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
+            df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+
+    if check_tight_flags:
+        if 'Adr' in df.columns:
+            df = df[df['Adr'].fillna(0) >= 4.0]
+        if '_avgvol_mln_hourly' in df.columns:
+            df = df[df['_avgvol_mln_hourly'].fillna(0) >= 1.0]
+        if '_rel_tightness' in df.columns:
+            df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
+            df = df[df['_rel_tightness'].fillna(999) <= 0.6]
+            df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+
+    # ── Apply Market Cap Filter ──
     if check_mcap:
         if 'cap' in df.columns:
             df = df[df['cap'].fillna(0) >= 500]
 
     return df
+
+
 # ════════════════════════════════════════════════════════════════════
 # 5. MAIN APPLICATION
 # ════════════════════════════════════════════════════════════════════
 def main():
+    custom_css = """
+    <style>
+        html, body, [class*="css"], [class*="st-"] {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif !important;
+        }
+        .main .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            max-width: 95% !important;
+        }
+        h1, h2, h3, h4 {
+            font-weight: 700 !important;
+            letter-spacing: -0.5px !important;
+            margin-bottom: 0.5rem !important;
+            margin-top: 1.5rem !important;
+        }
+        .stDataFrame {
+            font-size: 14px !important;
+        }
+    </style>
+    """
+    st.markdown(custom_css, unsafe_allow_html=True)
     st.title("⚡ GTT Crypto Hourly Scanner")
 
     # ── Auto-refresh toggle ──
@@ -353,11 +483,14 @@ def main():
             del st.session_state['last_refresh_ts']
 
     # ════════════════════════════════════════════════════════════════
-    # DISABLED ANTICIPATION MODE - LOCKED TO POST BREAKOUT
+    # SCAN MODE SELECTION
     # ════════════════════════════════════════════════════════════════
-    scan_mode = "Post Breakout"
-    st.markdown("Hourly crypto scanner for confirmed breakouts (Boom Boom / 1-2-3 / Coiled Spring).")
-    st.info("🔒 Anticipation mode disabled. Scanner is locked to **confirmed breakouts** only.")
+    scan_mode = st.radio("Select Scanner Mode", ("Anticipation", "Post Breakout"), horizontal=True)
+    if scan_mode == "Post Breakout":
+        st.markdown("Hourly crypto scanner for confirmed breakouts (Boom Boom / 1-2-3 / Coiled Spring).")
+    else:
+        st.markdown("Anticipation scanner for coiled setups as they are breaking out. "
+                     "**BEWARE - MAKE SURE VOLUME IS COMING IN**")
 
     # ════════════════════════════════════════════════════════════════
     # SCORING CONFIG (Sidebar)
@@ -365,14 +498,15 @@ def main():
     st.sidebar.header("⚙️ Scoring System Config")
     saved_scoring = load_scoring_prefs()
 
-    # 1: Tightness
-    st.sidebar.subheader("1️⃣ Tightness (_nr4_prev) — Max 4 pts")
+    # 1: Tightness (Relative to ADR)
+    st.sidebar.subheader("1️⃣ Tightness (Relative to ADR)")
+    st.sidebar.caption("Scores based on Ratio = Tightness / ADR. (e.g., NR4 < 0.30x ADR → 4 pts)")
     tight_defaults = saved_scoring.get('tightness_thresholds', [4.0, 6.0, 8.0, 10.0])
     t_raw = [
-        st.sidebar.number_input("_nr4_prev < this → 4 pts", value=tight_defaults[0], step=0.5, key="sc_t1"),
-        st.sidebar.number_input("_nr4_prev < this → 3 pts", value=tight_defaults[1], step=0.5, key="sc_t2"),
-        st.sidebar.number_input("_nr4_prev < this → 2 pts", value=tight_defaults[2], step=0.5, key="sc_t3"),
-        st.sidebar.number_input("_nr4_prev < this → 1 pt", value=tight_defaults[3], step=0.5, key="sc_t4"),
+        st.sidebar.number_input("Absolute Threshold 1 (Ignored)", value=tight_defaults[0], step=0.5, key="sc_t1"),
+        st.sidebar.number_input("Absolute Threshold 2 (Ignored)", value=tight_defaults[1], step=0.5, key="sc_t2"),
+        st.sidebar.number_input("Absolute Threshold 3 (Ignored)", value=tight_defaults[2], step=0.5, key="sc_t3"),
+        st.sidebar.number_input("Absolute Threshold 4 (Ignored)", value=tight_defaults[3], step=0.5, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
@@ -532,7 +666,6 @@ def main():
                 if wd_df is not None and not wd_df.empty:
                     st.session_state.wd_full_df = wd_df.copy()
 
-                    # Safely select available columns to prevent KeyError
                     wd_cols_to_keep = ['Symbol', 'Dailyclose_chg_pct', 'Dailytightcloses_of4',
                                        'Insidebar_thisday', 'Insidebars_of8',
                                        'Weeklyrsi', 'Dailyrsi', 'Dailycontraction']
@@ -558,7 +691,7 @@ def main():
                 st.session_state.gtt_base_df = None
 
     # ─── TABS ───
-    tab1, tab2 = st.tabs(["🎯 GTT Crypto Scanner", "📅 Weekly/Daily Watch"])
+    tab1, tab2, tab3 = st.tabs(["🎯 GTT Crypto Scanner", "📅 Weekly/Daily Watch", "💾 Saved Breakouts"])
 
     # ════════════════════════════════════════════════════════════════
     # TAB 1 — GTT SCANNER
@@ -582,31 +715,37 @@ def main():
                           'MA20_Score', 'MA10_Score']:
                     actionable_df[c] = 0 if c != 'Tier' else '🔴 Error'
             else:
-                # 1) Tightness
-                if '_nr4_previous' in actionable_df.columns:
-                    nr4_prev_filled = actionable_df['_nr4_previous'].fillna(999)
-                    actionable_df['Tight_Score'] = pd.cut(
-                        nr4_prev_filled,
-                        bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
-                        labels=[4, 3, 2, 1, 0]
-                    ).astype(int)
-                else:
-                    actionable_df['Tight_Score'] = 0
+                # ── Relative Tightness Calculation ──
+                tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
+                safe_adr = actionable_df['Adr'].replace(0, np.nan)
+                actionable_df['_rel_tightness'] = (actionable_df[tightness_col] / safe_adr).round(2)
 
-                # 2) BO Volume (hourly)
-                if 'dvolhourly' in actionable_df.columns and '_avgvol_mln_hourly' in actionable_df.columns:
-                    rvol_ratio = np.where(
-                        actionable_df['_avgvol_mln_hourly'] > 0,
-                        actionable_df['dvolhourly'] / actionable_df['_avgvol_mln_hourly'],
-                        0
-                    )
-                    actionable_df['Vol_Score'] = pd.cut(
-                        rvol_ratio,
-                        bins=[-float('inf'), v3, v2, v1, float('inf')],
-                        labels=[0, 1, 2, 3]
-                    ).astype(int)
-                else:
+                rel_tight_filled = actionable_df['_rel_tightness'].fillna(999)
+
+                # 1) Tightness — ratio-based scoring (relative to ADR)
+                actionable_df['Tight_Score'] = pd.cut(
+                    rel_tight_filled,
+                    bins=[-float('inf'), 0.30, 0.45, 0.60, 0.80, float('inf')],
+                    labels=[4, 3, 2, 1, 0]
+                ).astype(int)
+
+                # 2) BO Volume (hourly) — 0 in anticipation mode
+                if scan_mode == "Anticipation":
                     actionable_df['Vol_Score'] = 0
+                else:
+                    if 'dvolhourly' in actionable_df.columns and '_avgvol_mln_hourly' in actionable_df.columns:
+                        rvol_ratio = np.where(
+                            actionable_df['_avgvol_mln_hourly'] > 0,
+                            actionable_df['dvolhourly'] / actionable_df['_avgvol_mln_hourly'],
+                            0
+                        )
+                        actionable_df['Vol_Score'] = pd.cut(
+                            rvol_ratio,
+                            bins=[-float('inf'), v3, v2, v1, float('inf')],
+                            labels=[0, 1, 2, 3]
+                        ).astype(int)
+                    else:
+                        actionable_df['Vol_Score'] = 0
 
                 # 3) DailyTightCloses Bonus
                 actionable_df['TClose_Score'] = np.where(
@@ -724,7 +863,8 @@ def main():
                 'Tight_Score', 'Vol_Score', 'TClose_Score',
                 'StrongOpen_Score', 'WTC_Score',
                 'MA20_Score', 'MA10_Score',
-                '_nr4_previous', '_chg_percentclose_hourly','cap', 'D_TightCloses', 'D_InsideBars8', 'D_InsideBar',
+                '_nr4_previous', '_rel_tightness', '_chg_percentclose_hourly',
+                'cap', 'D_TightCloses', 'D_InsideBars8', 'D_InsideBar',
                 'dvolhourly', '_avgvol_mln_hourly', 'dvoldaily',
                 '_20madist', '_10madist', '_wtc', 'strongopen',
                 'Symbol',
@@ -739,12 +879,15 @@ def main():
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
 
-            # Convert _nr4_previous to numeric to ensure proper sorting
-            display_df['_nr4_previous'] = pd.to_numeric(display_df['_nr4_previous'], errors='coerce')
-            # Sort by Tier first, then by Tightness (_nr4_previous ascending = tightest on top).
-            # NaNs are pushed to the bottom.
-            display_df = display_df.sort_values(by=['_tier_sort_key', '_nr4_previous'], ascending=[True, True],
-                                                na_position='last')
+            # Sort by Tier first, then by Relative Tightness ascending (tightest on top).
+            sort_tightness_col = '_rel_tightness'
+            if sort_tightness_col in display_df.columns:
+                display_df[sort_tightness_col] = pd.to_numeric(display_df[sort_tightness_col], errors='coerce')
+                display_df = display_df.sort_values(by=['_tier_sort_key', sort_tightness_col],
+                                                    ascending=[True, True], na_position='last')
+            else:
+                display_df = display_df.sort_values(by=['_tier_sort_key'], ascending=True)
+
             display_df = display_df.drop(columns=['_tier_sort_key'], errors='ignore')
             st.session_state.gtt_display_df = display_df
 
@@ -787,9 +930,7 @@ def main():
                     key="main_table_col_select",
                 )
                 if st.button("💾 Save as my default column set", key="save_main_cols_btn"):
-                    prefs = load_column_prefs()
-                    prefs['crypto_main_table'] = selected_main_cols
-                    save_column_prefs(prefs)
+                    save_column_prefs('crypto_main_table', selected_main_cols)
                     st.success("Saved — this set will load by default next time.")
             hidden_main_cols = [c for c in all_main_cols if c not in selected_main_cols]
             col_precedence = {c: i for i, c in enumerate(columns_to_show) if c in filtered_df.columns}
@@ -798,13 +939,14 @@ def main():
             filtered_df = filtered_df[selected_main_cols + hidden_main_cols]
 
             # ════════════════════════════════════════════════════════
-            # AgGrid — build options from ORIGINAL df (keeps dtypes),
-            # then pass CLEANED df for JSON-safe serialization
+            # AgGrid
             # ════════════════════════════════════════════════════════
             gb = GridOptionsBuilder.from_dataframe(filtered_df)
             gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
             gb.configure_side_bar()
             gb.configure_grid_options(enableBrowserTooltips=True)
+            gb.configure_selection(selection_mode='multiple', use_checkbox=True)
+
             for col in filtered_df.columns:
                 gb.configure_column(col, headerTooltip=col)
 
@@ -836,6 +978,13 @@ def main():
             # _nr4_previous highlight
             if '_nr4_previous' in filtered_df.columns:
                 gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75,
+                                    headerName='NR4Prev',
+                                    cellStyle=JsCode(
+                                        "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
+
+            # _rel_tightness highlight
+            if '_rel_tightness' in filtered_df.columns:
+                gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight',
                                     cellStyle=JsCode(
                                         "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
 
@@ -859,6 +1008,7 @@ def main():
                     }}
                 """)
                 gb.configure_column('_chg_percentclose_hourly', minWidth=80, maxWidth=110,
+                                    headerName='Chg %',
                                     cellStyle=chg_jscode, filter='agNumberColumnFilter',
                                     filterParams={'filterOptions': ['greaterThan', 'lessThan', 'equals', 'inRange'],
                                                   'defaultOption': 'greaterThan', 'defaultValues': [0]})
@@ -896,12 +1046,13 @@ def main():
                                   'fontWeight': normRatio >= 0.8 ? 'bold' : 'normal' }};
                     }}
                 """)
-                gb.configure_column('cap', minWidth=60, maxWidth=85, cellStyle=rvol_jscode)
-                gb.configure_column('dvolhourly', minWidth=65, maxWidth=90, cellStyle=rvol_jscode)
-                gb.configure_column('_avgvol_mln_hourly', minWidth=65, maxWidth=90, cellStyle=rvol_jscode)
+                gb.configure_column('dvolhourly', minWidth=65, maxWidth=90, headerName='dVolHrly', cellStyle=rvol_jscode)
+                gb.configure_column('_avgvol_mln_hourly', minWidth=65, maxWidth=90, headerName='AvgVolMln', cellStyle=rvol_jscode)
 
+            if 'cap' in filtered_df.columns:
+                gb.configure_column('cap', minWidth=60, maxWidth=85, headerName='MktCap')
             if 'dvoldaily' in filtered_df.columns:
-                gb.configure_column('dvoldaily', minWidth=65, maxWidth=90)
+                gb.configure_column('dvoldaily', minWidth=65, maxWidth=90, headerName='dVolDly')
 
             # MA dist heatmap
             ma_dist_jscode = JsCode("""
@@ -936,6 +1087,29 @@ def main():
                 if sc_col in filtered_df.columns:
                     gb.configure_column(sc_col, minWidth=55, maxWidth=75, cellStyle=score_col_style)
 
+            # Header shortening
+            header_shortening = {
+                'Change': 'Chg',
+                'Tight_Score': 'Tight',
+                'Vol_Score': 'Vol',
+                'TClose_Score': 'TClose',
+                'StrongOpen_Score': 'StrOpen',
+                'WTC_Score': 'WTC',
+                'MA20_Score': 'MA20',
+                'MA10_Score': 'MA10',
+                'D_TightCloses': 'D TightCl',
+                'D_InsideBars8': 'D InsideB',
+                'D_InsideBar': 'D InBar',
+                'D_CloseChg_Pct': 'D ClChg%',
+                'D_Contraction': 'D Contr',
+                'W_RSI': 'W RSI',
+                'D_RSI': 'D RSI',
+                'Avg_Perf': 'AvgPerf',
+            }
+            for raw_col, short_name in header_shortening.items():
+                if raw_col in filtered_df.columns:
+                    gb.configure_column(raw_col, headerName=short_name)
+
             # Tier pill styling
             tier_style = JsCode("""
                 function(params) {
@@ -943,28 +1117,111 @@ def main():
                     if (!val) return null;
                     if (val.includes('A')) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
                     if (val.includes('B')) return { 'backgroundColor': '#ffc107', 'color': 'black', 'fontWeight': 'bold' };
-                    return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
+                    if (val.includes('Ignore')) return { 'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold' };
+                    return null;
                 }
             """)
             if 'Tier' in filtered_df.columns:
                 gb.configure_column('Tier', minWidth=55, maxWidth=75, cellStyle=tier_style, pinned='left')
             if 'Symbol' in filtered_df.columns:
-                gb.configure_column('Symbol', minWidth=90, maxWidth=130, pinned='left')
+                gb.configure_column('Symbol', minWidth=90, maxWidth=130, pinned='left', checkboxSelection=True)
+
+            for col in hidden_main_cols:
+                gb.configure_column(col, hide=True)
 
             gridOptions = gb.build()
 
             # ── Clean the df for JSON, then render ──
             safe_df = clean_df_for_json(filtered_df)
-            AgGrid(
+            grid_response = AgGrid(
                 safe_df,
                 gridOptions=gridOptions,
                 update_mode=GridUpdateMode.MODEL_CHANGED,
+                data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
                 fit_columns_on_grid_load=False,
                 height=680,
+                width='100%',
                 theme='streamlit',
                 key='crypto_gtt_grid',
                 allow_unsafe_jscode=True
             )
+
+            # ── Save selected to Saved Breakouts ──
+            selected_rows = grid_response['selected_rows']
+            if selected_rows is not None and len(selected_rows) > 0:
+                if isinstance(selected_rows, pd.DataFrame):
+                    selected_symbols = selected_rows['Symbol'].tolist()
+                else:
+                    selected_symbols = [row.get('Symbol') for row in selected_rows if row is not None]
+
+                st.markdown(f"**{len(selected_symbols)} symbols selected.**")
+                if st.button("Add selected to Saved Breakouts"):
+                    try:
+                        response = supabase.table("saved_breakouts").select("symbol").eq("user_id", "us_user").execute()
+                        existing_symbols = [b['symbol'] for b in response.data]
+                    except:
+                        existing_symbols = []
+
+                    new_added = 0
+                    for sym in selected_symbols:
+                        if sym not in existing_symbols:
+                            try:
+                                supabase.table("saved_breakouts").insert({
+                                    "symbol": sym,
+                                    "saved_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                    "user_id": "us_user"
+                                }).execute()
+                                new_added += 1
+                            except Exception as e:
+                                st.error(f"Failed to save {sym}: {e}")
+                    if new_added > 0:
+                        st.success(f"Added {new_added} new ticker(s) to Saved Breakouts! Check the tab above.")
+                    else:
+                        st.info("All selected tickers are already in Saved Breakouts.")
+
+            # ── Copy to TradingView ──
+            sorted_df = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response['data'].empty else filtered_df
+
+            if not sorted_df.empty and 'Symbol' in sorted_df.columns and 'Tier' in sorted_df.columns:
+                all_symbols_sorted = sorted_df['Symbol'].dropna().unique().tolist()
+                all_tv_string = ",".join([f"BINANCE:{s}" for s in all_symbols_sorted])
+
+                tier_a_df = sorted_df[sorted_df['Tier'] == '🟢 A']
+                tier_a_symbols = tier_a_df['Symbol'].dropna().unique().tolist()
+                tier_a_tv_string = ",".join([f"BINANCE:{s}" for s in tier_a_symbols])
+
+                tier_b_df = sorted_df[sorted_df['Tier'] == '🟡 B']
+                tier_b_symbols = tier_b_df['Symbol'].dropna().unique().tolist()
+                tier_b_tv_string = ",".join([f"BINANCE:{s}" for s in tier_b_symbols])
+
+                st.markdown("---")
+                st.subheader("Copy Symbols to TradingView")
+
+                copy_col1, copy_col2, copy_col3 = st.columns(3)
+
+                with copy_col1:
+                    st.markdown(f"**Tier A only** — `{len(tier_a_symbols)} symbols`")
+                    if tier_a_symbols:
+                        st.code(tier_a_tv_string, language=None)
+                        st.caption(f"Click the icon above to copy {len(tier_a_symbols)} symbols.")
+                    else:
+                        st.info("No Tier A coins.")
+
+                with copy_col2:
+                    st.markdown(f"**Tier B only** — `{len(tier_b_symbols)} symbols`")
+                    if tier_b_symbols:
+                        st.code(tier_b_tv_string, language=None)
+                        st.caption(f"Click the icon above to copy {len(tier_b_symbols)} symbols.")
+                    else:
+                        st.info("No Tier B coins.")
+
+                with copy_col3:
+                    st.markdown(f"**All filtered** — `{len(all_symbols_sorted)} symbols`")
+                    if all_symbols_sorted:
+                        st.code(all_tv_string, language=None)
+                        st.caption(f"Click the icon above to copy {len(all_symbols_sorted)} symbols.")
+                    else:
+                        st.info("No symbols in view.")
 
             # ── Export ──
             csv = filtered_df.to_csv(index=False).encode('utf-8')
@@ -997,9 +1254,7 @@ def main():
                     key="wd_table_col_select"
                 )
                 if st.button("💾 Save as default", key="save_wd_cols_btn"):
-                    prefs = load_column_prefs()
-                    prefs['crypto_wd_table'] = sel_wd_cols
-                    save_column_prefs(prefs)
+                    save_column_prefs('crypto_wd_table', sel_wd_cols)
                     st.success("Saved.")
             hidden_wd = [c for c in all_wd_cols if c not in sel_wd_cols]
             col_prec_wd = {c: i for i, c in enumerate(['Symbol', 'Last'] + weekly_daily_metric_columns)}
@@ -1032,19 +1287,224 @@ def main():
                 gb2.configure_column(rsi_col, minWidth=60, maxWidth=85, cellStyle=rsi_js)
 
             # Dist_dema heatmap
+            ma_dist_jscode_wd = JsCode("""
+                function(params) {
+                    const val = params.value;
+                    if (val === null || val === undefined || isNaN(val)) return null;
+                    const absVal = Math.abs(val);
+                    if (val < -6) return { 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' };
+                    if (absVal < 2) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                    if (absVal < 4) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                    if (absVal < 6) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                    return null;
+                }
+            """)
             for c in ['Dist_dema10_pct', 'Dist_dema20_pct']:
                 if c in wd.columns:
-                    gb2.configure_column(c, minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
+                    gb2.configure_column(c, minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode_wd)
 
-            # ── Clean the df for JSON, then render ──
+            for col in hidden_wd:
+                gb2.configure_column(col, hide=True)
+
             safe_wd = clean_df_for_json(wd)
             AgGrid(safe_wd, gridOptions=gb2.build(),
                    update_mode=GridUpdateMode.MODEL_CHANGED,
+                   data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
                    fit_columns_on_grid_load=False,
-                   height=600, theme='streamlit', key='crypto_wd_grid',
+                   height=600, width='100%', theme='streamlit', key='crypto_wd_grid',
                    allow_unsafe_jscode=True)
         else:
             st.info("Generate a scan first to populate the Weekly/Daily watch.")
+
+    # ════════════════════════════════════════════════════════════════
+    # TAB 3 — SAVED BREAKOUTS
+    # ════════════════════════════════════════════════════════════════
+    with tab3:
+        st.subheader("💾 Saved Exceptional Breakouts")
+        st.caption("Track multi-day bases and retests. Stored securely in your Supabase cloud database.")
+
+        if not supabase:
+            st.error("Database connection not available. Please check Supabase configuration.")
+            return
+
+        try:
+            response = supabase.table("saved_breakouts").select("*").eq("user_id", "us_user").execute()
+            saved_breakouts = response.data
+        except Exception as e:
+            saved_breakouts = []
+            st.error(f"Database error: {e}")
+
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            new_ticker = st.text_input("Enter Ticker to Track manually (e.g., BTCUSDT, ETHUSDT):",
+                                       key="save_ticker_input").upper().strip()
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("Save Ticker", key="save_ticker_btn") and new_ticker:
+                exists = any(b['symbol'] == new_ticker for b in saved_breakouts)
+                if not exists:
+                    try:
+                        supabase.table("saved_breakouts").insert({
+                            "symbol": new_ticker,
+                            "saved_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "user_id": "us_user"
+                        }).execute()
+                        st.success(f"Saved {new_ticker} to cloud!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
+                else:
+                    st.warning("Ticker already saved.")
+
+        st.markdown("---")
+
+        if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None and saved_breakouts:
+            live_df = st.session_state.gtt_scored_df.copy()
+
+            saved_df = pd.DataFrame(saved_breakouts)
+            saved_df = saved_df.rename(columns={'symbol': 'Symbol', 'saved_date': 'Saved_On'})
+
+            merged_df = saved_df[['Symbol', 'Saved_On']].merge(live_df, on='Symbol', how='left')
+
+            merged_df['Status'] = merged_df['Total_Score'].apply(
+                lambda x: 'Active in Scanner' if pd.notna(x) and x > 0 else 'Dropped from Scanner')
+
+            columns_to_show_tab3 = [
+                'Symbol', 'Saved_On', 'Status',
+                'Tier', 'Change', 'Total_Score',
+                '_nr4_previous', '_rel_tightness', '_chg_percentclose_hourly',
+                'Adr', 'Ti65', '_nr4',
+                'Avg_Perf', 'cap',
+                '_avgvol_mln_hourly', '_20madist', '_10madist',
+                'D_TightCloses', 'Last'
+            ]
+            available_cols_tab3 = [c for c in columns_to_show_tab3 if c in merged_df.columns]
+            merged_df = merged_df[available_cols_tab3]
+
+            for col in merged_df.columns:
+                if col not in ['Symbol', 'Saved_On', 'Status', 'Tier', 'Change']:
+                    merged_df[col] = merged_df[col].fillna('N/A')
+
+            if 'Tier' not in merged_df.columns:
+                merged_df['Tier'] = 'Dropped'
+            else:
+                merged_df['Tier'] = merged_df['Tier'].fillna('Dropped')
+
+            if 'Change' not in merged_df.columns:
+                merged_df['Change'] = ''
+            else:
+                merged_df['Change'] = merged_df['Change'].fillna('')
+
+            st.markdown("---")
+            st.subheader("Copy Saved Symbols to TradingView")
+            all_saved_symbols = merged_df['Symbol'].dropna().unique().tolist()
+            all_tv_string = ",".join([f"BINANCE:{s}" for s in all_saved_symbols])
+
+            copy_col1, copy_col2 = st.columns([1, 2])
+            with copy_col1:
+                if st.button("Copy All Saved Symbols"):
+                    st.code(all_tv_string, language=None)
+                    st.caption(f"Click the icon above to copy {len(all_saved_symbols)} symbols.")
+
+            st.markdown("---")
+            st.markdown("#### Manage Watchlist")
+            cols_to_drop = st.multiselect("Select tickers to remove:", merged_df['Symbol'].tolist(), key="remove_saved")
+            if st.button("Remove Selected", key="remove_saved_btn"):
+                try:
+                    for sym in cols_to_drop:
+                        supabase.table("saved_breakouts").delete().eq("symbol", sym).eq("user_id", "us_user").execute()
+                    st.success("Removed selected tickers from cloud.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to delete: {e}")
+
+            st.markdown("#### Live Tracked Data (Updates on Scanner Run)")
+
+            gb3 = GridOptionsBuilder.from_dataframe(merged_df)
+            gb3.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
+            gb3.configure_side_bar()
+            gb3.configure_grid_options(enableBrowserTooltips=True)
+
+            if 'Symbol' in merged_df.columns:
+                gb3.configure_column('Symbol', minWidth=90, maxWidth=130, pinned='left')
+
+            status_style = JsCode("""
+                function(params) {
+                    if (!params.value) return null;
+                    if (params.value.includes('Active')) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                    if (params.value.includes('Dropped')) return { 'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold' };
+                    return null;
+                }
+            """)
+            gb3.configure_column('Status', minWidth=120, maxWidth=150, cellStyle=status_style)
+
+            score_col_style = JsCode("""
+                function(params) {
+                    const val = params.value;
+                    if (val === null || val === undefined || isNaN(val)) return null;
+                    if (val >= 3) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                    if (val >= 2) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                    if (val >= 1) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                    return null;
+                }
+            """)
+            tier_style = JsCode("""
+                function(params) {
+                    const val = params.value;
+                    if (!val) return null;
+                    if (val.includes('A')) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                    if (val.includes('B')) return { 'backgroundColor': '#ffc107', 'color': 'black', 'fontWeight': 'bold' };
+                    return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
+                }
+            """)
+            if 'Total_Score' in merged_df.columns:
+                gb3.configure_column('Total_Score', minWidth=55, maxWidth=70, cellStyle=score_col_style)
+            if 'Tier' in merged_df.columns:
+                gb3.configure_column('Tier', minWidth=55, maxWidth=75, cellStyle=tier_style)
+            if '_nr4_previous' in merged_df.columns:
+                gb3.configure_column('_nr4_previous', minWidth=55, maxWidth=75, headerName='NR4Prev',
+                                     cellStyle=JsCode(
+                                         "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
+            if '_rel_tightness' in merged_df.columns:
+                gb3.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight',
+                                     cellStyle=JsCode(
+                                         "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
+            if '_chg_percentclose_hourly' in merged_df.columns:
+                gb3.configure_column('_chg_percentclose_hourly', minWidth=80, maxWidth=110, headerName='Chg %')
+            if 'Adr' in merged_df.columns:
+                gb3.configure_column('Adr', minWidth=55, maxWidth=75)
+            if 'Ti65' in merged_df.columns:
+                gb3.configure_column('Ti65', minWidth=55, maxWidth=75)
+            if 'Avg_Perf' in merged_df.columns:
+                gb3.configure_column('Avg_Perf', minWidth=60, maxWidth=85, headerName='AvgPerf')
+            if 'cap' in merged_df.columns:
+                gb3.configure_column('cap', minWidth=60, maxWidth=85, headerName='MktCap')
+
+            header_shortening_tab3 = {
+                'Change': 'Chg',
+                '_avgvol_mln_hourly': 'AvgVolMln',
+                '_nr4_previous': 'NR4Prev',
+                '_10madist': '10MADist',
+                '_20madist': '20MADist',
+                'D_TightCloses': 'D TightCl',
+            }
+            for raw_col, short_name in header_shortening_tab3.items():
+                if raw_col in merged_df.columns:
+                    gb3.configure_column(raw_col, headerName=short_name)
+
+            safe_merged_df = clean_df_for_json(merged_df)
+            AgGrid(safe_merged_df, gridOptions=gb3.build(),
+                   update_mode=GridUpdateMode.MODEL_CHANGED,
+                   data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                   fit_columns_on_grid_load=False,
+                   height=600, width='100%', theme='streamlit', key='crypto_saved_breakouts_grid',
+                   allow_unsafe_jscode=True)
+
+        elif not saved_breakouts:
+            st.info("No saved breakouts yet. Select rows in the main scanner or add a ticker manually above.")
+        else:
+            st.warning("Click 'Generate GTT Crypto Plan' first to pull live data for your saved tickers.")
 
 
 if __name__ == "__main__":
