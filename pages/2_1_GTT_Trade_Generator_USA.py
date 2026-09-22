@@ -18,7 +18,7 @@ import time
 from datetime import datetime
 
 # st.set_page_config MUST be the first Streamlit command
-st.set_page_config(page_title="GTT Trade Generator (US)", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="GTT Trade Generator (USA)", page_icon="⚡", layout="wide")
 
 # ── Supabase Integration ──
 from supabase import create_client, Client
@@ -66,8 +66,7 @@ SCORING_PREFS_FILE = os.path.join(BASE_DIR, "gtt_us_scoring_prefs.json")
 def load_column_prefs(table_key):
     if not supabase: return None
     try:
-        response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id",
-                                                                                                          "us_user").execute()
+        response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id", "us_user").execute()
         if response.data:
             return response.data[0]['visible_columns']
         return None
@@ -78,14 +77,11 @@ def load_column_prefs(table_key):
 def save_column_prefs(table_key, cols):
     if not supabase: return
     try:
-        existing = supabase.table("column_prefs").select("id").eq("table_key", table_key).eq("user_id",
-                                                                                             "us_user").execute()
+        existing = supabase.table("column_prefs").select("id").eq("table_key", table_key).eq("user_id", "us_user").execute()
         if existing.data:
-            supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id",
-                                                                                                           "us_user").execute()
+            supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id", "us_user").execute()
         else:
-            supabase.table("column_prefs").insert(
-                {"user_id": "us_user", "table_key": table_key, "visible_columns": cols}).execute()
+            supabase.table("column_prefs").insert({"user_id": "us_user", "table_key": table_key, "visible_columns": cols}).execute()
     except Exception as e:
         st.warning(f"Could not save column preferences to cloud: {e}")
 
@@ -99,22 +95,78 @@ def get_persisted_columns(table_key, all_cols, default_hidden_cols):
     return saved if saved else default_visible
 
 
-def load_scoring_prefs():
-    if os.path.exists(SCORING_PREFS_FILE):
-        try:
-            with open(SCORING_PREFS_FILE, 'r') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+def load_scoring_prefs(scanner_type: str):
+    """Loads scoring prefs from Supabase, falls back to local JSON."""
+    local_file = os.path.join(BASE_DIR, f"{scanner_type.lower()}_scoring_prefs.json")
 
+    if not supabase:
+        if os.path.exists(local_file):
+            try:
+                with open(local_file, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
 
-def save_scoring_prefs(prefs):
     try:
-        with open(SCORING_PREFS_FILE, 'w') as f:
-            json.dump(prefs, f, indent=2)
+        response = (supabase.table("scoring_prefs")
+                    .select("config")
+                    .eq("user_id", "us_user")
+                    .eq("scanner_type", scanner_type)
+                    .execute())
+        if response.data:
+            return response.data[0]['config']
+        return {}
     except Exception as e:
-        st.warning(f"Could not save scoring preferences: {e}")
+        # Fallback to local file if DB error occurs
+        if os.path.exists(local_file):
+            try:
+                with open(local_file, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+
+def save_scoring_prefs(prefs, scanner_type: str):
+    """Saves scoring prefs to Supabase, falls back to local JSON."""
+    local_file = os.path.join(BASE_DIR, f"{scanner_type.lower()}_scoring_prefs.json")
+
+    if not supabase:
+        try:
+            with open(local_file, 'w') as f:
+                json.dump(prefs, f, indent=2)
+        except Exception as e:
+            st.warning(f"Could not save scoring preferences locally: {e}")
+        return
+
+    try:
+        existing = (supabase.table("scoring_prefs")
+                    .select("id")
+                    .eq("user_id", "us_user")
+                    .eq("scanner_type", scanner_type)
+                    .execute())
+
+        if existing.data:
+            (supabase.table("scoring_prefs")
+             .update({"config": prefs})
+             .eq("user_id", "us_user")
+             .eq("scanner_type", scanner_type)
+             .execute())
+        else:
+            supabase.table("scoring_prefs").insert({
+                "user_id": "us_user",
+                "scanner_type": scanner_type,
+                "config": prefs
+            }).execute()
+    except Exception as e:
+        st.warning(f"Could not save scoring config to cloud: {e}")
+        # Try saving locally as a fallback
+        try:
+            with open(local_file, 'w') as f:
+                json.dump(prefs, f, indent=2)
+        except Exception:
+            pass
 
 
 @st.cache_data(ttl=3600)
@@ -232,7 +284,7 @@ def clean_df_for_json(df):
     return df
 
 
-def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
+def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
 
     check_today_bo = False
@@ -241,8 +293,9 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                                      key="check_today_bo")
 
     check_tight_flags = False
+
     if scan_mode == "Anticipation":
-        check_tight_flags = st.checkbox("Check high Tight flags (ADR >= 6.0, AvgVol >= 10, Rel Tight <= 0.6)",
+        check_tight_flags = st.checkbox(f"Check high Tight flags (ADR >= 4.0, AvgVol >= 10, Rel Tight <= {max_rel_tight})",
                                         key="check_tight_flags")
 
     if not modify:
@@ -257,13 +310,12 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
         if check_tight_flags:
             if 'Adr' in df.columns:
-                df = df[df['Adr'].fillna(0) >= 6.0]
+                df = df[df['Adr'].fillna(0) >= 4.0]
             if '_avgvol_mln' in df.columns:
                 df = df[df['_avgvol_mln'].fillna(0) >= 10.0]
             if '_rel_tightness' in df.columns:
                 df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
-                # Filter for ratio <= 0.6 (using 999 for NaNs so they are excluded)
-                df = df[df['_rel_tightness'].fillna(999) <= 0.6]
+                df = df[df['_rel_tightness'].fillna(999) <= max_rel_tight]
                 df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
         return df
@@ -289,7 +341,10 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
 
                 if column == 'Tier':
-                    default_selection = ['A', 'B']
+                    # FIX: Only set defaults that actually exist in select_options
+                    default_selection = [t for t in ['A', 'B'] if t in select_options]
+                    if not default_selection:
+                        default_selection = list(select_options)
                 else:
                     default_selection = list(select_options)
 
@@ -314,6 +369,11 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
                 _min = float(clean.min())
                 _max = float(clean.max())
+
+                # FIX: Ensure _max is strictly greater than _min to prevent slider errors
+                if _max <= _min:
+                    _max = _min + 0.1
+
                 step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
 
                 custom_max_bounds = {
@@ -392,6 +452,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
 
     return df
 
+
 # --- 3. MAIN APPLICATION ---
 def main():
     custom_css = """
@@ -416,7 +477,7 @@ def main():
     </style>
     """
     st.markdown(custom_css, unsafe_allow_html=True)
-    st.title("GTT Trade Generator (US)")
+    st.title("GTT Trade Generator (USA)")
 
     file_age = get_file_age_days(SECTOR_FILE)
     if file_age is not None:
@@ -427,7 +488,7 @@ def main():
         else:
             st.sidebar.warning(f"Sector data loaded {file_age} days ago. Update recommended!")
     else:
-        st.sidebar.error("Symbols_US.csv not found!")
+        st.sidebar.error("Symbols_USA.csv not found!")
 
     st.sidebar.markdown("---")
     auto_refresh = st.sidebar.checkbox("Auto-refresh every 10 min", value=False, key="auto_refresh_toggle")
@@ -480,20 +541,20 @@ def main():
     if scan_mode == "Post Breakout":
         st.markdown("Automated lifecycle manager for Boom Boom, 1-2-3, and Coiled Spring setups.")
     else:
-        st.markdown(
-            "Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
+        st.markdown("Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
 
     st.sidebar.header("Scoring System Config")
-    saved_scoring = load_scoring_prefs()
+    saved_scoring = load_scoring_prefs("USA")
 
     st.sidebar.subheader("1. Tightness (Relative to ADR)")
-    st.sidebar.caption("Scores based on Ratio = Tightness / ADR. (e.g., NR4 < 0.30x ADR -> 4 pts)")
-    tight_defaults = saved_scoring.get('tightness_thresholds', [4.0, 6.0, 8.0, 10.0])
+    st.sidebar.caption("Scores based on Ratio = Tightness / ADR. Adjust for high/low beta stocks!")
+    # Better defaults that allow up to 1.2 for those high-ADR breakouts
+    tight_defaults = saved_scoring.get('tightness_thresholds', [0.4, 0.6, 0.9, 1.2])
     t_raw = [
-        st.sidebar.number_input("Absolute Threshold 1 (Ignored)", value=tight_defaults[0], step=0.5, key="sc_t1"),
-        st.sidebar.number_input("Absolute Threshold 2 (Ignored)", value=tight_defaults[1], step=0.5, key="sc_t2"),
-        st.sidebar.number_input("Absolute Threshold 3 (Ignored)", value=tight_defaults[2], step=0.5, key="sc_t3"),
-        st.sidebar.number_input("Absolute Threshold 4 (Ignored)", value=tight_defaults[3], step=0.5, key="sc_t4"),
+        st.sidebar.number_input("Rel Tightness < this → 4 pts", value=tight_defaults[0], step=0.1, key="sc_t1"),
+        st.sidebar.number_input("Rel Tightness < this → 3 pts", value=tight_defaults[1], step=0.1, key="sc_t2"),
+        st.sidebar.number_input("Rel Tightness < this → 2 pts", value=tight_defaults[2], step=0.1, key="sc_t3"),
+        st.sidebar.number_input("Rel Tightness < this → 1 pt", value=tight_defaults[3], step=0.1, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
@@ -564,7 +625,7 @@ def main():
             'tier_a_threshold': int(tier_a),
             'tier_b_threshold': int(tier_b),
         }
-        save_scoring_prefs(prefs_to_save)
+        save_scoring_prefs(prefs_to_save,"USA")
         st.sidebar.success("Saved! Will load by default next session.")
 
     st.subheader("Strategy & Risk Parameters")
@@ -719,7 +780,7 @@ def main():
 
                 actionable_df['Tight_Score'] = pd.cut(
                     rel_tight_filled,
-                    bins=[-float('inf'), 0.30, 0.45, 0.60, 0.80, float('inf')],
+                    bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
                     labels=[4, 3, 2, 1, 0]
                 ).astype(int)
 
@@ -856,7 +917,7 @@ def main():
 
             st.success(f"Generated {len(st.session_state.gtt_display_df)} actionable GTT setups.")
 
-            filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode)
+            filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode,t4)
 
             main_table_default_hidden = [
                 'RS_6M', 'RS_3M', 'RS_1M',
@@ -1175,8 +1236,8 @@ def main():
                     st.markdown(f"**All filtered** — `{len(all_symbols_sorted)} symbols`")
                     if all_symbols_sorted:
                         if st.button("Copy All", key="copy_all"):
-                            st.code(all_tv_string, language=None)
-                            st.caption(f"Click the icon above to copy {len(all_symbols_sorted)} symbols.")
+                           st.code(all_tv_string, language=None)
+                           st.caption(f"Click the icon above to copy {len(all_symbols_sorted)} symbols.")
                     else:
                         st.info("No symbols in view.")
 

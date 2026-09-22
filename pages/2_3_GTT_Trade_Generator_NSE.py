@@ -66,7 +66,7 @@ SCORING_PREFS_FILE = os.path.join(BASE_DIR, "gtt_us_scoring_prefs.json")
 def load_column_prefs(table_key):
     if not supabase: return None
     try:
-        response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id", "us_user").execute()
+        response = supabase.table("column_prefs").select("visible_columns").eq("table_key", table_key).eq("user_id", "nse_user").execute()
         if response.data:
             return response.data[0]['visible_columns']
         return None
@@ -77,9 +77,9 @@ def load_column_prefs(table_key):
 def save_column_prefs(table_key, cols):
     if not supabase: return
     try:
-        existing = supabase.table("column_prefs").select("id").eq("table_key", table_key).eq("user_id", "us_user").execute()
+        existing = supabase.table("column_prefs").select("id").eq("table_key", table_key).eq("user_id", "nse_user").execute()
         if existing.data:
-            supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id", "us_user").execute()
+            supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id", "nse_user").execute()
         else:
             supabase.table("column_prefs").insert({"user_id": "us_user", "table_key": table_key, "visible_columns": cols}).execute()
     except Exception as e:
@@ -111,7 +111,7 @@ def load_scoring_prefs(scanner_type: str):
     try:
         response = (supabase.table("scoring_prefs")
                     .select("config")
-                    .eq("user_id", "us_user")
+                    .eq("user_id", "nse_user")
                     .eq("scanner_type", scanner_type)
                     .execute())
         if response.data:
@@ -143,19 +143,19 @@ def save_scoring_prefs(prefs, scanner_type: str):
     try:
         existing = (supabase.table("scoring_prefs")
                     .select("id")
-                    .eq("user_id", "us_user")
+                    .eq("user_id", "nse_user")
                     .eq("scanner_type", scanner_type)
                     .execute())
 
         if existing.data:
             (supabase.table("scoring_prefs")
              .update({"config": prefs})
-             .eq("user_id", "us_user")
+             .eq("user_id", "nse_user")
              .eq("scanner_type", scanner_type)
              .execute())
         else:
             supabase.table("scoring_prefs").insert({
-                "user_id": "us_user",
+                "user_id": "nse_user",
                 "scanner_type": scanner_type,
                 "config": prefs
             }).execute()
@@ -936,7 +936,7 @@ def main():
                     key="main_table_col_select",
                 )
                 if st.button("Save as my default column set", key="save_main_cols_btn"):
-                    save_column_prefs('us_main_table', selected_main_cols)
+                    save_column_prefs('nse_main_table', selected_main_cols)
                     st.success("Saved — this set will load by default next time.")
             hidden_main_cols = [c for c in all_main_cols if c not in selected_main_cols]
 
