@@ -545,33 +545,33 @@ def main():
         st.markdown("Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
 
     st.sidebar.header("Scoring System Config")
-    saved_scoring = load_scoring_prefs("USA")
+    saved_scoring = load_scoring_prefs("NSE")
 
     st.sidebar.subheader("1. Tightness (Relative to ADR)")
     st.sidebar.caption("Scores based on Ratio = Tightness / ADR. Adjust for high/low beta stocks!")
     # Better defaults that allow up to 1.2 for those high-ADR breakouts
     tight_defaults = saved_scoring.get('tightness_thresholds', [0.4, 0.6, 0.9, 1.2])
     t_raw = [
-        st.sidebar.number_input("Rel Tightness < this → 4 pts", value=tight_defaults[0], step=0.1, key="sc_t1"),
-        st.sidebar.number_input("Rel Tightness < this → 3 pts", value=tight_defaults[1], step=0.1, key="sc_t2"),
-        st.sidebar.number_input("Rel Tightness < this → 2 pts", value=tight_defaults[2], step=0.1, key="sc_t3"),
-        st.sidebar.number_input("Rel Tightness < this → 1 pt", value=tight_defaults[3], step=0.1, key="sc_t4"),
+        st.sidebar.number_input("Rel Tightness < this → 4 pts", value=float(tight_defaults[0]), step=0.1, key="sc_t1"),
+        st.sidebar.number_input("Rel Tightness < this → 3 pts", value=float(tight_defaults[1]), step=0.1, key="sc_t2"),
+        st.sidebar.number_input("Rel Tightness < this → 2 pts", value=float(tight_defaults[2]), step=0.1, key="sc_t3"),
+        st.sidebar.number_input("Rel Tightness < this → 1 pt", value=float(tight_defaults[3]), step=0.1, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
     st.sidebar.subheader("2. BO Volume (dvol/avg) — Max 3 pts")
     vol_defaults = saved_scoring.get('vol_thresholds', [3.0, 2.0, 1.5])
     v_raw = [
-        st.sidebar.number_input("dvol/avg > this -> 3 pts", value=vol_defaults[0], step=0.5, key="sc_v1"),
-        st.sidebar.number_input("dvol/avg > this -> 2 pts", value=vol_defaults[1], step=0.5, key="sc_v2"),
-        st.sidebar.number_input("dvol/avg > this -> 1 pt", value=vol_defaults[2], step=0.5, key="sc_v3"),
+        st.sidebar.number_input("dvol/avg > this -> 3 pts", value=float(vol_defaults[0]), step=0.5, key="sc_v1"),
+        st.sidebar.number_input("dvol/avg > this -> 2 pts", value=float(vol_defaults[1]), step=0.5, key="sc_v2"),
+        st.sidebar.number_input("dvol/avg > this -> 1 pt", value=float(vol_defaults[2]), step=0.5, key="sc_v3"),
     ]
     v3, v2, v1 = sorted(v_raw)
 
     st.sidebar.subheader("3. TightCloses Bonus — Brownie Pts")
     tclose_pts = st.sidebar.number_input(
         "Points if W_TightCloses >= 1",
-        value=saved_scoring.get('tclose_bonus_pts', 2),
+        value=int(saved_scoring.get('tclose_bonus_pts', 2)),
         min_value=0, max_value=5, step=1, key="sc_tclose"
     )
 
@@ -579,13 +579,16 @@ def main():
     ma20_defaults = saved_scoring.get('ma20_tiers', [2.0, 4.0, 6.0])
     ma20_neg_cutoff = st.sidebar.number_input(
         "Avoid if 20MADist below this %",
-        value=saved_scoring.get('ma20_neg_cutoff', -6.0),
+        value=float(saved_scoring.get('ma20_neg_cutoff', -6.0)),
         step=0.5, key="sc_ma20_neg"
     )
     ma20_raw = [
-        st.sidebar.number_input("abs(20MADist) < this -> 3 pts", value=ma20_defaults[0], step=0.5, key="sc_ma20_1"),
-        st.sidebar.number_input("abs(20MADist) < this -> 2 pts", value=ma20_defaults[1], step=0.5, key="sc_ma20_2"),
-        st.sidebar.number_input("abs(20MADist) < this -> 1 pt", value=ma20_defaults[2], step=0.5, key="sc_ma20_3"),
+        st.sidebar.number_input("abs(20MADist) < this -> 3 pts", value=float(ma20_defaults[0]), step=0.5,
+                                key="sc_ma20_1"),
+        st.sidebar.number_input("abs(20MADist) < this -> 2 pts", value=float(ma20_defaults[1]), step=0.5,
+                                key="sc_ma20_2"),
+        st.sidebar.number_input("abs(20MADist) < this -> 1 pt", value=float(ma20_defaults[2]), step=0.5,
+                                key="sc_ma20_3"),
     ]
     ma20_t1, ma20_t2, ma20_t3 = sorted(ma20_raw)
 
@@ -593,35 +596,39 @@ def main():
     ma10_defaults = saved_scoring.get('ma10_tiers', [4.0, 6.0])
     ma10_neg_cutoff = st.sidebar.number_input(
         "Avoid if 10MADist below this %",
-        value=saved_scoring.get('ma10_neg_cutoff', -6.0),
+        value=float(saved_scoring.get('ma10_neg_cutoff', -6.0)),
         step=0.5, key="sc_ma10_neg"
     )
     ma10_raw = [
-        st.sidebar.number_input("abs(10MADist) < this -> 2 pts", value=ma10_defaults[0], step=0.5, key="sc_ma10_1"),
-        st.sidebar.number_input("abs(10MADist) < this -> 1 pt", value=ma10_defaults[1], step=0.5, key="sc_ma10_2"),
+        st.sidebar.number_input("abs(10MADist) < this -> 2 pts", value=float(ma10_defaults[0]), step=0.5,
+                                key="sc_ma10_1"),
+        st.sidebar.number_input("abs(10MADist) < this -> 1 pt", value=float(ma10_defaults[1]), step=0.5,
+                                key="sc_ma10_2"),
     ]
     ma10_t1, ma10_t2 = sorted(ma10_raw)
+
     # ── Quick Filter Config ──
     st.sidebar.subheader("🚩 Quick Filter Config")
     filter_min_adr = st.sidebar.number_input(
         "Min ADR for Tight Flags",
-        value=saved_scoring.get('filter_min_adr', 5.0),
+        value=float(saved_scoring.get('filter_min_adr', 5.0)),
         step=0.5, key="sc_f_adr"
     )
     filter_min_avgvol = st.sidebar.number_input(
         "Min AvgVol (Mln) for Tight Flags",
-        value=saved_scoring.get('filter_min_avgvol', 10.0),
+        value=float(saved_scoring.get('filter_min_avgvol', 10.0)),
         step=1.0, key="sc_f_avgvol"
     )
+
     st.sidebar.subheader("Tier Thresholds")
     tier_a = st.sidebar.number_input(
         "Tier A min score",
-        value=saved_scoring.get('tier_a_threshold', 10),
+        value=int(saved_scoring.get('tier_a_threshold', 10)),
         min_value=1, max_value=14, step=1, key="sc_tier_a"
     )
     tier_b = st.sidebar.number_input(
         "Tier B min score",
-        value=saved_scoring.get('tier_b_threshold', 7),
+        value=int(saved_scoring.get('tier_b_threshold', 7)),
         min_value=1, max_value=14, step=1, key="sc_tier_b"
     )
 
