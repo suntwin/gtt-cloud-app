@@ -228,7 +228,7 @@ def clean_df_for_json(df):
     return df
 
 
-def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
+def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
 
     check_today_bo = False
@@ -239,7 +239,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
     check_tight_flags = False
 
     if scan_mode == "Anticipation":
-        check_tight_flags = st.checkbox(f"Check high Tight flags (ADR >= 4.0, AvgVol >= 10, Rel Tight <= {t4})",
+        check_tight_flags = st.checkbox(f"Check high Tight flags (ADR >= 4.0, AvgVol >= 10, Rel Tight <= {max_rel_tight})",
                                         key="check_tight_flags")
 
     if not modify:
@@ -259,7 +259,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 df = df[df['_avgvol_mln'].fillna(0) >= 10.0]
             if '_rel_tightness' in df.columns:
                 df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
-                df = df[df['_rel_tightness'].fillna(999) <= t4]
+                df = df[df['_rel_tightness'].fillna(999) <= max_rel_tight]
                 df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
         return df
@@ -861,7 +861,7 @@ def main():
 
             st.success(f"Generated {len(st.session_state.gtt_display_df)} actionable GTT setups.")
 
-            filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode)
+            filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode,t4)
 
             main_table_default_hidden = [
                 'RS_6M', 'RS_3M', 'RS_1M',
