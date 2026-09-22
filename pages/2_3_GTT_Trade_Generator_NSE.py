@@ -248,7 +248,7 @@ def fetch_weekly_scan(url):
                 return None
 
             df = pd.DataFrame(rows, columns=['Symbol', 'Last'] + weekly_metric_columns)
-            df['Symbol'] = df['Symbol'].astype(str).str.upper().str.strip()
+            df['Symbol'] = df['Symbol'].astype(str).str.upper().str.replace('.NS', '', regex=False).str.strip()
 
             numeric_cols = ['Last'] + weekly_metric_columns
             for col in numeric_cols:
