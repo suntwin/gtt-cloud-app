@@ -237,8 +237,9 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                                      key="check_today_bo")
 
     check_tight_flags = False
+
     if scan_mode == "Anticipation":
-        check_tight_flags = st.checkbox("Check high Tight flags (ADR >= 4.0, AvgVol >= 10, Rel Tight <= 0.6)",
+        check_tight_flags = st.checkbox(f"Check high Tight flags (ADR >= 4.0, AvgVol >= 10, Rel Tight <= {t4})",
                                         key="check_tight_flags")
 
     if not modify:
@@ -258,7 +259,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str) -> pd.DataFrame:
                 df = df[df['_avgvol_mln'].fillna(0) >= 10.0]
             if '_rel_tightness' in df.columns:
                 df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
-                df = df[df['_rel_tightness'].fillna(999) <= 0.6]
+                df = df[df['_rel_tightness'].fillna(999) <= t4]
                 df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
 
         return df
@@ -490,13 +491,14 @@ def main():
     saved_scoring = load_scoring_prefs()
 
     st.sidebar.subheader("1. Tightness (Relative to ADR)")
-    st.sidebar.caption("Scores based on Ratio = Tightness / ADR. (e.g., NR4 < 0.30x ADR -> 4 pts)")
-    tight_defaults = saved_scoring.get('tightness_thresholds', [4.0, 6.0, 8.0, 10.0])
+    st.sidebar.caption("Scores based on Ratio = Tightness / ADR. Adjust for high/low beta stocks!")
+    # Better defaults that allow up to 1.2 for those high-ADR breakouts
+    tight_defaults = saved_scoring.get('tightness_thresholds', [0.4, 0.6, 0.9, 1.2])
     t_raw = [
-        st.sidebar.number_input("Absolute Threshold 1 (Ignored)", value=tight_defaults[0], step=0.5, key="sc_t1"),
-        st.sidebar.number_input("Absolute Threshold 2 (Ignored)", value=tight_defaults[1], step=0.5, key="sc_t2"),
-        st.sidebar.number_input("Absolute Threshold 3 (Ignored)", value=tight_defaults[2], step=0.5, key="sc_t3"),
-        st.sidebar.number_input("Absolute Threshold 4 (Ignored)", value=tight_defaults[3], step=0.5, key="sc_t4"),
+        st.sidebar.number_input("Rel Tightness < this → 4 pts", value=tight_defaults[0], step=0.1, key="sc_t1"),
+        st.sidebar.number_input("Rel Tightness < this → 3 pts", value=tight_defaults[1], step=0.1, key="sc_t2"),
+        st.sidebar.number_input("Rel Tightness < this → 2 pts", value=tight_defaults[2], step=0.1, key="sc_t3"),
+        st.sidebar.number_input("Rel Tightness < this → 1 pt", value=tight_defaults[3], step=0.1, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
@@ -722,7 +724,7 @@ def main():
 
                 actionable_df['Tight_Score'] = pd.cut(
                     rel_tight_filled,
-                    bins=[-float('inf'), 0.30, 0.45, 0.60, 0.80, float('inf')],
+                    bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
                     labels=[4, 3, 2, 1, 0]
                 ).astype(int)
 
