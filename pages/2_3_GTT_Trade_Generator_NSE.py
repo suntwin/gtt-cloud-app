@@ -284,7 +284,7 @@ def clean_df_for_json(df):
     return df
 
 
-def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float) -> pd.DataFrame:
+def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_adr: float, min_avgvol: float) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
 
     check_today_bo = False
@@ -295,8 +295,9 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float) -> p
     check_tight_flags = False
 
     if scan_mode == "Anticipation":
-        check_tight_flags = st.checkbox(f"Check high Tight flags (ADR >= 4.0, AvgVol >= 10, Rel Tight <= {max_rel_tight})",
-                                        key="check_tight_flags")
+        check_tight_flags = st.checkbox(
+            f"Check high Tight flags (ADR >= {min_adr}, AvgVol >= {min_avgvol}, Rel Tight <= {max_rel_tight})",
+            key="check_tight_flags")
 
     if not modify:
         if check_today_bo:
@@ -600,7 +601,18 @@ def main():
         st.sidebar.number_input("abs(10MADist) < this -> 1 pt", value=ma10_defaults[1], step=0.5, key="sc_ma10_2"),
     ]
     ma10_t1, ma10_t2 = sorted(ma10_raw)
-
+    # ── Quick Filter Config ──
+    st.sidebar.subheader("🚩 Quick Filter Config")
+    filter_min_adr = st.sidebar.number_input(
+        "Min ADR for Tight Flags",
+        value=saved_scoring.get('filter_min_adr', 4.0),
+        step=0.5, key="sc_f_adr"
+    )
+    filter_min_avgvol = st.sidebar.number_input(
+        "Min AvgVol (Mln) for Tight Flags",
+        value=saved_scoring.get('filter_min_avgvol', 10.0),
+        step=1.0, key="sc_f_avgvol"
+    )
     st.sidebar.subheader("Tier Thresholds")
     tier_a = st.sidebar.number_input(
         "Tier A min score",
@@ -624,6 +636,9 @@ def main():
             'ma10_neg_cutoff': ma10_neg_cutoff,
             'tier_a_threshold': int(tier_a),
             'tier_b_threshold': int(tier_b),
+            # Add the new quick filter configs here:
+            'filter_min_adr': float(filter_min_adr),
+            'filter_min_avgvol': float(filter_min_avgvol),
         }
         save_scoring_prefs(prefs_to_save,"NSE")
         st.sidebar.success("Saved! Will load by default next session.")
@@ -917,7 +932,7 @@ def main():
 
             st.success(f"Generated {len(st.session_state.gtt_display_df)} actionable GTT setups.")
 
-            filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode,t4)
+            filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode,t4,filter_min_adr, filter_min_avgvol)
 
             main_table_default_hidden = [
                 'RS_6M', 'RS_3M', 'RS_1M',
