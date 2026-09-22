@@ -95,22 +95,78 @@ def get_persisted_columns(table_key, all_cols, default_hidden_cols):
     return saved if saved else default_visible
 
 
-def load_scoring_prefs():
-    if os.path.exists(SCORING_PREFS_FILE):
-        try:
-            with open(SCORING_PREFS_FILE, 'r') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+def load_scoring_prefs(scanner_type: str):
+    """Loads scoring prefs from Supabase, falls back to local JSON."""
+    local_file = os.path.join(BASE_DIR, f"{scanner_type.lower()}_scoring_prefs.json")
 
+    if not supabase:
+        if os.path.exists(local_file):
+            try:
+                with open(local_file, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
 
-def save_scoring_prefs(prefs):
     try:
-        with open(SCORING_PREFS_FILE, 'w') as f:
-            json.dump(prefs, f, indent=2)
+        response = (supabase.table("scoring_prefs")
+                    .select("config")
+                    .eq("user_id", "us_user")
+                    .eq("scanner_type", scanner_type)
+                    .execute())
+        if response.data:
+            return response.data[0]['config']
+        return {}
     except Exception as e:
-        st.warning(f"Could not save scoring preferences: {e}")
+        # Fallback to local file if DB error occurs
+        if os.path.exists(local_file):
+            try:
+                with open(local_file, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+
+def save_scoring_prefs(prefs, scanner_type: str):
+    """Saves scoring prefs to Supabase, falls back to local JSON."""
+    local_file = os.path.join(BASE_DIR, f"{scanner_type.lower()}_scoring_prefs.json")
+
+    if not supabase:
+        try:
+            with open(local_file, 'w') as f:
+                json.dump(prefs, f, indent=2)
+        except Exception as e:
+            st.warning(f"Could not save scoring preferences locally: {e}")
+        return
+
+    try:
+        existing = (supabase.table("scoring_prefs")
+                    .select("id")
+                    .eq("user_id", "us_user")
+                    .eq("scanner_type", scanner_type)
+                    .execute())
+
+        if existing.data:
+            (supabase.table("scoring_prefs")
+             .update({"config": prefs})
+             .eq("user_id", "us_user")
+             .eq("scanner_type", scanner_type)
+             .execute())
+        else:
+            supabase.table("scoring_prefs").insert({
+                "user_id": "us_user",
+                "scanner_type": scanner_type,
+                "config": prefs
+            }).execute()
+    except Exception as e:
+        st.warning(f"Could not save scoring config to cloud: {e}")
+        # Try saving locally as a fallback
+        try:
+            with open(local_file, 'w') as f:
+                json.dump(prefs, f, indent=2)
+        except Exception:
+            pass
 
 
 @st.cache_data(ttl=3600)
@@ -488,7 +544,7 @@ def main():
         st.markdown("Anticipation scanner for coiled setups as they are breaking out. BEWARE - MAKE SURE VOLUME IS COMING IN")
 
     st.sidebar.header("Scoring System Config")
-    saved_scoring = load_scoring_prefs()
+    saved_scoring = load_scoring_prefs("NSE")
 
     st.sidebar.subheader("1. Tightness (Relative to ADR)")
     st.sidebar.caption("Scores based on Ratio = Tightness / ADR. Adjust for high/low beta stocks!")
@@ -569,7 +625,7 @@ def main():
             'tier_a_threshold': int(tier_a),
             'tier_b_threshold': int(tier_b),
         }
-        save_scoring_prefs(prefs_to_save)
+        save_scoring_prefs(prefs_to_save,"NSE")
         st.sidebar.success("Saved! Will load by default next session.")
 
     st.subheader("Strategy & Risk Parameters")
