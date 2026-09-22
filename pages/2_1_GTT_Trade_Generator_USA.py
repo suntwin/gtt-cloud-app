@@ -311,9 +311,9 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_a
 
         if check_tight_flags:
             if 'Adr' in df.columns:
-                df = df[df['Adr'].fillna(0) >= 4.0]
+                df = df[df['Adr'].fillna(0) >= min_adr]
             if '_avgvol_mln' in df.columns:
-                df = df[df['_avgvol_mln'].fillna(0) >= 10.0]
+                df = df[df['_avgvol_mln'].fillna(0) >= min_avgvol]
             if '_rel_tightness' in df.columns:
                 df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
                 df = df[df['_rel_tightness'].fillna(999) <= max_rel_tight]
