@@ -548,6 +548,11 @@ def main():
     saved_scoring = load_scoring_prefs("NSE")
 
     st.sidebar.subheader("1. Weekly Setup (10w MA) — Max 6 pts")
+    wk_neg_cutoff = st.sidebar.number_input(
+        "Avoid if W_Dist10wMA below this %",
+        value=float(saved_scoring.get('wk_neg_cutoff', -3.0)),
+        step=0.5, key="sc_wk_neg"
+    )
     st.sidebar.caption("The foundation. How close is the weekly price to the 10w MA?")
     wk_defaults = saved_scoring.get('wk_thresholds', [3.0, 6.0])
     w_raw = [
@@ -662,6 +667,7 @@ def main():
             # Add the new quick filter configs here:
             'filter_min_adr': float(filter_min_adr),
             'filter_min_avgvol': float(filter_min_avgvol),
+            'wk_neg_cutoff': wk_neg_cutoff,
         }
         save_scoring_prefs(prefs_to_save,"NSE")
         st.sidebar.success("Saved! Will load by default next session.")
@@ -811,15 +817,23 @@ def main():
                 actionable_df['MA10_Score'] = 0
             else:
 
-                # 0) Weekly Setup Score (The Foundation)
                 if 'W_Dist10wMA' in actionable_df.columns:
-                    wk_abs = actionable_df['W_Dist10wMA'].fillna(999).abs()
+                    wk_raw = actionable_df['W_Dist10wMA'].fillna(999)
+                    wk_abs = wk_raw.abs()
+
                     wk_base_score = pd.cut(
                         wk_abs,
                         bins=[-float('inf'), w1, w2, float('inf')],
                         labels=[4, 2, 0]
                     ).astype(int)
-                    wk_is_invalid = actionable_df['W_Dist10wMA'].isna()
+
+                    # Invalid if NaN, or if price is meaningfully BELOW wema10 (negative distance)
+                    # Use a configurable cutoff, default -3% (i.e., allow small under-moves)
+                    wk_neg_cutoff = float(saved_scoring.get('wk_neg_cutoff', -3.0))
+                    wk_is_invalid = (
+                            actionable_df['W_Dist10wMA'].isna()
+                            | (actionable_df['W_Dist10wMA'] < wk_neg_cutoff)
+                    )
                     actionable_df['Wk_Setup_Score'] = np.where(wk_is_invalid, 0, wk_base_score)
                 else:
                     actionable_df['Wk_Setup_Score'] = 0
@@ -1121,7 +1135,9 @@ def main():
                 gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
             if '_10madist' in filtered_df.columns:
                 gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
-
+            if 'W_Dist10wMA' in filtered_df.columns:
+                gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110,
+                                    headerName='Wk 10wMA %', cellStyle=ma_dist_jscode)
             score_col_style = JsCode("""
                 function(params) {
                     const val = params.value;
