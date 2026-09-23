@@ -547,6 +547,8 @@ def main():
     st.sidebar.header("Scoring System Config")
     saved_scoring = load_scoring_prefs("NSE")
 
+
+
     st.sidebar.subheader("1. Weekly Setup (10w MA) — Max 6 pts")
     wk_neg_cutoff = st.sidebar.number_input(
         "Avoid if W_Dist10wMA below this %",
@@ -555,6 +557,24 @@ def main():
     )
     st.sidebar.caption("The foundation. How close is the weekly price to the 10w MA?")
     wk_defaults = saved_scoring.get('wk_thresholds', [3.0, 6.0])
+
+    # ── Dedicated heatmap for W_Dist10wMA: respects wk_neg_cutoff, separates "below" from "above" ──
+    wk_dist_jscode = JsCode(f"""
+        function(params) {{
+            const val = params.value;
+            if (val === null || val === undefined || isNaN(val)) return null;
+            // Below the configured cutoff → invalid, paint RED
+            if (val < {wk_neg_cutoff}) return {{ 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' }};
+            // Slightly below wema10 but within tolerance → pale yellow (warning)
+            if (val < 0) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
+            // Above wema10 → green tiers (tighter = better)
+            if (val < 2) return {{ 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' }};
+            if (val < 4) return {{ 'backgroundColor': '#8ee68e', 'color': 'black' }};
+            if (val < 6) return {{ 'backgroundColor': '#d4edda', 'color': 'black' }};
+            // Far above → no color (too stretched)
+            return null;
+        }}
+    """)
     w_raw = [
         st.sidebar.number_input("Wk Dist 10wMA < this → 4 pts", value=float(wk_defaults[0]), step=0.5, key="sc_w1"),
         st.sidebar.number_input("Wk Dist 10wMA < this → 2 pts", value=float(wk_defaults[1]), step=0.5, key="sc_w2"),
@@ -829,7 +849,7 @@ def main():
 
                     # Invalid if NaN, or if price is meaningfully BELOW wema10 (negative distance)
                     # Use a configurable cutoff, default -3% (i.e., allow small under-moves)
-                    wk_neg_cutoff = float(saved_scoring.get('wk_neg_cutoff', -3.0))
+
                     wk_is_invalid = (
                             actionable_df['W_Dist10wMA'].isna()
                             | (actionable_df['W_Dist10wMA'] < wk_neg_cutoff)
@@ -1131,22 +1151,7 @@ def main():
                     return null;
                 }
             """)
-            wk_dist_jscode = JsCode(f"""
-                function(params) {{
-                    const val = params.value;
-                    if (val === null || val === undefined || isNaN(val)) return null;
-                    // Below the configured cutoff → invalid, paint RED
-                    if (val < {wk_neg_cutoff}) return {{ 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' }};
-                    // Slightly below wema10 but still within tolerance → pale yellow (warning)
-                    if (val < 0) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
-                    // Above wema10 → green tiers (tighter = better)
-                    if (val < 2) return {{ 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' }};
-                    if (val < 4) return {{ 'backgroundColor': '#8ee68e', 'color': 'black' }};
-                    if (val < 6) return {{ 'backgroundColor': '#d4edda', 'color': 'black' }};
-                    // Far above → no color (too stretched)
-                    return null;
-                }}
-            """)
+
 
             if '_20madist' in filtered_df.columns:
                 gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
@@ -1552,9 +1557,9 @@ def main():
                                 }
                             """)
                             # Weekly 10wMA heatmap (reuse the daily MA distance styling)
-                            if 'W_Dist10wMA' in filtered_df.columns:
+                            if 'W_Dist10wMA' in sector_display.columns:
                                 gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %',
-                                                    cellStyle=ma_dist_jscode)
+                                                    cellStyle=wk_dist_jscode)
 
                             # Style the new score columns
                             for sc_col in ['Wk_Setup_Score', 'Wk_TClose_Score', 'Tight_Score', 'Vol_Score',
