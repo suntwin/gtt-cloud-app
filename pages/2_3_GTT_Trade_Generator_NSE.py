@@ -579,7 +579,7 @@ def main():
         step=0.5, key="sc_wk_neg"
     )
     st.sidebar.caption("The foundation. How close is the weekly price to the 10w MA?")
-    wk_defaults = saved_scoring.get('wk_thresholds', [3.0, 6.0])
+    wk_defaults = saved_scoring.get('wk_thresholds', [2.0, 4.0, 6.0, 10.0])
 
     # ── Dedicated heatmap for W_Dist10wMA ──
     wk_dist_jscode = JsCode(f"""
@@ -591,26 +591,18 @@ def main():
             if (val < 2) return {{ 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' }};
             if (val < 4) return {{ 'backgroundColor': '#8ee68e', 'color': 'black' }};
             if (val < 6) return {{ 'backgroundColor': '#d4edda', 'color': 'black' }};
+            if (val < 10) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
             return null;
         }}
     """)
 
-    # ── Shared abs-value comparator for AG-Grid header clicks on tightness/distance columns ──
-    abs_comparator = JsCode("""
-        function(valueA, valueB, nodeA, nodeB, isInverted) {
-            const a = (valueA === null || valueA === undefined || isNaN(valueA)) ? Infinity : Math.abs(valueA);
-            const b = (valueB === null || valueB === undefined || isNaN(valueB)) ? Infinity : Math.abs(valueB);
-            if (a < b) return -1;
-            if (a > b) return 1;
-            return 0;
-        }
-    """)
-
     w_raw = [
-        st.sidebar.number_input("Wk Dist 10wMA < this -> 4 pts", value=float(wk_defaults[0]), step=0.5, key="sc_w1"),
-        st.sidebar.number_input("Wk Dist 10wMA < this -> 2 pts", value=float(wk_defaults[1]), step=0.5, key="sc_w2"),
+        st.sidebar.number_input("Wk Dist < this -> 4 pts", value=float(wk_defaults[0]), step=0.5, key="sc_w1"),
+        st.sidebar.number_input("Wk Dist < this -> 3 pts", value=float(wk_defaults[1]), step=0.5, key="sc_w2"),
+        st.sidebar.number_input("Wk Dist < this -> 2 pts", value=float(wk_defaults[2]), step=0.5, key="sc_w3"),
+        st.sidebar.number_input("Wk Dist < this -> 1 pt", value=float(wk_defaults[3]), step=0.5, key="sc_w4"),
     ]
-    w1, w2 = sorted(w_raw)
+    w1, w2, w3, w4 = sorted(w_raw)
 
     wclose_pts = st.sidebar.number_input(
         "Bonus pts if W_TightCloses (out of 5) >= 1",
@@ -700,6 +692,7 @@ def main():
         prefs_to_save = {
             'tightness_thresholds': t_raw,
             'wk_thresholds': w_raw,
+
             'wclose_pts': int(wclose_pts),
             'vol_thresholds': v_raw,
             'tclose_bonus_pts': int(tclose_pts),
@@ -831,6 +824,7 @@ def main():
             thresholds_ok = (
                     len(set([t1, t2, t3, t4])) >= 4 and
                     len(set([v1, v2, v3])) >= 3 and
+                    len(set([w1, w2, w3, w4])) >= 4 and
                     len(set([ma20_t1, ma20_t2, ma20_t3])) >= 3 and
                     len(set([ma10_t1, ma10_t2])) >= 2
             )
@@ -850,8 +844,18 @@ def main():
                 if 'W_Dist10wMA' in actionable_df.columns:
                     wk_raw = actionable_df['W_Dist10wMA'].fillna(999)
                     wk_abs = wk_raw.abs()
-                    wk_base_score = pd.cut(wk_abs, bins=[-float('inf'), w1, w2, float('inf')], labels=[4, 2, 0]).astype(int)
-                    wk_is_invalid = (actionable_df['W_Dist10wMA'].isna() | (actionable_df['W_Dist10wMA'] < wk_neg_cutoff))
+
+                    # 5-tier scoring: 4, 3, 2, 1, 0 — stretched to cover up to 10%+
+                    wk_base_score = pd.cut(
+                        wk_abs,
+                        bins=[-float('inf'), w1, w2, w3, w4, float('inf')],
+                        labels=[4, 3, 2, 1, 0]
+                    ).astype(int)
+
+                    wk_is_invalid = (
+                            actionable_df['W_Dist10wMA'].isna()
+                            | (actionable_df['W_Dist10wMA'] < wk_neg_cutoff)
+                    )
                     actionable_df['Wk_Setup_Score'] = np.where(wk_is_invalid, 0, wk_base_score)
                 else:
                     actionable_df['Wk_Setup_Score'] = 0
