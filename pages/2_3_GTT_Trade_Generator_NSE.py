@@ -810,7 +810,7 @@ def main():
                 actionable_df['MA20_Score'] = 0
                 actionable_df['MA10_Score'] = 0
             else:
-                else:
+
                 # 0) Weekly Setup Score (The Foundation)
                 if 'W_Dist10wMA' in actionable_df.columns:
                     wk_abs = actionable_df['W_Dist10wMA'].fillna(999).abs()
