@@ -547,7 +547,68 @@ def main():
     st.sidebar.header("Scoring System Config")
     saved_scoring = load_scoring_prefs("NSE")
 
+    # ════════════════════════════════════════════════════════════════════
+    # Multi-Level Sort Config
+    # ════════════════════════════════════════════════════════════════════
+    ABS_SORT_COLS = {'W_Dist10wMA', '_rel_tightness', '_20madist', '_10madist', '_10wmadist'}
 
+    sortable_columns = {
+        'Total_Score': 'Total Score',
+        'W_Dist10wMA': 'Wk Dist 10wMA',
+        '_rel_tightness': 'Rel Tightness',
+        'Adr': 'ADR',
+        'Ti65': 'Ti65 (Tightness)',
+        'Avg_RS': 'Avg Relative Strength',
+        '_avgvol_mln': 'Avg Volume (Mln)',
+        'dvol': 'Daily Volume',
+        'Sector_Percentile': 'Sector Percentile',
+        '_chg_percentclose': 'Chg % Close',
+        'W_TightCloses_10w': 'Wk Tight Closes',
+        '_nr4': 'NR4',
+        '_nr4_previous': 'NR4 Previous',
+        '_20madist': '20MA Distance',
+        '_10madist': '10MA Distance',
+        'W_PctOf10wkHigh': 'Wk % of 10w High',
+    }
+
+    with st.sidebar.expander("📊 Custom Multi-Level Sort", expanded=False):
+        use_custom_sort = st.checkbox("Enable custom sort order", value=False, key="use_custom_sort")
+        tier_first = st.checkbox("Always sort Tier A→B→Ignore first", value=True, key="tier_first_sort")
+
+        sort_levels = []
+        if use_custom_sort:
+            st.caption("💡 For tightness/distance columns, sorting is done by **|value|** (closest to 0 = tightest).")
+            for i in range(1, 4):
+                col = st.selectbox(
+                    f"Sort Level {i}",
+                    options=['(skip)'] + list(sortable_columns.keys()),
+                    index=0,
+                    format_func=lambda x: sortable_columns.get(x, '(skip)'),
+                    key=f"sort_lvl_{i}_col"
+                )
+                if col == '(skip)':
+                    continue
+
+                is_abs = col in ABS_SORT_COLS
+                abs_note = " (by |val|)" if is_abs else ""
+
+                # Smart default direction: "High → Low" for metrics where bigger is better
+                high_is_good_cols = {
+                    'Total_Score', 'Avg_RS', 'Adr', 'Sector_Percentile',
+                    '_chg_percentclose', 'W_TightCloses_10w', 'W_PctOf10wkHigh',
+                    'dvol', '_avgvol_mln', 'Ti65'
+                }
+                default_dir_idx = 1 if col in high_is_good_cols else 0
+
+                direction = st.radio(
+                    f"Direction{abs_note}",
+                    options=['Low → High', 'High → Low'],
+                    index=default_dir_idx,
+                    key=f"sort_lvl_{i}_dir",
+                    horizontal=True
+                )
+                ascending = (direction == 'Low → High')
+                sort_levels.append((col, ascending))
 
     st.sidebar.subheader("1. Weekly Setup (10w MA) — Max 6 pts")
     wk_neg_cutoff = st.sidebar.number_input(
@@ -995,21 +1056,56 @@ def main():
             display_df = actionable_df[valid_cols].copy()
             display_df['_tier_sort_key'] = actionable_df['_tier_sort_key']
 
-            sort_weekly_col = 'W_Dist10wMA'
-            if sort_weekly_col in display_df.columns:
-                display_df[sort_weekly_col] = pd.to_numeric(display_df[sort_weekly_col], errors='coerce')
-                # Create an absolute value column to sort by (closest to 0 = tightest)
-                display_df['_abs_sort_key'] = display_df[sort_weekly_col].abs()
+            ABS_SORT_COLS_LOCAL = {'W_Dist10wMA', '_rel_tightness', '_20madist', '_10madist', '_10wmadist'}
 
-                # Sort by Tier, then by Weekly Distance (tightest first), then by Daily Rel Tightness
-                display_df = display_df.sort_values(
-                    by=['_tier_sort_key', '_abs_sort_key', '_rel_tightness'],
-                    ascending=[True, True, True],
-                    na_position='last'
-                )
-                display_df = display_df.drop(columns=['_abs_sort_key'], errors='ignore')
+            if use_custom_sort and len(sort_levels) > 0:
+                sort_by_cols = []
+                sort_ascending = []
+                temp_cols_to_drop = []
+
+                # Tier first if enabled
+                if tier_first:
+                    sort_by_cols.append('_tier_sort_key')
+                    sort_ascending.append(True)
+
+                for col, asc in sort_levels:
+                    if col not in display_df.columns:
+                        continue
+                    display_df[col] = pd.to_numeric(display_df[col], errors='coerce')
+
+                    if col in ABS_SORT_COLS_LOCAL:
+                        # Sort by absolute value (closeness to 0 = tighter = better)
+                        temp_col = f'_abs_sort_{col}'
+                        display_df[temp_col] = display_df[col].abs()
+                        sort_by_cols.append(temp_col)
+                        temp_cols_to_drop.append(temp_col)
+                    else:
+                        sort_by_cols.append(col)
+                    sort_ascending.append(asc)
+
+                if sort_by_cols:
+                    display_df = display_df.sort_values(
+                        by=sort_by_cols,
+                        ascending=sort_ascending,
+                        na_position='last'
+                    )
+                    display_df = display_df.drop(columns=temp_cols_to_drop, errors='ignore')
+                else:
+                    display_df = display_df.sort_values(by=['_tier_sort_key'], ascending=[True])
             else:
-                display_df = display_df.sort_values(by=['_tier_sort_key'], ascending=[True])
+                # Default: Tier → Wk Dist (abs) → Rel Tightness
+                sort_weekly_col = 'W_Dist10wMA'
+                if sort_weekly_col in display_df.columns:
+                    display_df[sort_weekly_col] = pd.to_numeric(display_df[sort_weekly_col], errors='coerce')
+                    display_df['_abs_sort_key'] = display_df[sort_weekly_col].abs()
+                    display_df = display_df.sort_values(
+                        by=['_tier_sort_key', '_abs_sort_key', '_rel_tightness'],
+                        ascending=[True, True, True],
+                        na_position='last'
+                    )
+                    display_df = display_df.drop(columns=['_abs_sort_key'], errors='ignore')
+                else:
+                    display_df = display_df.sort_values(by=['_tier_sort_key'], ascending=[True])
 
             display_df = display_df.drop(columns=['_tier_sort_key'], errors='ignore')
             st.session_state.gtt_display_df = display_df
