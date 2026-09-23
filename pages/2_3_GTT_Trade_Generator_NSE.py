@@ -81,7 +81,7 @@ def save_column_prefs(table_key, cols):
         if existing.data:
             supabase.table("column_prefs").update({"visible_columns": cols}).eq("table_key", table_key).eq("user_id", "nse_user").execute()
         else:
-            supabase.table("column_prefs").insert({"user_id": "us_user", "table_key": table_key, "visible_columns": cols}).execute()
+            supabase.table("column_prefs").insert({"user_id": "nse_user", "table_key": table_key, "visible_columns": cols}).execute()
     except Exception as e:
         st.warning(f"Could not save column preferences to cloud: {e}")
 
@@ -96,9 +96,7 @@ def get_persisted_columns(table_key, all_cols, default_hidden_cols):
 
 
 def load_scoring_prefs(scanner_type: str):
-    """Loads scoring prefs from Supabase, falls back to local JSON."""
     local_file = os.path.join(BASE_DIR, f"{scanner_type.lower()}_scoring_prefs.json")
-
     if not supabase:
         if os.path.exists(local_file):
             try:
@@ -107,7 +105,6 @@ def load_scoring_prefs(scanner_type: str):
             except Exception:
                 return {}
         return {}
-
     try:
         response = (supabase.table("scoring_prefs")
                     .select("config")
@@ -118,7 +115,6 @@ def load_scoring_prefs(scanner_type: str):
             return response.data[0]['config']
         return {}
     except Exception as e:
-        # Fallback to local file if DB error occurs
         if os.path.exists(local_file):
             try:
                 with open(local_file, 'r') as f:
@@ -129,9 +125,7 @@ def load_scoring_prefs(scanner_type: str):
 
 
 def save_scoring_prefs(prefs, scanner_type: str):
-    """Saves scoring prefs to Supabase, falls back to local JSON."""
     local_file = os.path.join(BASE_DIR, f"{scanner_type.lower()}_scoring_prefs.json")
-
     if not supabase:
         try:
             with open(local_file, 'w') as f:
@@ -139,14 +133,12 @@ def save_scoring_prefs(prefs, scanner_type: str):
         except Exception as e:
             st.warning(f"Could not save scoring preferences locally: {e}")
         return
-
     try:
         existing = (supabase.table("scoring_prefs")
                     .select("id")
                     .eq("user_id", "nse_user")
                     .eq("scanner_type", scanner_type)
                     .execute())
-
         if existing.data:
             (supabase.table("scoring_prefs")
              .update({"config": prefs})
@@ -161,7 +153,6 @@ def save_scoring_prefs(prefs, scanner_type: str):
             }).execute()
     except Exception as e:
         st.warning(f"Could not save scoring config to cloud: {e}")
-        # Try saving locally as a fallback
         try:
             with open(local_file, 'w') as f:
                 json.dump(prefs, f, indent=2)
@@ -195,14 +186,11 @@ def fetch_gtt_scan(url, name):
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200 and response.text.strip():
             df = pd.read_csv(StringIO(response.text), sep='|', header=None)
-
             if len(df.columns) < len(gtt_columns):
                 df.columns = gtt_columns[:len(df.columns)]
             else:
                 df.columns = gtt_columns + [f'Extra_{i}' for i in range(len(gtt_columns), len(df.columns))]
-
             df['Symbol'] = df['Symbol'].str.upper().str.replace('.NS', '', regex=False)
-
             numeric_cols_fillna = [
                 'Last', '_days_since_bo', '_nr4', '_rs', 'Adr', 'Ti65', 'dvol',
                 '_avgvol_mln', '_bo_dollar_vol_mln', '_bo_engulfing_cndl', '_avg_vol_float_ratio',
@@ -211,12 +199,10 @@ def fetch_gtt_scan(url, name):
             for col in numeric_cols_fillna:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
             numeric_cols_keep_nan = ['_20madist', '_10wmadist', '_10madist', '_nr4_previous']
             for col in numeric_cols_keep_nan:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-
             return df
         return None
     except Exception as e:
@@ -243,17 +229,13 @@ def fetch_weekly_scan(url):
                 last = fields[1]
                 metrics = fields[-n_metrics:]
                 rows.append([symbol, last] + metrics)
-
             if not rows:
                 return None
-
             df = pd.DataFrame(rows, columns=['Symbol', 'Last'] + weekly_metric_columns)
             df['Symbol'] = df['Symbol'].astype(str).str.upper().str.replace('.NS', '', regex=False).str.strip()
-
             numeric_cols = ['Last'] + weekly_metric_columns
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-
             return df
         return None
     except Exception as e:
@@ -284,16 +266,19 @@ def clean_df_for_json(df):
     return df
 
 
-def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_adr: float, min_avgvol: float) -> pd.DataFrame:
+# ════════════════════════════════════════════════════════════════════
+# filter_dataframe — REMOVED all sort_values calls that were overriding
+# the multi-tier sort. Only filtering is done here now.
+# ════════════════════════════════════════════════════════════════════
+def filter_dataframe(df: pd.DataFrame, scan_mode: str, max_rel_tight: float, min_adr: float, min_avgvol: float) -> pd.DataFrame:
     modify = st.checkbox("Add Advanced Filters")
 
     check_today_bo = False
     if scan_mode == "Post Breakout":
-        check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1, sorted by Tightness)",
+        check_today_bo = st.checkbox("Check Today Breakouts (Chg% > 0 & Vol_Score >= 1)",
                                      key="check_today_bo")
 
     check_tight_flags = False
-
     if scan_mode == "Anticipation":
         check_tight_flags = st.checkbox(
             f"Check high Tight flags (ADR >= {min_adr}, AvgVol >= {min_avgvol}, Rel Tight <= {max_rel_tight})",
@@ -305,9 +290,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_a
                 df = df[df['_chg_percentclose'].fillna(0) > 0]
             if 'Vol_Score' in df.columns:
                 df = df[df['Vol_Score'].fillna(0) >= 1]
-            if '_rel_tightness' in df.columns:
-                df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
-                df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+            # NOTE: sort removed — multi-tier sort is preserved
 
         if check_tight_flags:
             if 'Adr' in df.columns:
@@ -317,7 +300,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_a
             if '_rel_tightness' in df.columns:
                 df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
                 df = df[df['_rel_tightness'].fillna(999) <= max_rel_tight]
-                df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+            # NOTE: sort removed — multi-tier sort is preserved
 
         return df
 
@@ -342,7 +325,6 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_a
                 select_options = unique_non_nan + ([NAN_LABEL] if has_nans else [])
 
                 if column == 'Tier':
-                    # FIX: Only set defaults that actually exist in select_options
                     default_selection = [t for t in ['A', 'B'] if t in select_options]
                     if not default_selection:
                         default_selection = list(select_options)
@@ -352,10 +334,8 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_a
                 user_cat_input = st.multiselect(
                     f"Values for {column}", select_options, default=default_selection
                 )
-
                 nan_selected = NAN_LABEL in user_cat_input
                 real_vals = [v for v in user_cat_input if v != NAN_LABEL]
-
                 if nan_selected:
                     mask = col_series.isna() | col_series.isin(real_vals)
                 else:
@@ -367,55 +347,39 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_a
                 if clean.empty:
                     st.info(f"Column **{column}** has no numeric values")
                     continue
-
                 _min = float(clean.min())
                 _max = float(clean.max())
-
-                # FIX: Ensure _max is strictly greater than _min to prevent slider errors
                 if _max <= _min:
                     _max = _min + 0.1
-
                 step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
-
                 custom_max_bounds = {
                     '_nr4': 5.0, '_nr4_previous': 5.0,
                     '_chg_percentclose': 20.0, 'Adr': 15.0,
                     'Sector_Percentile': 100.0, 'Avg_RS': 100.0
                 }
                 _max = max(_max, custom_max_bounds.get(column, _max))
-
                 custom_ranges = {
-                    '_nr4': (0.0, 3.0),
-                    '_nr4_previous': (0.0, 3.0),
-                    'Adr': (2.0, _max),
-                    'Sector_Percentile': (60.0, 100.0),
-                    '_chg_percentclose': (2.0, _max),
-                    'Ti65': (1.05, _max),
-                    'Avg_RS': (92.0, _max),
-                    '_avgvol_mln': (10.0, _max)
+                    '_nr4': (0.0, 3.0), '_nr4_previous': (0.0, 3.0),
+                    'Adr': (2.0, _max), 'Sector_Percentile': (60.0, 100.0),
+                    '_chg_percentclose': (2.0, _max), 'Ti65': (1.05, _max),
+                    'Avg_RS': (92.0, _max), '_avgvol_mln': (10.0, _max)
                 }
-
                 default_range = custom_ranges.get(column, (_min, _max))
                 default_min = max(float(default_range[0]), _min)
                 default_max = min(float(default_range[1]), _max)
-
                 if default_min > default_max:
                     default_min = _min
                     default_max = _max
-
                 user_num_input = st.slider(
                     f"Values for {column}", _min, _max, (default_min, default_max), step=step
                 )
-
                 if has_nans:
                     keep_nans = st.checkbox(
                         f"Keep rows where **{column}** is blank",
-                        value=True,
-                        key=f"keep_nan_{column}"
+                        value=True, key=f"keep_nan_{column}"
                     )
                 else:
                     keep_nans = False
-
                 in_range = col_series.between(*user_num_input)
                 if keep_nans:
                     mask = in_range | col_series.isna()
@@ -436,10 +400,7 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_a
             df = df[df['_chg_percentclose'].fillna(0) > 0]
         if 'Vol_Score' in df.columns:
             df = df[df['Vol_Score'].fillna(0) >= 1]
-
-        if '_rel_tightness' in df.columns:
-            df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
-            df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+        # NOTE: sort removed — multi-tier sort is preserved
 
     if check_tight_flags:
         if 'Adr' in df.columns:
@@ -449,13 +410,14 @@ def filter_dataframe(df: pd.DataFrame, scan_mode: str,max_rel_tight: float,min_a
         if '_rel_tightness' in df.columns:
             df['_rel_tightness'] = pd.to_numeric(df['_rel_tightness'], errors='coerce')
             df = df[df['_rel_tightness'].fillna(999) <= 0.6]
-            df = df.sort_values(by='_rel_tightness', ascending=True, na_position='last')
+        # NOTE: sort removed — multi-tier sort is preserved
 
     return df
 
 
 # --- 3. MAIN APPLICATION ---
 def main():
+    # ── Custom CSS — added expander alt-text hide fix ──
     custom_css = """
     <style>
         html, body, [class*="css"], [class*="st-"] {
@@ -474,6 +436,10 @@ def main():
         }
         .stDataFrame {
             font-size: 14px !important;
+        }
+        /* Hide alt text on expander toggle icons (arrow_close / arrow_open) */
+        details summary span:first-child {
+            display: none !important;
         }
     </style>
     """
@@ -571,13 +537,13 @@ def main():
         'W_PctOf10wkHigh': 'Wk % of 10w High',
     }
 
-    with st.sidebar.expander("📊 Custom Multi-Level Sort", expanded=False):
+    with st.sidebar.expander("Custom Multi-Level Sort", expanded=False):
         use_custom_sort = st.checkbox("Enable custom sort order", value=False, key="use_custom_sort")
-        tier_first = st.checkbox("Always sort Tier A→B→Ignore first", value=True, key="tier_first_sort")
+        tier_first = st.checkbox("Always sort Tier A-B-Ignore first", value=True, key="tier_first_sort")
 
         sort_levels = []
         if use_custom_sort:
-            st.caption("💡 For tightness/distance columns, sorting is done by **|value|** (closest to 0 = tightest).")
+            st.caption("For tightness/distance columns, sorting is done by |value| (closest to 0 = tightest).")
             for i in range(1, 4):
                 col = st.selectbox(
                     f"Sort Level {i}",
@@ -588,29 +554,25 @@ def main():
                 )
                 if col == '(skip)':
                     continue
-
                 is_abs = col in ABS_SORT_COLS
                 abs_note = " (by |val|)" if is_abs else ""
-
-                # Smart default direction: "High → Low" for metrics where bigger is better
                 high_is_good_cols = {
                     'Total_Score', 'Avg_RS', 'Adr', 'Sector_Percentile',
                     '_chg_percentclose', 'W_TightCloses_10w', 'W_PctOf10wkHigh',
                     'dvol', '_avgvol_mln', 'Ti65'
                 }
                 default_dir_idx = 1 if col in high_is_good_cols else 0
-
                 direction = st.radio(
                     f"Direction{abs_note}",
-                    options=['Low → High', 'High → Low'],
+                    options=['Low to High', 'High to Low'],
                     index=default_dir_idx,
                     key=f"sort_lvl_{i}_dir",
                     horizontal=True
                 )
-                ascending = (direction == 'Low → High')
+                ascending = (direction == 'Low to High')
                 sort_levels.append((col, ascending))
 
-    st.sidebar.subheader("1. Weekly Setup (10w MA) — Max 6 pts")
+    st.sidebar.subheader("1. Weekly Setup (10w MA)")
     wk_neg_cutoff = st.sidebar.number_input(
         "Avoid if W_Dist10wMA below this %",
         value=float(saved_scoring.get('wk_neg_cutoff', -3.0)),
@@ -619,26 +581,34 @@ def main():
     st.sidebar.caption("The foundation. How close is the weekly price to the 10w MA?")
     wk_defaults = saved_scoring.get('wk_thresholds', [3.0, 6.0])
 
-    # ── Dedicated heatmap for W_Dist10wMA: respects wk_neg_cutoff, separates "below" from "above" ──
+    # ── Dedicated heatmap for W_Dist10wMA ──
     wk_dist_jscode = JsCode(f"""
         function(params) {{
             const val = params.value;
             if (val === null || val === undefined || isNaN(val)) return null;
-            // Below the configured cutoff → invalid, paint RED
             if (val < {wk_neg_cutoff}) return {{ 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' }};
-            // Slightly below wema10 but within tolerance → pale yellow (warning)
             if (val < 0) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
-            // Above wema10 → green tiers (tighter = better)
             if (val < 2) return {{ 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' }};
             if (val < 4) return {{ 'backgroundColor': '#8ee68e', 'color': 'black' }};
             if (val < 6) return {{ 'backgroundColor': '#d4edda', 'color': 'black' }};
-            // Far above → no color (too stretched)
             return null;
         }}
     """)
+
+    # ── Shared abs-value comparator for AG-Grid header clicks on tightness/distance columns ──
+    abs_comparator = JsCode("""
+        function(valueA, valueB, nodeA, nodeB, isInverted) {
+            const a = (valueA === null || valueA === undefined || isNaN(valueA)) ? Infinity : Math.abs(valueA);
+            const b = (valueB === null || valueB === undefined || isNaN(valueB)) ? Infinity : Math.abs(valueB);
+            if (a < b) return -1;
+            if (a > b) return 1;
+            return 0;
+        }
+    """)
+
     w_raw = [
-        st.sidebar.number_input("Wk Dist 10wMA < this → 4 pts", value=float(wk_defaults[0]), step=0.5, key="sc_w1"),
-        st.sidebar.number_input("Wk Dist 10wMA < this → 2 pts", value=float(wk_defaults[1]), step=0.5, key="sc_w2"),
+        st.sidebar.number_input("Wk Dist 10wMA < this -> 4 pts", value=float(wk_defaults[0]), step=0.5, key="sc_w1"),
+        st.sidebar.number_input("Wk Dist 10wMA < this -> 2 pts", value=float(wk_defaults[1]), step=0.5, key="sc_w2"),
     ]
     w1, w2 = sorted(w_raw)
 
@@ -652,14 +622,14 @@ def main():
     st.sidebar.caption("The trigger. Ratio = Tightness / ADR. Adjust for high/low beta stocks!")
     tight_defaults = saved_scoring.get('tightness_thresholds', [0.4, 0.6, 0.9, 1.2])
     t_raw = [
-        st.sidebar.number_input("Rel Tightness < this → 4 pts", value=float(tight_defaults[0]), step=0.1, key="sc_t1"),
-        st.sidebar.number_input("Rel Tightness < this → 3 pts", value=float(tight_defaults[1]), step=0.1, key="sc_t2"),
-        st.sidebar.number_input("Rel Tightness < this → 2 pts", value=float(tight_defaults[2]), step=0.1, key="sc_t3"),
-        st.sidebar.number_input("Rel Tightness < this → 1 pt", value=float(tight_defaults[3]), step=0.1, key="sc_t4"),
+        st.sidebar.number_input("Rel Tightness < this -> 4 pts", value=float(tight_defaults[0]), step=0.1, key="sc_t1"),
+        st.sidebar.number_input("Rel Tightness < this -> 3 pts", value=float(tight_defaults[1]), step=0.1, key="sc_t2"),
+        st.sidebar.number_input("Rel Tightness < this -> 2 pts", value=float(tight_defaults[2]), step=0.1, key="sc_t3"),
+        st.sidebar.number_input("Rel Tightness < this -> 1 pt", value=float(tight_defaults[3]), step=0.1, key="sc_t4"),
     ]
     t1, t2, t3, t4 = sorted(t_raw)
 
-    st.sidebar.subheader("2. BO Volume (dvol/avg) — Max 3 pts")
+    st.sidebar.subheader("2. BO Volume (dvol/avg)")
     vol_defaults = saved_scoring.get('vol_thresholds', [3.0, 2.0, 1.5])
     v_raw = [
         st.sidebar.number_input("dvol/avg > this -> 3 pts", value=float(vol_defaults[0]), step=0.5, key="sc_v1"),
@@ -668,14 +638,14 @@ def main():
     ]
     v3, v2, v1 = sorted(v_raw)
 
-    st.sidebar.subheader("3. TightCloses Bonus — Brownie Pts")
+    st.sidebar.subheader("3. TightCloses Bonus")
     tclose_pts = st.sidebar.number_input(
         "Points if W_TightCloses >= 1",
         value=int(saved_scoring.get('tclose_bonus_pts', 2)),
         min_value=0, max_value=5, step=1, key="sc_tclose"
     )
 
-    st.sidebar.subheader("4. 20MADist — Max 3 pts")
+    st.sidebar.subheader("4. 20MADist")
     ma20_defaults = saved_scoring.get('ma20_tiers', [2.0, 4.0, 6.0])
     ma20_neg_cutoff = st.sidebar.number_input(
         "Avoid if 20MADist below this %",
@@ -683,16 +653,13 @@ def main():
         step=0.5, key="sc_ma20_neg"
     )
     ma20_raw = [
-        st.sidebar.number_input("abs(20MADist) < this -> 3 pts", value=float(ma20_defaults[0]), step=0.5,
-                                key="sc_ma20_1"),
-        st.sidebar.number_input("abs(20MADist) < this -> 2 pts", value=float(ma20_defaults[1]), step=0.5,
-                                key="sc_ma20_2"),
-        st.sidebar.number_input("abs(20MADist) < this -> 1 pt", value=float(ma20_defaults[2]), step=0.5,
-                                key="sc_ma20_3"),
+        st.sidebar.number_input("abs(20MADist) < this -> 3 pts", value=float(ma20_defaults[0]), step=0.5, key="sc_ma20_1"),
+        st.sidebar.number_input("abs(20MADist) < this -> 2 pts", value=float(ma20_defaults[1]), step=0.5, key="sc_ma20_2"),
+        st.sidebar.number_input("abs(20MADist) < this -> 1 pt", value=float(ma20_defaults[2]), step=0.5, key="sc_ma20_3"),
     ]
     ma20_t1, ma20_t2, ma20_t3 = sorted(ma20_raw)
 
-    st.sidebar.subheader("5. 10MADist — Max 2 pts")
+    st.sidebar.subheader("5. 10MADist")
     ma10_defaults = saved_scoring.get('ma10_tiers', [4.0, 6.0])
     ma10_neg_cutoff = st.sidebar.number_input(
         "Avoid if 10MADist below this %",
@@ -700,15 +667,12 @@ def main():
         step=0.5, key="sc_ma10_neg"
     )
     ma10_raw = [
-        st.sidebar.number_input("abs(10MADist) < this -> 2 pts", value=float(ma10_defaults[0]), step=0.5,
-                                key="sc_ma10_1"),
-        st.sidebar.number_input("abs(10MADist) < this -> 1 pt", value=float(ma10_defaults[1]), step=0.5,
-                                key="sc_ma10_2"),
+        st.sidebar.number_input("abs(10MADist) < this -> 2 pts", value=float(ma10_defaults[0]), step=0.5, key="sc_ma10_1"),
+        st.sidebar.number_input("abs(10MADist) < this -> 1 pt", value=float(ma10_defaults[1]), step=0.5, key="sc_ma10_2"),
     ]
     ma10_t1, ma10_t2 = sorted(ma10_raw)
 
-    # ── Quick Filter Config ──
-    st.sidebar.subheader("🚩 Quick Filter Config")
+    st.sidebar.subheader("Quick Filter Config")
     filter_min_adr = st.sidebar.number_input(
         "Min ADR for Tight Flags",
         value=float(saved_scoring.get('filter_min_adr', 4.0)),
@@ -735,8 +699,8 @@ def main():
     if st.sidebar.button("Save scoring config", key="save_scoring_btn"):
         prefs_to_save = {
             'tightness_thresholds': t_raw,
-            'wk_thresholds': w_raw,  # <-- ADD
-            'wclose_pts': int(wclose_pts),# <-- ADD
+            'wk_thresholds': w_raw,
+            'wclose_pts': int(wclose_pts),
             'vol_thresholds': v_raw,
             'tclose_bonus_pts': int(tclose_pts),
             'ma20_tiers': ma20_raw,
@@ -745,12 +709,11 @@ def main():
             'ma10_neg_cutoff': ma10_neg_cutoff,
             'tier_a_threshold': int(tier_a),
             'tier_b_threshold': int(tier_b),
-            # Add the new quick filter configs here:
             'filter_min_adr': float(filter_min_adr),
             'filter_min_avgvol': float(filter_min_avgvol),
             'wk_neg_cutoff': wk_neg_cutoff,
         }
-        save_scoring_prefs(prefs_to_save,"NSE")
+        save_scoring_prefs(prefs_to_save, "NSE")
         st.sidebar.success("Saved! Will load by default next session.")
 
     st.subheader("Strategy & Risk Parameters")
@@ -760,8 +723,7 @@ def main():
     with col2:
         risk_pct = st.number_input("Max Risk Per Trade (%)", min_value=0.1, value=1.0, step=0.1)
     with col3:
-        nr4_threshold = st.number_input("Max Tightness Range (NR4 %)", min_value=1.0, max_value=50.0, value=8.0,
-                                        step=0.5)
+        nr4_threshold = st.number_input("Max Tightness Range (NR4 %)", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
 
     manual_fetch = st.button("Generate GTT Trading Plan", type="primary")
     auto_fetch = auto_refresh and ('gtt_base_df' in st.session_state)
@@ -776,10 +738,8 @@ def main():
 
             if df_1m is not None and not df_1m.empty:
                 df_1m_renamed = df_1m.rename(columns={'_rs': 'RS_1M'})
-                df_3m_renamed = df_3m.rename(
-                    columns={'_rs': 'RS_3M'}) if df_3m is not None and not df_3m.empty else None
-                df_6m_renamed = df_6m.rename(
-                    columns={'_rs': 'RS_6M'}) if df_6m is not None and not df_6m.empty else None
+                df_3m_renamed = df_3m.rename(columns={'_rs': 'RS_3M'}) if df_3m is not None and not df_3m.empty else None
+                df_6m_renamed = df_6m.rename(columns={'_rs': 'RS_6M'}) if df_6m is not None and not df_6m.empty else None
 
                 non_rs_cols = [c for c in df_1m_renamed.columns if c not in ['Symbol', 'RS_1M', 'RS_3M', 'RS_6M']]
                 base_df = df_1m_renamed.copy()
@@ -822,21 +782,10 @@ def main():
                         actionable_df['Sector_Rank'] = 0
                         actionable_df['Sector_Total'] = 0
                         actionable_df['Sector_Percentile'] = 0.0
-
                         sector_counts = actionable_df[valid_mask].groupby('Sector')['Symbol'].count()
-
-                        actionable_df.loc[valid_mask, 'Sector_Rank'] = actionable_df[valid_mask].groupby('Sector')[
-                            'Avg_RS'].rank(ascending=False, method='min').astype(int)
-                        actionable_df.loc[valid_mask, 'Sector_Total'] = actionable_df.loc[valid_mask, 'Sector'].map(
-                            sector_counts).astype(int)
-
-                        actionable_df.loc[valid_mask, 'Sector_Percentile'] = ((actionable_df.loc[
-                                                                                   valid_mask, 'Sector_Total'] -
-                                                                               actionable_df.loc[
-                                                                                   valid_mask, 'Sector_Rank'] + 1) /
-                                                                              actionable_df.loc[
-                                                                                  valid_mask, 'Sector_Total'] * 100).round(
-                            1)
+                        actionable_df.loc[valid_mask, 'Sector_Rank'] = actionable_df[valid_mask].groupby('Sector')['Avg_RS'].rank(ascending=False, method='min').astype(int)
+                        actionable_df.loc[valid_mask, 'Sector_Total'] = actionable_df.loc[valid_mask, 'Sector'].map(sector_counts).astype(int)
+                        actionable_df.loc[valid_mask, 'Sector_Percentile'] = ((actionable_df.loc[valid_mask, 'Sector_Total'] - actionable_df.loc[valid_mask, 'Sector_Rank'] + 1) / actionable_df.loc[valid_mask, 'Sector_Total'] * 100).round(1)
                     actionable_df['RS_1M'] = actionable_df['RS_1M'].round(2)
                     actionable_df['RS_3M'] = actionable_df['RS_3M'].round(2)
                     actionable_df['RS_6M'] = actionable_df['RS_6M'].round(2)
@@ -855,7 +804,6 @@ def main():
                         weekly_full['Sector'] = weekly_full['Sector'].fillna('Unknown')
                         weekly_full['Industry'] = weekly_full['Industry'].fillna('Unknown')
                     st.session_state.weekly_full_df = weekly_full
-
                     weekly_subset = weekly_df[['Symbol', 'Pctof10wkhigh', 'Weeklyclose_chg_pct',
                                                'Tightcloses_10w_of5', 'Insidebars_of8', 'Dist_wema10_pct']].rename(columns={
                         'Pctof10wkhigh': 'W_PctOf10wkHigh',
@@ -867,7 +815,7 @@ def main():
                     actionable_df = actionable_df.merge(weekly_subset, on='Symbol', how='left')
                 else:
                     st.session_state.weekly_full_df = None
-                    st.warning("Weekly scan unavailable — table will show without W_ weekly columns.")
+                    st.warning("Weekly scan unavailable.")
 
                 st.session_state.gtt_base_df = actionable_df
             else:
@@ -891,30 +839,19 @@ def main():
                 st.sidebar.error("Scoring Error: Threshold values within a criteria must be unique.")
                 actionable_df['Tier'] = 'Error'
                 actionable_df['Total_Score'] = 0
+                actionable_df['Wk_Setup_Score'] = 0
+                actionable_df['Wk_TClose_Score'] = 0
                 actionable_df['Tight_Score'] = 0
                 actionable_df['Vol_Score'] = 0
                 actionable_df['TClose_Score'] = 0
                 actionable_df['MA20_Score'] = 0
                 actionable_df['MA10_Score'] = 0
             else:
-
                 if 'W_Dist10wMA' in actionable_df.columns:
                     wk_raw = actionable_df['W_Dist10wMA'].fillna(999)
                     wk_abs = wk_raw.abs()
-
-                    wk_base_score = pd.cut(
-                        wk_abs,
-                        bins=[-float('inf'), w1, w2, float('inf')],
-                        labels=[4, 2, 0]
-                    ).astype(int)
-
-                    # Invalid if NaN, or if price is meaningfully BELOW wema10 (negative distance)
-                    # Use a configurable cutoff, default -3% (i.e., allow small under-moves)
-
-                    wk_is_invalid = (
-                            actionable_df['W_Dist10wMA'].isna()
-                            | (actionable_df['W_Dist10wMA'] < wk_neg_cutoff)
-                    )
+                    wk_base_score = pd.cut(wk_abs, bins=[-float('inf'), w1, w2, float('inf')], labels=[4, 2, 0]).astype(int)
+                    wk_is_invalid = (actionable_df['W_Dist10wMA'].isna() | (actionable_df['W_Dist10wMA'] < wk_neg_cutoff))
                     actionable_df['Wk_Setup_Score'] = np.where(wk_is_invalid, 0, wk_base_score)
                 else:
                     actionable_df['Wk_Setup_Score'] = 0
@@ -924,71 +861,40 @@ def main():
                     wclose_pts, 0
                 )
 
-                # 1) Daily Tightness (The Trigger)
                 tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
                 safe_adr = actionable_df['Adr'].replace(0, np.nan)
                 actionable_df['_rel_tightness'] = (actionable_df[tightness_col] / safe_adr).round(2)
                 rel_tight_filled = actionable_df['_rel_tightness'].fillna(999)
-                actionable_df['Tight_Score'] = pd.cut(
-                    rel_tight_filled,
-                    bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
-                    labels=[4, 3, 2, 1, 0]
-                ).astype(int)
+                actionable_df['Tight_Score'] = pd.cut(rel_tight_filled, bins=[-float('inf'), t1, t2, t3, t4, float('inf')], labels=[4, 3, 2, 1, 0]).astype(int)
 
                 if scan_mode == "Anticipation":
                     actionable_df['Vol_Score'] = 0
                 else:
-                    rvol_ratio = np.where(
-                        actionable_df['_avgvol_mln'] > 0,
-                        actionable_df['dvol'] / actionable_df['_avgvol_mln'],
-                        0
-                    )
-                    actionable_df['Vol_Score'] = pd.cut(
-                        rvol_ratio,
-                        bins=[-float('inf'), v3, v2, v1, float('inf')],
-                        labels=[0, 1, 2, 3]
-                    ).astype(int)
+                    rvol_ratio = np.where(actionable_df['_avgvol_mln'] > 0, actionable_df['dvol'] / actionable_df['_avgvol_mln'], 0)
+                    actionable_df['Vol_Score'] = pd.cut(rvol_ratio, bins=[-float('inf'), v3, v2, v1, float('inf')], labels=[0, 1, 2, 3]).astype(int)
 
-                actionable_df['TClose_Score'] = np.where(
-                    actionable_df['W_TightCloses_10w'].fillna(0) >= 1,
-                    tclose_pts,
-                    0
-                )
+                actionable_df['TClose_Score'] = np.where(actionable_df['W_TightCloses_10w'].fillna(0) >= 1, tclose_pts, 0)
 
                 ma20_filled = actionable_df['_20madist'].fillna(999)
                 ma20_abs = ma20_filled.abs()
-                ma20_base_score = pd.cut(
-                    ma20_abs,
-                    bins=[-float('inf'), ma20_t1, ma20_t2, ma20_t3, float('inf')],
-                    labels=[3, 2, 1, 0]
-                ).astype(int)
+                ma20_base_score = pd.cut(ma20_abs, bins=[-float('inf'), ma20_t1, ma20_t2, ma20_t3, float('inf')], labels=[3, 2, 1, 0]).astype(int)
                 ma20_is_invalid = actionable_df['_20madist'].isna() | (actionable_df['_20madist'] < ma20_neg_cutoff)
                 actionable_df['MA20_Score'] = np.where(ma20_is_invalid, 0, ma20_base_score)
 
                 ma10_filled = actionable_df['_10madist'].fillna(999)
                 ma10_abs = ma10_filled.abs()
-                ma10_base_score = pd.cut(
-                    ma10_abs,
-                    bins=[-float('inf'), ma10_t1, ma10_t2, float('inf')],
-                    labels=[2, 1, 0]
-                ).astype(int)
+                ma10_base_score = pd.cut(ma10_abs, bins=[-float('inf'), ma10_t1, ma10_t2, float('inf')], labels=[2, 1, 0]).astype(int)
                 ma10_is_invalid = actionable_df['_10madist'].isna() | (actionable_df['_10madist'] < ma10_neg_cutoff)
                 actionable_df['MA10_Score'] = np.where(ma10_is_invalid, 0, ma10_base_score)
 
                 actionable_df['Total_Score'] = (
-                        actionable_df['Wk_Setup_Score'] +
-                        actionable_df['Wk_TClose_Score'] +
-                        actionable_df['Tight_Score'] +
-                        actionable_df['Vol_Score'] +
-                        actionable_df['TClose_Score'] +
-                        actionable_df['MA20_Score'] +
+                        actionable_df['Wk_Setup_Score'] + actionable_df['Wk_TClose_Score'] +
+                        actionable_df['Tight_Score'] + actionable_df['Vol_Score'] +
+                        actionable_df['TClose_Score'] + actionable_df['MA20_Score'] +
                         actionable_df['MA10_Score']
                 )
 
-                conditions = [
-                    actionable_df['Total_Score'] >= tier_a,
-                    actionable_df['Total_Score'] >= tier_b,
-                ]
+                conditions = [actionable_df['Total_Score'] >= tier_a, actionable_df['Total_Score'] >= tier_b]
                 choices = ['A', 'B']
                 actionable_df['Tier'] = np.select(conditions, choices, default='Ignore')
 
@@ -1026,7 +932,6 @@ def main():
             cols = list(actionable_df.columns)
             cols.insert(0, cols.pop(cols.index('Tier')))
             actionable_df = actionable_df[cols]
-
             st.session_state.gtt_scored_df = actionable_df.copy()
 
             columns_to_show = [
@@ -1034,8 +939,7 @@ def main():
                 'Wk_Setup_Score', 'Wk_TClose_Score', 'Tight_Score', 'Vol_Score', 'MA20_Score', 'MA10_Score',
                 'W_Dist10wMA', 'W_TightCloses_10w', 'W_PctOf10wkHigh', 'W_InsideBars', 'W_CloseChg_Pct',
                 '_nr4_previous', '_rel_tightness', '_chg_percentclose',
-                'dvol', '_avgvol_mln',
-                '_20madist', '_10madist',
+                'dvol', '_avgvol_mln', '_20madist', '_10madist',
                 'Symbol', 'Sector', 'Industry', 'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
                 'Adr', 'Ti65', '_nr4',
                 '_bo_engulfing_cndl', '_days_since_bo',
@@ -1062,19 +966,14 @@ def main():
                 sort_by_cols = []
                 sort_ascending = []
                 temp_cols_to_drop = []
-
-                # Tier first if enabled
                 if tier_first:
                     sort_by_cols.append('_tier_sort_key')
                     sort_ascending.append(True)
-
                 for col, asc in sort_levels:
                     if col not in display_df.columns:
                         continue
                     display_df[col] = pd.to_numeric(display_df[col], errors='coerce')
-
                     if col in ABS_SORT_COLS_LOCAL:
-                        # Sort by absolute value (closeness to 0 = tighter = better)
                         temp_col = f'_abs_sort_{col}'
                         display_df[temp_col] = display_df[col].abs()
                         sort_by_cols.append(temp_col)
@@ -1082,26 +981,19 @@ def main():
                     else:
                         sort_by_cols.append(col)
                     sort_ascending.append(asc)
-
                 if sort_by_cols:
-                    display_df = display_df.sort_values(
-                        by=sort_by_cols,
-                        ascending=sort_ascending,
-                        na_position='last'
-                    )
+                    display_df = display_df.sort_values(by=sort_by_cols, ascending=sort_ascending, na_position='last')
                     display_df = display_df.drop(columns=temp_cols_to_drop, errors='ignore')
                 else:
                     display_df = display_df.sort_values(by=['_tier_sort_key'], ascending=[True])
             else:
-                # Default: Tier → Wk Dist (abs) → Rel Tightness
                 sort_weekly_col = 'W_Dist10wMA'
                 if sort_weekly_col in display_df.columns:
                     display_df[sort_weekly_col] = pd.to_numeric(display_df[sort_weekly_col], errors='coerce')
                     display_df['_abs_sort_key'] = display_df[sort_weekly_col].abs()
                     display_df = display_df.sort_values(
                         by=['_tier_sort_key', '_abs_sort_key', '_rel_tightness'],
-                        ascending=[True, True, True],
-                        na_position='last'
+                        ascending=[True, True, True], na_position='last'
                     )
                     display_df = display_df.drop(columns=['_abs_sort_key'], errors='ignore')
                 else:
@@ -1109,14 +1001,12 @@ def main():
 
             display_df = display_df.drop(columns=['_tier_sort_key'], errors='ignore')
             st.session_state.gtt_display_df = display_df
-
             st.success(f"Generated {len(st.session_state.gtt_display_df)} actionable GTT setups.")
 
-            filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode,t4,filter_min_adr, filter_min_avgvol)
+            filtered_df = filter_dataframe(st.session_state.gtt_display_df, scan_mode, t4, filter_min_adr, filter_min_avgvol)
 
             main_table_default_hidden = [
-                'RS_6M', 'RS_3M', 'RS_1M',
-                'Industry',
+                'RS_6M', 'RS_3M', 'RS_1M', 'Industry',
                 '_bo_dollar_vol_mln', '_avg_vol_float_ratio', '_period_perf',
                 '_10wmadist', '_insideday',
                 '_bo_engulfing_cndl', '_days_since_bo', '_circuit',
@@ -1132,13 +1022,12 @@ def main():
                 )
                 if st.button("Save as my default column set", key="save_main_cols_btn"):
                     save_column_prefs('nse_main_table', selected_main_cols)
-                    st.success("Saved — this set will load by default next time.")
+                    st.success("Saved.")
             hidden_main_cols = [c for c in all_main_cols if c not in selected_main_cols]
 
             col_precedence = {c: i for i, c in enumerate(columns_to_show) if c in filtered_df.columns}
             selected_main_cols = sorted(selected_main_cols, key=lambda c: col_precedence.get(c, 9999))
             hidden_main_cols = sorted(hidden_main_cols, key=lambda c: col_precedence.get(c, 9999))
-
             filtered_df = filtered_df[selected_main_cols + hidden_main_cols]
 
             gb = GridOptionsBuilder.from_dataframe(filtered_df)
@@ -1170,16 +1059,17 @@ def main():
                     }}
                 """)
                 if col == 'Avg_RS':
-                    gb.configure_column(col, minWidth=60, maxWidth=90,
-                                        cellStyle=dynamic_jscode)
+                    gb.configure_column(col, minWidth=60, maxWidth=90, cellStyle=dynamic_jscode)
                 else:
                     gb.configure_column(col, minWidth=50, maxWidth=80, cellStyle=dynamic_jscode)
 
             tightness_highlight_jscode = JsCode(
                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
+
+            # ── Apply abs_comparator to tightness/distance columns ──
             if '_rel_tightness' in filtered_df.columns:
                 gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight',
-                                    cellStyle=tightness_highlight_jscode)
+                                    cellStyle=tightness_highlight_jscode, comparator=abs_comparator)
 
             if '_chg_percentclose' in filtered_df.columns:
                 valid_chg = filtered_df[filtered_df['_chg_percentclose'] > 0]['_chg_percentclose']
@@ -1213,7 +1103,6 @@ def main():
                     rvol_ceiling = float(above_avg.max()) if not above_avg.empty else 3.0
                 else:
                     rvol_floor, rvol_ceiling = 1.0, 3.0
-
                 rvol_jscode = JsCode(f"""
                     function(params) {{
                         const dvol = params.data.dvol; const avgvol = params.data._avgvol_mln;
@@ -1248,14 +1137,14 @@ def main():
                 }
             """)
 
-
             if '_20madist' in filtered_df.columns:
-                gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
+                gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode, comparator=abs_comparator)
             if '_10madist' in filtered_df.columns:
-                gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
+                gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode, comparator=abs_comparator)
             if 'W_Dist10wMA' in filtered_df.columns:
                 gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110,
-                                    headerName='Wk 10wMA %', cellStyle=wk_dist_jscode)
+                                    headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
+
             score_col_style = JsCode("""
                 function(params) {
                     const val = params.value;
@@ -1266,7 +1155,7 @@ def main():
                     return null;
                 }
             """)
-            for sc_col in ['Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score']:
+            for sc_col in ['Wk_Setup_Score', 'Wk_TClose_Score', 'Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score']:
                 if sc_col in filtered_df.columns:
                     gb.configure_column(sc_col, minWidth=45, maxWidth=60, cellStyle=score_col_style)
 
@@ -1280,8 +1169,7 @@ def main():
                 }
             """)
             if 'W_PctOf10wkHigh' in filtered_df.columns:
-                gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95, maxWidth=120,
-                                    cellStyle=wk_pct_jscode)
+                gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95, maxWidth=120, cellStyle=wk_pct_jscode)
             if 'W_CloseChg_Pct' in filtered_df.columns:
                 gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90, maxWidth=115)
             if 'W_TightCloses_10w' in filtered_df.columns:
@@ -1290,29 +1178,16 @@ def main():
                 gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
 
             header_shortening = {
-                'Change': 'Chg',
-                '_chg_percentclose': 'Chg %',
-                '_avgvol_mln': 'AvgVolcr',
-                '_bo_dollar_vol_mln': 'BO$Volcr',
-                '_avg_vol_float_ratio': 'VolFloatR',
-                '_bo_engulfing_cndl': 'BOEngulf',
-                '_days_since_bo': 'DaysSinceBO',
-                'Sector_Percentile': 'SectPctile',
-                '_nr4_previous': 'NR4Prev',
-                '_period_perf': 'PeriodPerf',
-                '_10wmadist': '10wMADist',
-                '_10madist': '10MADist',
-                '_20madist': '20MADist',
-                '_insideday': 'InsideDay',
-                'Tight_Score': 'Tight',
-                'Vol_Score': 'Vol',
-                'TClose_Score': 'TClose',
-                'MA20_Score': 'MA20',
-                'MA10_Score': 'MA10',
-                'W_Dist10wMA': 'Wk 10wMA %',
-                'W_PctOf10wkHigh': 'Wk % of 10wHi',
-                'W_CloseChg_Pct': 'Wk CloseChg%',
-                'W_TightCloses': 'Wk TightCl/5',
+                'Change': 'Chg', '_chg_percentclose': 'Chg %', '_avgvol_mln': 'AvgVolcr',
+                '_bo_dollar_vol_mln': 'BO$Volcr', '_avg_vol_float_ratio': 'VolFloatR',
+                '_bo_engulfing_cndl': 'BOEngulf', '_days_since_bo': 'DaysSinceBO',
+                'Sector_Percentile': 'SectPctile', '_nr4_previous': 'NR4Prev',
+                '_period_perf': 'PeriodPerf', '_10wmadist': '10wMADist',
+                '_10madist': '10MADist', '_20madist': '20MADist', '_insideday': 'InsideDay',
+                'Tight_Score': 'Tight', 'Vol_Score': 'Vol', 'TClose_Score': 'TClose',
+                'MA20_Score': 'MA20', 'MA10_Score': 'MA10',
+                'W_Dist10wMA': 'Wk 10wMA %', 'W_PctOf10wkHigh': 'Wk % of 10wHi',
+                'W_CloseChg_Pct': 'Wk CloseChg%', 'W_TightCloses': 'Wk TightCl/5',
                 'W_InsideBars': 'Wk InsideB/8'
             }
             for raw_col, short_name in header_shortening.items():
@@ -1349,8 +1224,7 @@ def main():
                 return symbol;
             }
             """)
-            gb.configure_column('Symbol', cellRenderer=symbol_renderer_jscode, minWidth=150, maxWidth=180,
-                                pinned='left', checkboxSelection=True)
+            gb.configure_column('Symbol', cellRenderer=symbol_renderer_jscode, minWidth=150, maxWidth=180, pinned='left', checkboxSelection=True)
 
             if 'Sector' in filtered_df.columns:
                 gb.configure_column('Sector', minWidth=120, maxWidth=150)
@@ -1361,7 +1235,6 @@ def main():
                 gb.configure_column(col, hide=True)
 
             go = gb.build()
-
             safe_df = clean_df_for_json(filtered_df)
             grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%',
                                    update_mode=GridUpdateMode.MODEL_CHANGED,
@@ -1374,15 +1247,13 @@ def main():
                     selected_symbols = selected_rows['Symbol'].tolist()
                 else:
                     selected_symbols = [row.get('Symbol') for row in selected_rows if row is not None]
-
                 st.markdown(f"**{len(selected_symbols)} symbols selected.**")
                 if st.button("Add selected to Saved Breakouts"):
                     try:
-                        response = supabase.table("saved_breakouts").select("symbol").eq("user_id", "us_user").execute()
+                        response = supabase.table("saved_breakouts").select("symbol").eq("user_id", "nse_user").execute()
                         existing_symbols = [b['symbol'] for b in response.data]
                     except:
                         existing_symbols = []
-
                     new_added = 0
                     for sym in selected_symbols:
                         if sym not in existing_symbols:
@@ -1390,36 +1261,30 @@ def main():
                                 supabase.table("saved_breakouts").insert({
                                     "symbol": sym,
                                     "saved_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                    "user_id": "us_user"
+                                    "user_id": "nse_user"
                                 }).execute()
                                 new_added += 1
                             except Exception as e:
                                 st.error(f"Failed to save {sym}: {e}")
                     if new_added > 0:
-                        st.success(f"Added {new_added} new ticker(s) to Saved Breakouts! Check the tab above.")
+                        st.success(f"Added {new_added} new ticker(s) to Saved Breakouts!")
                     else:
                         st.info("All selected tickers are already in Saved Breakouts.")
 
-            sorted_df = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response[
-                'data'].empty else filtered_df
+            sorted_df = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response['data'].empty else filtered_df
 
             if not sorted_df.empty and 'Symbol' in sorted_df.columns and 'Tier' in sorted_df.columns:
                 all_symbols_sorted = sorted_df['Symbol'].dropna().unique().tolist()
                 all_tv_string = ",".join([f"nse:{s}" for s in all_symbols_sorted])
-
                 tier_a_df = sorted_df[sorted_df['Tier'] == 'A']
                 tier_a_symbols = tier_a_df['Symbol'].dropna().unique().tolist()
                 tier_a_tv_string = ",".join([f"nse:{s}" for s in tier_a_symbols])
-
                 tier_b_df = sorted_df[sorted_df['Tier'] == 'B']
                 tier_b_symbols = tier_b_df['Symbol'].dropna().unique().tolist()
                 tier_b_tv_string = ",".join([f"nse:{s}" for s in tier_b_symbols])
-
                 st.markdown("---")
                 st.subheader("Copy Symbols to TradingView")
-
                 copy_col1, copy_col2, copy_col3 = st.columns(3)
-
                 with copy_col1:
                     st.markdown(f"**Tier A only** — `{len(tier_a_symbols)} symbols`")
                     if tier_a_symbols:
@@ -1427,7 +1292,6 @@ def main():
                         st.caption(f"Click the icon above to copy {len(tier_a_symbols)} symbols.")
                     else:
                         st.info("No Tier A stocks.")
-
                 with copy_col2:
                     st.markdown(f"**Tier B only** — `{len(tier_b_symbols)} symbols`")
                     if tier_b_symbols:
@@ -1435,7 +1299,6 @@ def main():
                         st.caption(f"Click the icon above to copy {len(tier_b_symbols)} symbols.")
                     else:
                         st.info("No Tier B stocks.")
-
                 with copy_col3:
                     st.markdown(f"**All filtered** — `{len(all_symbols_sorted)} symbols`")
                     if all_symbols_sorted:
@@ -1444,7 +1307,6 @@ def main():
                            st.caption(f"Click the icon above to copy {len(all_symbols_sorted)} symbols.")
                     else:
                         st.info("No symbols in view.")
-
         else:
             st.info("Click 'Generate GTT Trading Plan' to load data.")
 
@@ -1463,7 +1325,6 @@ def main():
                     ).round(2).sort_values('Total_Count', ascending=False).reset_index()
 
                     st.subheader("Sector Concentration (Tier A + B stocks)")
-
                     ss_gb = GridOptionsBuilder.from_dataframe(sector_summary)
                     ss_gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
                     ss_gb.configure_side_bar()
@@ -1507,8 +1368,7 @@ def main():
                                 return {{ 'backgroundColor': 'rgb(' + r + ',' + g + ',' + b + ')', 'color': 'black', 'fontWeight': ratio >= 0.9 ? 'bold' : 'normal' }};
                             }}
                         """)
-                        ss_gb.configure_column('Avg_Total_Score', minWidth=90, maxWidth=120, headerName='Avg Score',
-                                               cellStyle=sc_jscode)
+                        ss_gb.configure_column('Avg_Total_Score', minWidth=90, maxWidth=120, headerName='Avg Score', cellStyle=sc_jscode)
                     ss_gb.configure_column('Sector', minWidth=140, maxWidth=200, pinned='left')
                     ss_go = ss_gb.build()
                     AgGrid(sector_summary, gridOptions=ss_go, height=400, width='100%',
@@ -1518,23 +1378,21 @@ def main():
 
                     st.subheader("Top Setups by Sector")
                     for sector in sector_summary.head(10)['Sector'].tolist():
-                        sector_stocks = tier_ab[tier_ab['Sector'] == sector].sort_values(
-                            'Total_Score', ascending=False).head(15)
+                        sector_stocks = tier_ab[tier_ab['Sector'] == sector].sort_values('Total_Score', ascending=False).head(15)
                         display_cols = [c for c in [
                             'Symbol', 'Tier', 'Change', 'Total_Score',
-                            'Tight_Score', 'Vol_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score',
+                            'Wk_Setup_Score', 'Wk_TClose_Score', 'Tight_Score', 'Vol_Score', 'MA20_Score', 'MA10_Score',
                             'Last', '_chg_percentclose', 'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
                             'Adr', 'Ti65', '_nr4', '_nr4_previous', '_rel_tightness',
                             'dvol', '_avgvol_mln', '_20madist', '_10madist',
-                            'W_TightCloses', 'W_InsideBars', 'W_PctOf10wkHigh', 'W_CloseChg_Pct',
+                            'W_Dist10wMA', 'W_TightCloses_10w', 'W_InsideBars', 'W_PctOf10wkHigh', 'W_CloseChg_Pct',
                             'Sector', 'Industry', 'Sector_Rank', 'Sector_Total', 'Sector_Percentile'
                         ] if c in sector_stocks.columns]
                         sector_display = sector_stocks[display_cols].copy()
 
                         with st.expander(f"{sector} ({len(sector_stocks)} stocks)"):
                             gb = GridOptionsBuilder.from_dataframe(sector_display)
-                            gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70,
-                                                        flex=0)
+                            gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
                             gb.configure_side_bar()
                             gb.configure_grid_options(enableBrowserTooltips=True)
                             for col in sector_display.columns:
@@ -1567,11 +1425,10 @@ def main():
                             nr4_prev_highlight_jscode = JsCode(
                                 """function(params) { return { 'backgroundColor': '#fff3cd', 'color': '#664d03', 'fontWeight': 'bold' }; }""")
                             if '_nr4_previous' in sector_display.columns:
-                                gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75,
-                                                    cellStyle=nr4_prev_highlight_jscode)
+                                gb.configure_column('_nr4_previous', minWidth=55, maxWidth=75, cellStyle=nr4_prev_highlight_jscode)
                             if '_rel_tightness' in sector_display.columns:
                                 gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight',
-                                                    cellStyle=nr4_prev_highlight_jscode)
+                                                    cellStyle=nr4_prev_highlight_jscode, comparator=abs_comparator)
 
                             if '_chg_percentclose' in sector_display.columns:
                                 valid_chg = sector_display[sector_display['_chg_percentclose'] > 0]['_chg_percentclose']
@@ -1587,11 +1444,9 @@ def main():
                                         return {{ 'backgroundColor': 'rgb(' + r + ',' + g + ',' + b + ')', 'color': ratio > 0.5 ? 'white' : 'black', 'fontWeight': ratio >= 0.8 ? 'bold' : 'normal' }};
                                     }}
                                 """)
-                                gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110,
-                                                    cellStyle=chg_jscode,
+                                gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110, cellStyle=chg_jscode,
                                                     filter='agNumberColumnFilter',
-                                                    filterParams={'filterOptions': ['greaterThan', 'lessThan', 'equals',
-                                                                                    'inRange'],
+                                                    filterParams={'filterOptions': ['greaterThan', 'lessThan', 'equals', 'inRange'],
                                                                   'defaultOption': 'greaterThan', 'defaultValues': [0]})
 
                             for col in ['Adr', 'Ti65', '_nr4']:
@@ -1599,8 +1454,7 @@ def main():
                                     gb.configure_column(col, minWidth=55, maxWidth=75)
 
                             if 'dvol' in sector_display.columns and '_avgvol_mln' in sector_display.columns:
-                                valid_rvol = sector_display[
-                                    (sector_display['dvol'] > 0) & (sector_display['_avgvol_mln'] > 0)].copy()
+                                valid_rvol = sector_display[(sector_display['dvol'] > 0) & (sector_display['_avgvol_mln'] > 0)].copy()
                                 if not valid_rvol.empty:
                                     valid_rvol['rvol_ratio'] = valid_rvol['dvol'] / valid_rvol['_avgvol_mln']
                                     above_avg = valid_rvol[valid_rvol['rvol_ratio'] > 1.0]['rvol_ratio']
@@ -1638,9 +1492,9 @@ def main():
                                 }
                             """)
                             if '_20madist' in sector_display.columns:
-                                gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
+                                gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode, comparator=abs_comparator)
                             if '_10madist' in sector_display.columns:
-                                gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
+                                gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode, comparator=abs_comparator)
 
                             score_col_style = JsCode("""
                                 function(params) {
@@ -1652,14 +1506,11 @@ def main():
                                     return null;
                                 }
                             """)
-                            # Weekly 10wMA heatmap (reuse the daily MA distance styling)
                             if 'W_Dist10wMA' in sector_display.columns:
                                 gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %',
-                                                    cellStyle=wk_dist_jscode)
+                                                    cellStyle=wk_dist_jscode, comparator=abs_comparator)
 
-                            # Style the new score columns
-                            for sc_col in ['Wk_Setup_Score', 'Wk_TClose_Score', 'Tight_Score', 'Vol_Score',
-                                           'MA20_Score', 'MA10_Score']:
+                            for sc_col in ['Wk_Setup_Score', 'Wk_TClose_Score', 'Tight_Score', 'Vol_Score', 'MA20_Score', 'MA10_Score']:
                                 if sc_col in sector_display.columns:
                                     gb.configure_column(sc_col, minWidth=45, maxWidth=60, cellStyle=score_col_style)
 
@@ -1673,30 +1524,19 @@ def main():
                                 }
                             """)
                             if 'W_PctOf10wkHigh' in sector_display.columns:
-                                gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95,
-                                                    maxWidth=120, cellStyle=wk_pct_jscode)
+                                gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95, maxWidth=120, cellStyle=wk_pct_jscode)
                             if 'W_CloseChg_Pct' in sector_display.columns:
-                                gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90,
-                                                    maxWidth=115)
+                                gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90, maxWidth=115)
                             if 'W_TightCloses_10w' in sector_display.columns:
-                                gb.configure_column('W_TightCloses_10w', headerName='Wk Tight 10w/5', minWidth=85,
-                                                    maxWidth=105)
+                                gb.configure_column('W_TightCloses_10w', headerName='Wk Tight 10w/5', minWidth=85, maxWidth=105)
                             if 'W_InsideBars' in sector_display.columns:
-                                gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85,
-                                                    maxWidth=105)
+                                gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
 
                             header_shortening = {
-                                'Change': 'Chg',
-                                '_chg_percentclose': 'Chg %',
-                                '_avgvol_mln': 'AvgVolMln',
-                                '_nr4_previous': 'NR4Prev',
-                                '_10madist': '10MADist',
-                                '_20madist': '20MADist',
-                                'Tight_Score': 'Tight',
-                                'Vol_Score': 'Vol',
-                                'TClose_Score': 'TClose',
-                                'MA20_Score': 'MA20',
-                                'MA10_Score': 'MA10',
+                                'Change': 'Chg', '_chg_percentclose': 'Chg %', '_avgvol_mln': 'AvgVolMln',
+                                '_nr4_previous': 'NR4Prev', '_10madist': '10MADist', '_20madist': '20MADist',
+                                'Tight_Score': 'Tight', 'Vol_Score': 'Vol', 'TClose_Score': 'TClose',
+                                'MA20_Score': 'MA20', 'MA10_Score': 'MA10',
                             }
                             for raw_col, short_name in header_shortening.items():
                                 if raw_col in sector_display.columns:
@@ -1712,8 +1552,7 @@ def main():
                                 }
                             """)
                             if 'Tier' in sector_display.columns:
-                                gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode,
-                                                    pinned='left')
+                                gb.configure_column('Tier', minWidth=70, maxWidth=85, cellStyle=tier_jscode, pinned='left')
 
                             if 'Change' in sector_display.columns:
                                 change_cell_jscode = JsCode("""
@@ -1727,8 +1566,7 @@ def main():
                                         return null;
                                     }
                                 """)
-                                gb.configure_column('Change', minWidth=50, maxWidth=60, cellStyle=change_cell_jscode,
-                                                    headerName='Chg')
+                                gb.configure_column('Change', minWidth=50, maxWidth=60, cellStyle=change_cell_jscode, headerName='Chg')
 
                             if 'Total_Score' in sector_display.columns:
                                 gb.configure_column('Total_Score', minWidth=55, maxWidth=70)
@@ -1745,8 +1583,7 @@ def main():
                             }
                             """)
                             if 'Symbol' in sector_display.columns:
-                                gb.configure_column('Symbol', cellRenderer=symbol_renderer_jscode, minWidth=150,
-                                                    maxWidth=180, pinned='left')
+                                gb.configure_column('Symbol', cellRenderer=symbol_renderer_jscode, minWidth=150, maxWidth=180, pinned='left')
 
                             if 'Sector_Rank' in sector_display.columns:
                                 gb.configure_column('Sector_Rank', hide=True)
@@ -1788,7 +1625,7 @@ def main():
         st.caption("Track multi-day bases and retests. Stored securely in your Supabase cloud database.")
 
         try:
-            response = supabase.table("saved_breakouts").select("*").eq("user_id", "us_user").execute()
+            response = supabase.table("saved_breakouts").select("*").eq("user_id", "nse_user").execute()
             saved_breakouts = response.data
         except Exception as e:
             saved_breakouts = []
@@ -1796,7 +1633,7 @@ def main():
 
         col1, col2 = st.columns([3, 1])
         with col1:
-            new_ticker = st.text_input("Enter Ticker to Track manually (e.g., AAPL, TSLA):",
+            new_ticker = st.text_input("Enter Ticker to Track manually:",
                                        key="save_ticker_input").upper().strip()
         with col2:
             st.write("")
@@ -1808,7 +1645,7 @@ def main():
                         supabase.table("saved_breakouts").insert({
                             "symbol": new_ticker,
                             "saved_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "user_id": "us_user"
+                            "user_id": "nse_user"
                         }).execute()
                         st.success(f"Saved {new_ticker} to cloud!")
                         st.rerun()
@@ -1821,12 +1658,9 @@ def main():
 
         if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None and saved_breakouts:
             live_df = st.session_state.gtt_scored_df.copy()
-
             saved_df = pd.DataFrame(saved_breakouts)
             saved_df = saved_df.rename(columns={'symbol': 'Symbol', 'saved_date': 'Saved_On'})
-
             merged_df = saved_df[['Symbol', 'Saved_On']].merge(live_df, on='Symbol', how='left')
-
             merged_df['Status'] = merged_df['Total_Score'].apply(
                 lambda x: 'Active in Scanner' if pd.notna(x) and x > 0 else 'Dropped from Scanner')
 
@@ -1867,20 +1701,18 @@ def main():
                     st.caption(f"Click the icon above to copy {len(all_saved_symbols)} symbols.")
 
             st.markdown("---")
-
             st.markdown("#### Manage Watchlist")
             cols_to_drop = st.multiselect("Select tickers to remove:", merged_df['Symbol'].tolist(), key="remove_saved")
             if st.button("Remove Selected", key="remove_saved_btn"):
                 try:
                     for sym in cols_to_drop:
-                        supabase.table("saved_breakouts").delete().eq("symbol", sym).eq("user_id", "us_user").execute()
+                        supabase.table("saved_breakouts").delete().eq("symbol", sym).eq("user_id", "nse_user").execute()
                     st.success("Removed selected tickers from cloud.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to delete: {e}")
 
             st.markdown("#### Live Tracked Data (Updates on Scanner Run)")
-
             gb3 = GridOptionsBuilder.from_dataframe(merged_df)
             gb3.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
             gb3.configure_side_bar()
@@ -1924,12 +1756,11 @@ def main():
                 gb3.configure_column('Tier', minWidth=55, maxWidth=75, cellStyle=tier_style)
             if '_nr4_previous' in merged_df.columns:
                 gb3.configure_column('_nr4_previous', minWidth=55, maxWidth=75,
-                                     cellStyle=JsCode(
-                                         "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
+                                     cellStyle=JsCode("function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
             if '_rel_tightness' in merged_df.columns:
                 gb3.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight',
-                                     cellStyle=JsCode(
-                                         "function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"))
+                                     cellStyle=JsCode("function(params){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}"),
+                                     comparator=abs_comparator)
             if '_chg_percentclose' in merged_df.columns:
                 gb3.configure_column('_chg_percentclose', minWidth=80, maxWidth=110)
             if 'Adr' in merged_df.columns:
@@ -1940,15 +1771,10 @@ def main():
                 gb3.configure_column('Avg_RS', minWidth=55, maxWidth=75)
 
             header_shortening = {
-                'Change': 'Chg',
-                '_chg_percentclose': 'Chg %',
-                '_avgvol_mln': 'AvgVolcr',
-                'Sector_Percentile': 'SectPctile',
-                '_nr4_previous': 'NR4Prev',
-                '_10madist': '10MADist',
-                '_20madist': '20MADist',
-                'W_PctOf10wkHigh': 'Wk % of 10wHi',
-                'W_TightCloses_10w': 'Wk TightCl/5'
+                'Change': 'Chg', '_chg_percentclose': 'Chg %', '_avgvol_mln': 'AvgVolcr',
+                'Sector_Percentile': 'SectPctile', '_nr4_previous': 'NR4Prev',
+                '_10madist': '10MADist', '_20madist': '20MADist',
+                'W_PctOf10wkHigh': 'Wk % of 10wHi', 'W_TightCloses_10w': 'Wk TightCl/5'
             }
             for raw_col, short_name in header_shortening.items():
                 if raw_col in merged_df.columns:
@@ -1958,7 +1784,7 @@ def main():
             AgGrid(safe_merged_df, gridOptions=gb3.build(),
                    update_mode=GridUpdateMode.MODEL_CHANGED,
                    fit_columns_on_grid_load=False,
-                   height=600, theme='streamlit', key='us_saved_breakouts_grid',
+                   height=600, theme='streamlit', key='nse_saved_breakouts_grid',
                    allow_unsafe_jscode=True)
 
         elif not saved_breakouts:
