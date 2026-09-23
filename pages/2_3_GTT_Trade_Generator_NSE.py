@@ -42,7 +42,7 @@ gtt_endpoints = {
 weekly_endpoint = "https://api.marketinout.com/run/screen?key=64e86ed22d834681"
 
 weekly_metric_columns = [
-    'Wema10', 'Dist_wema10_pct', 'Weeklyclose_chg_pct', 'Tightcloses_of5',
+    'Wema10', 'Dist_wema10_pct', 'Weeklyclose_chg_pct', 'Tightcloses_10w_of5',
     'Insidebar_thiswk', 'Insidebars_of8', 'Weeklycontraction', 'Pricevs2yrlow_ratio',
     'Pctof10wkhigh', 'Weeklyvolratio', 'Weeklyrsi'
 ]
@@ -770,10 +770,10 @@ def main():
                     st.session_state.weekly_full_df = weekly_full
 
                     weekly_subset = weekly_df[['Symbol', 'Pctof10wkhigh', 'Weeklyclose_chg_pct',
-                                               'Tightcloses_of5', 'Insidebars_of8', 'Dist_wema10_pct']].rename(columns={
+                                               'Tightcloses_10w_of5', 'Insidebars_of8', 'Dist_wema10_pct']].rename(columns={
                         'Pctof10wkhigh': 'W_PctOf10wkHigh',
                         'Weeklyclose_chg_pct': 'W_CloseChg_Pct',
-                        'Tightcloses_of5': 'W_TightCloses',
+                        'Tightcloses_10w_of5': 'W_TightCloses_10w',
                         'Insidebars_of8': 'W_InsideBars',
                         'Dist_wema10_pct': 'W_Dist10wMA'
                     })
@@ -810,6 +810,7 @@ def main():
                 actionable_df['MA20_Score'] = 0
                 actionable_df['MA10_Score'] = 0
             else:
+                else:
                 # 0) Weekly Setup Score (The Foundation)
                 if 'W_Dist10wMA' in actionable_df.columns:
                     wk_abs = actionable_df['W_Dist10wMA'].fillna(999).abs()
@@ -824,20 +825,9 @@ def main():
                     actionable_df['Wk_Setup_Score'] = 0
 
                 actionable_df['Wk_TClose_Score'] = np.where(
-                    actionable_df.get('W_TightCloses', pd.Series(0, index=actionable_df.index)).fillna(0) >= 1,
+                    actionable_df.get('W_TightCloses_10w', pd.Series(0, index=actionable_df.index)).fillna(0) >= 1,
                     wclose_pts, 0
                 )
-
-                # 1) Daily Tightness (The Trigger)
-                tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
-                safe_adr = actionable_df['Adr'].replace(0, np.nan)
-                actionable_df['_rel_tightness'] = (actionable_df[tightness_col] / safe_adr).round(2)
-                rel_tight_filled = actionable_df['_rel_tightness'].fillna(999)
-                actionable_df['Tight_Score'] = pd.cut(
-                    rel_tight_filled,
-                    bins=[-float('inf'), t1, t2, t3, t4, float('inf')],
-                    labels=[4, 3, 2, 1, 0]
-                ).astype(int)
 
                 # 1) Daily Tightness (The Trigger)
                 tightness_col = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
@@ -865,7 +855,7 @@ def main():
                     ).astype(int)
 
                 actionable_df['TClose_Score'] = np.where(
-                    actionable_df['W_TightCloses'].fillna(0) >= 1,
+                    actionable_df['W_TightCloses_10w'].fillna(0) >= 1,
                     tclose_pts,
                     0
                 )
@@ -947,7 +937,7 @@ def main():
             columns_to_show = [
                 'Tier', 'Change', 'Total_Score',
                 'Wk_Setup_Score', 'Wk_TClose_Score', 'Tight_Score', 'Vol_Score', 'MA20_Score', 'MA10_Score',
-                'W_Dist10wMA', 'W_TightCloses', 'W_PctOf10wkHigh', 'W_InsideBars', 'W_CloseChg_Pct',
+                'W_Dist10wMA', 'W_TightCloses_10w', 'W_PctOf10wkHigh', 'W_InsideBars', 'W_CloseChg_Pct',
                 '_nr4_previous', '_rel_tightness', '_chg_percentclose',
                 'dvol', '_avgvol_mln',
                 '_20madist', '_10madist',
@@ -1160,8 +1150,8 @@ def main():
                                     cellStyle=wk_pct_jscode)
             if 'W_CloseChg_Pct' in filtered_df.columns:
                 gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90, maxWidth=115)
-            if 'W_TightCloses' in filtered_df.columns:
-                gb.configure_column('W_TightCloses', headerName='Wk TightCl/5', minWidth=85, maxWidth=105)
+            if 'W_TightCloses_10w' in filtered_df.columns:
+                gb.configure_column('W_TightCloses_10w', headerName='Wk Tight 10w/5', minWidth=85, maxWidth=105)
             if 'W_InsideBars' in filtered_df.columns:
                 gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
 
@@ -1554,8 +1544,8 @@ def main():
                             if 'W_CloseChg_Pct' in sector_display.columns:
                                 gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90,
                                                     maxWidth=115)
-                            if 'W_TightCloses' in sector_display.columns:
-                                gb.configure_column('W_TightCloses', headerName='Wk TightCl/5', minWidth=85,
+                            if 'W_TightCloses_10w' in sector_display.columns:
+                                gb.configure_column('W_TightCloses_10w', headerName='Wk Tight 10w/5', minWidth=85,
                                                     maxWidth=105)
                             if 'W_InsideBars' in sector_display.columns:
                                 gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85,
@@ -1712,7 +1702,7 @@ def main():
                 '_nr4_previous', '_rel_tightness', '_chg_percentclose', 'Adr', 'Ti65', '_nr4',
                 'Avg_RS', 'Sector', 'Sector_Percentile',
                 '_avgvol_mln', '_20madist', '_10madist',
-                'W_TightCloses', 'W_PctOf10wkHigh', 'Last'
+                'W_TightCloses_10w', 'W_PctOf10wkHigh', 'Last'
             ]
             available_cols_tab3 = [c for c in columns_to_show_tab3 if c in merged_df.columns]
             merged_df = merged_df[available_cols_tab3]
@@ -1824,7 +1814,7 @@ def main():
                 '_10madist': '10MADist',
                 '_20madist': '20MADist',
                 'W_PctOf10wkHigh': 'Wk % of 10wHi',
-                'W_TightCloses': 'Wk TightCl/5'
+                'W_TightCloses_10w': 'Wk TightCl/5'
             }
             for raw_col, short_name in header_shortening.items():
                 if raw_col in merged_df.columns:
