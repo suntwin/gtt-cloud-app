@@ -1131,13 +1131,30 @@ def main():
                     return null;
                 }
             """)
+            wk_dist_jscode = JsCode(f"""
+                function(params) {{
+                    const val = params.value;
+                    if (val === null || val === undefined || isNaN(val)) return null;
+                    // Below the configured cutoff → invalid, paint RED
+                    if (val < {wk_neg_cutoff}) return {{ 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' }};
+                    // Slightly below wema10 but still within tolerance → pale yellow (warning)
+                    if (val < 0) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
+                    // Above wema10 → green tiers (tighter = better)
+                    if (val < 2) return {{ 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' }};
+                    if (val < 4) return {{ 'backgroundColor': '#8ee68e', 'color': 'black' }};
+                    if (val < 6) return {{ 'backgroundColor': '#d4edda', 'color': 'black' }};
+                    // Far above → no color (too stretched)
+                    return null;
+                }}
+            """)
+
             if '_20madist' in filtered_df.columns:
                 gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
             if '_10madist' in filtered_df.columns:
                 gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=ma_dist_jscode)
             if 'W_Dist10wMA' in filtered_df.columns:
                 gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110,
-                                    headerName='Wk 10wMA %', cellStyle=ma_dist_jscode)
+                                    headerName='Wk 10wMA %', cellStyle=wk_dist_jscode)
             score_col_style = JsCode("""
                 function(params) {
                     const val = params.value;
