@@ -595,6 +595,16 @@ def main():
             return null;
         }}
     """)
+    # ── Shared abs-value comparator for AG-Grid header clicks on tightness/distance columns ──
+    abs_comparator = JsCode("""
+        function(valueA, valueB, nodeA, nodeB, isInverted) {
+            const a = (valueA === null || valueA === undefined || isNaN(valueA)) ? Infinity : Math.abs(valueA);
+            const b = (valueB === null || valueB === undefined || isNaN(valueB)) ? Infinity : Math.abs(valueB);
+            if (a < b) return -1;
+            if (a > b) return 1;
+            return 0;
+        }
+    """)
 
     w_raw = [
         st.sidebar.number_input("Wk Dist < this -> 4 pts", value=float(wk_defaults[0]), step=0.5, key="sc_w1"),
