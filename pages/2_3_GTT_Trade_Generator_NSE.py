@@ -237,7 +237,10 @@ def filter_dataframe(df, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_w
     df = df.copy()
     with st.container():
         tc = '_nr4' if scan_mode == "Anticipation" else '_nr4_previous'
-        df2 = ['_chg_percentclose','Adr','Sector_Percentile','_avgvol_mln'] if scan_mode == "Post Breakout" else [tc,'Sector_Percentile','Adr','_avgvol_mln']
+        if scan_mode == "Post Breakout":
+            df2 = ['_rel_tightness', '_chg_percentclose', 'Adr', '_avgvol_mln', '_vol_ratio']
+        else:
+            df2 = [tc, 'Sector_Percentile', 'Adr', '_avgvol_mln']
         to_filter = st.multiselect("Filter dataframe on", df.columns, default=df2)
         for column in to_filter:
             cs = df[column]; hn = cs.isna().any()
@@ -251,11 +254,55 @@ def filter_dataframe(df, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_w
             elif is_numeric_dtype(cs):
                 cl = cs.dropna()
                 if cl.empty: st.info(f"Column **{column}** has no numeric values"); continue
-                _min = float(cl.min()); _max = float(cl.max())
+                _min = float(cl.min());
+                _max = float(cl.max())
                 if _max <= _min: _max = _min + 0.1
                 step = (_max - _min) / 100 if (_max - _min) > 0 else 0.1
-                ui = st.slider(f"Values for {column}", _min, _max, (_min, _max), step=step)
-                kn = st.checkbox(f"Keep rows where **{column}** is blank", value=True, key=f"kn_{column}") if hn else False
+
+                # ── Custom max bounds for sliders ──
+                custom_max_bounds = {
+                    '_nr4': 5.0, '_nr4_previous': 5.0,
+                    '_chg_percentclose': 20.0, 'Adr': 15.0,
+                    'Sector_Percentile': 100.0, 'Avg_RS': 100.0,
+                    '_rel_tightness': 3.0, '_vol_ratio': 10.0,
+                }
+                _max = max(_max, custom_max_bounds.get(column, _max))
+
+                # ── Custom default ranges (mode-specific) ──
+                if scan_mode == "Post Breakout":
+                    custom_ranges = {
+                        '_rel_tightness': (0.0, 1.1),
+                        '_chg_percentclose': (2.0, _max),
+                        'Adr': (4.0, _max),
+                        '_avgvol_mln': (10.0, _max),
+                        '_vol_ratio': (1.5, _max),
+                        '_nr4_previous': (0.0, 3.0),
+                        '_nr4': (0.0, 3.0),
+                        'Sector_Percentile': (60.0, 100.0),
+                        'Avg_RS': (80.0, 100.0),
+                    }
+                else:
+                    custom_ranges = {
+                        '_rel_tightness': (0.0, 0.8),
+                        '_chg_percentclose': (-1.0, 3.0),
+                        'Adr': (2.0, _max),
+                        '_avgvol_mln': (10.0, _max),
+                        '_nr4': (0.0, 3.0),
+                        '_nr4_previous': (0.0, 3.0),
+                        'Sector_Percentile': (60.0, 100.0),
+                        'Avg_RS': (80.0, 100.0),
+                    }
+
+                default_range = custom_ranges.get(column, (_min, _max))
+                default_min = max(float(default_range[0]), _min)
+                default_max = min(float(default_range[1]), _max)
+                if default_min > default_max:
+                    default_min = _min
+                    default_max = _max
+
+                ui = st.slider(f"Values for {column}", _min, _max, (default_min, default_max), step=step)
+                kn = st.checkbox(f"Keep rows where **{column}** is blank", value=True,
+                                 key=f"kn_{column}") if hn else False
                 ir = cs.between(*ui)
                 df = df[(ir | cs.isna()) if kn else ir]
             else:
