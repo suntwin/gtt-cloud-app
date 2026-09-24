@@ -540,8 +540,14 @@ def main():
                     '_10wmadist','_insideday','_bo_engulfing_cndl','_days_since_bo','_circuit','W_CloseChg_Pct','Timestamp']
             amc = list(fdf.columns)
             with st.expander("Choose visible columns (saved as your default)"):
-                smc = st.multiselect("Columns to show", amc, default=get_persisted_columns('nse_main_table', amc, mtdh), key="main_col_sel")
-                if st.button("Save as default", key="save_cols"): save_column_prefs('nse_main_table', smc); st.success("Saved.")
+                # Force key columns to always be visible (fixes old saved prefs)
+                _forced_visible = ['_vol_ratio', '_rel_wk_dist', '_rel_tightness', '_chg_percentclose', 'W_Dist10wMA',
+                                   'W_TightCloses_10w', 'Adr', 'Symbol']
+                _saved = get_persisted_columns('nse_main_table_v2', amc, mtdh)
+                _default = list(set(_saved + [c for c in _forced_visible if c in amc]))
+                smc = st.multiselect("Columns to show", amc, default=_default, key="main_col_sel")
+                if st.button("Save as default", key="save_cols"): save_column_prefs('nse_main_table_v2',
+                                                                                    smc); st.success("Saved.")
             hmc = [c for c in amc if c not in smc]
             cp = {c: i for i, c in enumerate(columns_to_show) if c in fdf.columns}
             smc = sorted(smc, key=lambda c: cp.get(c, 9999)); hmc = sorted(hmc, key=lambda c: cp.get(c, 9999))
@@ -562,20 +568,24 @@ def main():
             """)
 
             # ── Volume Ratio Heatmap (NEW: 2.5x / 3.5x thresholds) ──
+            # ── Volume Ratio Heatmap (1.5x / 2.5x / 3.5x / 6.5x thresholds) ──
+            vol_jscode = JsCode("""
+                function(params) {
+                    const v = params.value;
+                    if (v === null || v === undefined || isNaN(v) || v <= 0) return null;
+                    if (v >= 6.5) return { 'backgroundColor': '#155724', 'color': '#white', 'fontWeight': 'bold', 'fontSize': '14px' };
+                    if (v >= 3.5) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                    if (v >= 2.5) return { 'backgroundColor': '#5cb85c', 'color': 'white', 'fontWeight': 'bold' };
+                    if (v >= 1.5) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                    if (v >= 1.0) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                    if (v < 0.5) return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
+                    return null;
+                }
+            """)
             if '_vol_ratio' in fdf.columns:
-                vol_jscode = JsCode("""
-                    function(params) {
-                        const v = params.value;
-                        if (v === null || v === undefined || isNaN(v) || v <= 0) return null;
-                        if (v >= 3.5) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
-                        if (v >= 2.5) return { 'backgroundColor': '#8ee68e', 'color': 'black', 'fontWeight': 'bold' };
-                        if (v >= 1.5) return { 'backgroundColor': '#d4edda', 'color': 'black' };
-                        if (v >= 1.0) return { 'backgroundColor': '#f8f9fa', 'color': 'black' };
-                        if (v < 0.5) return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
-                        return null;
-                    }
-                """)
-                gb.configure_column('_vol_ratio', minWidth=60, maxWidth=85, headerName='Vol Ratio', cellStyle=vol_jscode)
+                gb.configure_column('_vol_ratio', minWidth=65, maxWidth=90, headerName='Vol Ratio',
+                                    cellStyle=vol_jscode, pinned='left')
+
 
             # ── Also style dvol and _avgvol_mln with the same vol ratio coloring ──
             if 'dvol' in fdf.columns and '_avgvol_mln' in fdf.columns:
@@ -711,32 +721,48 @@ def main():
                     else: st.info("All selected tickers already saved.")
 
             # ── Copy to TradingView (grouped by volume strength) ──
+            # ── Copy to TradingView (mode-specific) ──
             sdf = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response['data'].empty else fdf
             if not sdf.empty and 'Symbol' in sdf.columns:
                 al = sdf['Symbol'].dropna().unique().tolist(); atv = ",".join([f"nse:{s}" for s in al])
                 st.markdown("---"); st.subheader("Copy Symbols to TradingView")
                 cc1, cc2, cc3 = st.columns(3)
-                if '_vol_ratio' in sdf.columns:
+                if scan_mode == "Post Breakout" and '_vol_ratio' in sdf.columns:
                     strong = sdf[sdf['_vol_ratio'].fillna(0) >= 3.5]['Symbol'].dropna().unique().tolist()
                     moderate = sdf[(sdf['_vol_ratio'].fillna(0) >= 1.5) & (sdf['_vol_ratio'].fillna(0) < 3.5)]['Symbol'].dropna().unique().tolist()
                     stv = ",".join([f"nse:{s}" for s in strong])
                     mtv = ",".join([f"nse:{s}" for s in moderate])
+                    with cc1:
+                        st.markdown(f"**Strong BO (Vol ≥3.5x)** — `{len(strong)} symbols`")
+                        if strong: st.code(stv, language=None); st.caption(f"Click to copy {len(strong)} symbols.")
+                        else: st.info("No strong breakouts.")
+                    with cc2:
+                        st.markdown(f"**Moderate (Vol 1.5-3.5x)** — `{len(moderate)} symbols`")
+                        if moderate: st.code(mtv, language=None); st.caption(f"Click to copy {len(moderate)} symbols.")
+                        else: st.info("No moderate breakouts.")
+                    with cc3:
+                        st.markdown(f"**All filtered** — `{len(al)} symbols`")
+                        if al:
+                            if st.button("Copy All", key="copy_all"): st.code(atv, language=None)
+                        else: st.info("No symbols in view.")
                 else:
-                    strong = []; moderate = al
-                    stv = ""; mtv = atv
-                with cc1:
-                    st.markdown(f"**Strong Breakouts (Vol ≥3.5x)** — `{len(strong)} symbols`")
-                    if strong: st.code(stv, language=None); st.caption(f"Click to copy {len(strong)} symbols.")
-                    else: st.info("No strong breakouts.")
-                with cc2:
-                    st.markdown(f"**Moderate (Vol 1.5-3.5x)** — `{len(moderate)} symbols`")
-                    if moderate: st.code(mtv, language=None); st.caption(f"Click to copy {len(moderate)} symbols.")
-                    else: st.info("No moderate breakouts.")
-                with cc3:
-                    st.markdown(f"**All filtered** — `{len(al)} symbols`")
-                    if al:
-                        if st.button("Copy All", key="copy_all"): st.code(atv, language=None); st.caption(f"Click to copy {len(al)} symbols.")
-                    else: st.info("No symbols in view.")
+                    # Anticipation mode: copy by tightness
+                    if '_rel_tightness' in sdf.columns:
+                        tightest = sdf.nsmallest(20, '_rel_tightness', keep='first')['Symbol'].dropna().unique().tolist() if len(sdf) > 20 else al
+                    else:
+                        tightest = al
+                    ttv = ",".join([f"nse:{s}" for s in tightest])
+                    with cc1:
+                        st.markdown(f"**Top 20 Tightest** — `{len(tightest)} symbols`")
+                        if tightest: st.code(ttv, language=None); st.caption(f"Click to copy {len(tightest)} symbols.")
+                        else: st.info("No symbols.")
+                    with cc2:
+                        st.markdown(f"**All filtered** — `{len(al)} symbols`")
+                        if al:
+                            if st.button("Copy All", key="copy_all"): st.code(atv, language=None)
+                        else: st.info("No symbols in view.")
+                    with cc3:
+                        st.write("")  # empty third column for anticipation mode
         else:
             st.info("Click 'Generate GTT Trading Plan' to load data.")
 
