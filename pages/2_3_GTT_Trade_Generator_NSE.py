@@ -1254,7 +1254,54 @@ def main():
                                    update_mode=GridUpdateMode.MODEL_CHANGED,
                                    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
                                    allow_unsafe_jscode=True)
+            # ── Export Data for Analysis ──
+            st.markdown("---")
+            st.subheader("Export Scanner Data for Analysis")
 
+            col_dl1, col_dl2 = st.columns(2)
+
+            with col_dl1:
+                # Export filtered table data (what you see, all columns)
+                export_filtered = filtered_df.copy()
+                if 'W_Dist10wMA' in export_filtered.columns and 'Adr' in export_filtered.columns:
+                    export_filtered['_rel_wk_dist'] = (
+                        export_filtered['W_Dist10wMA'].abs() / export_filtered['Adr'].replace(0, np.nan)
+                    ).round(2)
+                if '_rel_tightness' in export_filtered.columns and 'Adr' in export_filtered.columns:
+                    export_filtered['_tightness_to_wkdist_ratio'] = (
+                        export_filtered['_rel_tightness'] / export_filtered['_rel_wk_dist'].replace(0, np.nan)
+                    ).round(2)
+
+                csv_filtered = export_filtered.to_csv(index=False)
+                st.download_button(
+                    label="Download Filtered Data (CSV)",
+                    data=csv_filtered,
+                    file_name=f"gtt_filtered_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
+                st.caption(f"{len(export_filtered)} rows, {len(export_filtered.columns)} columns")
+
+            with col_dl2:
+                # Export FULL scored dataset (all stocks, all columns)
+                if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
+                    export_full = st.session_state.gtt_scored_df.copy()
+                    if 'W_Dist10wMA' in export_full.columns and 'Adr' in export_full.columns:
+                        export_full['_rel_wk_dist'] = (
+                            export_full['W_Dist10wMA'].abs() / export_full['Adr'].replace(0, np.nan)
+                        ).round(2)
+                    if '_rel_tightness' in export_full.columns and 'Adr' in export_full.columns:
+                        export_full['_tightness_to_wkdist_ratio'] = (
+                            export_full['_rel_tightness'] / export_full['_rel_wk_dist'].replace(0, np.nan)
+                        ).round(2)
+
+                    csv_full = export_full.to_csv(index=False)
+                    st.download_button(
+                        label="Download Full Scored Dataset (CSV)",
+                        data=csv_full,
+                        file_name=f"gtt_full_scored_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv"
+                    )
+                    st.caption(f"{len(export_full)} rows, {len(export_full.columns)} columns")
             selected_rows = grid_response['selected_rows']
             if selected_rows is not None and len(selected_rows) > 0:
                 if isinstance(selected_rows, pd.DataFrame):
