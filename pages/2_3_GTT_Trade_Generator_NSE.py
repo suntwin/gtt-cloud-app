@@ -395,7 +395,14 @@ def main():
     st.sidebar.caption("Rewards stocks up 2-5% with volume STARTING to come in (0.8x-1.3x avg). Penalizes dead volume.")
     va_defaults = saved_scoring.get('vol_arriving', {})
     va_min_chg = st.sidebar.number_input("Min Chg% for Vol Arriving", value=float(va_defaults.get('min_chg', 2.0)), step=0.5, key="sc_va_chg")
-    va_max_chg = st.sidebar.number_input("Max Chg% for Vol Arriving", value=float(va_defaults.get('max_chg', 5.0)), step=0.5, key="sc_va_chg2")
+    va_max_chg = st.sidebar.number_input("Max Chg% for Vol Scoring", value=float(va_defaults.get('max_chg', 8.0)),
+                                         step=0.5, key="sc_va_chg2")
+    va_confirmed_vol = st.sidebar.number_input("Vol Confirmed threshold (x avg)",
+                                               value=float(va_defaults.get('confirmed_vol', 1.5)), step=0.1,
+                                               key="sc_va_conf")
+    va_confirmed_bonus = st.sidebar.number_input("Vol Confirmed Bonus (pts)",
+                                                 value=int(va_defaults.get('confirmed_bonus', 3)), min_value=0,
+                                                 max_value=5, step=1, key="sc_va_cb")
     va_min_vol = st.sidebar.number_input("Min Vol Ratio (x avg)", value=float(va_defaults.get('min_vol', 0.8)), step=0.1, key="sc_va_vol1")
     va_max_vol = st.sidebar.number_input("Max Vol Ratio (x avg)", value=float(va_defaults.get('max_vol', 1.3)), step=0.1, key="sc_va_vol2")
     va_bonus = st.sidebar.number_input("Vol Arriving Bonus (pts)", value=int(va_defaults.get('bonus', 2)), min_value=0, max_value=5, step=1, key="sc_va_bonus")
@@ -427,8 +434,10 @@ def main():
 
     # ── Tier Thresholds ──
     st.sidebar.subheader("Tier Thresholds")
-    tier_a = st.sidebar.number_input("Tier A min score", value=int(saved_scoring.get('tier_a_threshold', 10)), min_value=1, max_value=20, step=1, key="sc_tier_a")
-    tier_b = st.sidebar.number_input("Tier B min score", value=int(saved_scoring.get('tier_b_threshold', 7)), min_value=1, max_value=20, step=1, key="sc_tier_b")
+    tier_a = st.sidebar.number_input("Tier A min score", value=int(saved_scoring.get('tier_a_threshold', 15)),
+                                     min_value=1, max_value=25, step=1, key="sc_tier_a")
+    tier_b = st.sidebar.number_input("Tier B min score", value=int(saved_scoring.get('tier_b_threshold', 11)),
+                                     min_value=1, max_value=25, step=1, key="sc_tier_b")
 
     if st.sidebar.button("Save scoring config", key="save_scoring_btn"):
         prefs_to_save = {
@@ -522,7 +531,9 @@ def main():
 
             if not thresholds_ok:
                 st.sidebar.error("Scoring Error: Threshold values within a criteria must be unique.")
-                for c in ['Tier','Total_Score','Wk_Setup_Score','Wk_TClose_Score','Wk_RelDist_Score','Tight_Score','Vol_Score','Vol_Arriving_Score','Stuck_Risk_Score','TClose_Score','MA20_Score','MA10_Score']:
+                for c in ['Tier', 'Total_Score', 'Wk_Setup_Score', 'Wk_TClose_Score', 'Wk_RelDist_Score', 'Tight_Score',
+                          'Vol_Score', 'Vol_Confirmed_Score', 'Vol_Arriving_Score', 'Stuck_Risk_Score',
+                          'ADR_SweetSpot_Score', 'TClose_Score', 'MA20_Score', 'MA10_Score']:
                     adf[c] = 0 if c not in ['Tier'] else 'Error'
                 adf['Tier'] = 'Error'
             else:
@@ -558,14 +569,32 @@ def main():
                     adf['Vol_Score'] = pd.cut(rr, bins=[-float('inf'),v3,v2,v1,float('inf')], labels=[0,1,2,3]).astype(int)
 
                 # ── 4. Volume Arriving Score (NEW — anti-stuck) ──
+                # ── 4. Volume Scoring (3 tiers: dead / arriving / confirmed) ──
                 if '_chg_percentclose' in adf.columns and 'dvol' in adf.columns and '_avgvol_mln' in adf.columns:
                     vr = np.where(adf['_avgvol_mln'] > 0, adf['dvol'] / adf['_avgvol_mln'], 0)
-                    vol_arriving = ((adf['_chg_percentclose'].fillna(0) >= va_min_chg) & (adf['_chg_percentclose'].fillna(0) <= va_max_chg) & (vr >= va_min_vol) & (vr <= va_max_vol))
-                    adf['Vol_Arriving_Score'] = np.where(vol_arriving, va_bonus, 0)
-                    stuck_risk = ((adf['_chg_percentclose'].fillna(0) >= va_min_chg) & (adf['_chg_percentclose'].fillna(0) <= va_max_chg) & (vr < stuck_max_vol))
-                    adf['Stuck_Risk_Score'] = np.where(stuck_risk, -stuck_penalty, 0)
+                    chg = adf['_chg_percentclose'].fillna(0)
+                    is_moving = (chg >= va_min_chg) & (chg <= va_max_chg)
+
+                    # Tier 3: Volume Confirmed (1.5x+) — like GNA at 7.74x
+                    vol_confirmed = is_moving & (vr >= va_confirmed_vol)
+                    # Tier 2: Volume Arriving (0.8x-1.3x)
+                    vol_arriving = is_moving & (vr >= va_min_vol) & (vr < va_confirmed_vol)
+                    # Tier 1: Dead volume — stuck risk
+                    stuck = is_moving & (vr < stuck_max_vol)
+
+                    adf['Vol_Confirmed_Score'] = np.where(vol_confirmed, va_confirmed_bonus, 0)
+                    adf['Vol_Arriving_Score'] = np.where(vol_arriving & ~vol_confirmed, va_bonus, 0)
+                    adf['Stuck_Risk_Score'] = np.where(stuck, -stuck_penalty, 0)
                 else:
-                    adf['Vol_Arriving_Score'] = 0; adf['Stuck_Risk_Score'] = 0
+                    adf['Vol_Confirmed_Score'] = 0;
+                    adf['Vol_Arriving_Score'] = 0;
+                    adf['Stuck_Risk_Score'] = 0
+
+                # ── ADR Sweet Spot Bonus ──
+                if 'Adr' in adf.columns:
+                    adf['ADR_SweetSpot_Score'] = np.where((adf['Adr'] >= 3.0) & (adf['Adr'] <= 6.0), 1, 0)
+                else:
+                    adf['ADR_SweetSpot_Score'] = 0
 
                 adf['TClose_Score'] = np.where(adf['W_TightCloses_10w'].fillna(0) >= 1, tclose_pts, 0)
 
@@ -583,11 +612,21 @@ def main():
 
                 # ── Total Score (includes all new components) ──
                 adf['Total_Score'] = (
-                    adf['Wk_Setup_Score'] + adf['Wk_TClose_Score'] + adf['Wk_RelDist_Score'] +
-                    adf['Tight_Score'] + adf['Vol_Score'] + adf['Vol_Arriving_Score'] + adf['Stuck_Risk_Score'] +
-                    adf['TClose_Score'] + adf['MA20_Score'] + adf['MA10_Score']
+                        adf['Wk_Setup_Score'] + adf['Wk_TClose_Score'] + adf['Wk_RelDist_Score'] +
+                        adf['Tight_Score'] + adf['Vol_Score'] +
+                        adf['Vol_Confirmed_Score'] + adf['Vol_Arriving_Score'] + adf['Stuck_Risk_Score'] +
+                        adf['TClose_Score'] + adf['MA20_Score'] + adf['MA10_Score'] +
+                        adf['ADR_SweetSpot_Score']
+
                 )
-                adf['Tier'] = np.select([adf['Total_Score'] >= tier_a, adf['Total_Score'] >= tier_b], ['A','B'], default='Ignore')
+                adf['Tier'] = np.select([adf['Total_Score'] >= tier_a, adf['Total_Score'] >= tier_b], ['A', 'B'],
+                                        default='Ignore')
+
+                # ── RS Gate: stocks with weak RS can't be Tier A ──
+                if 'Avg_RS' in adf.columns:
+                    rs_cutoff = 80  # configurable
+                    adf.loc[(adf['Tier'] == 'A') & (adf['Avg_RS'] < rs_cutoff), 'Tier'] = 'B'
+
 
             # ── Change tracking ──
             tom = {'A':0,'B':1,'Ignore':2,'Error':3}
@@ -612,8 +651,11 @@ def main():
             st.session_state.gtt_scored_df = adf.copy()
 
             columns_to_show = [
-                'Tier','Change','Total_Score',
-                'Wk_Setup_Score','Wk_RelDist_Score','Wk_TClose_Score','Tight_Score','Vol_Score','Vol_Arriving_Score','Stuck_Risk_Score','TClose_Score','MA20_Score','MA10_Score',
+                 'Tier','Change','Total_Score',
+                'Wk_Setup_Score','Wk_RelDist_Score','Wk_TClose_Score',
+                'Tight_Score','Vol_Score','Vol_Confirmed_Score','Vol_Arriving_Score',
+                'Stuck_Risk_Score','ADR_SweetSpot_Score',
+                'TClose_Score','MA20_Score','MA10_Score',
                 'W_Dist10wMA','_rel_wk_dist','W_TightCloses_10w','W_PctOf10wkHigh','W_InsideBars','W_CloseChg_Pct',
                 '_nr4_previous','_rel_tightness','_chg_percentclose',
                 'dvol','_avgvol_mln','_20madist','_10madist',
@@ -717,11 +759,11 @@ def main():
             if 'W_Dist10wMA' in fdf.columns: gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
 
             sc = JsCode("""function(p){const v=p.value;if(v===null||v===undefined)return null;if(v>=3)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v>=2)return{'backgroundColor':'#8ee68e','color':'black'};if(v>=1)return{'backgroundColor':'#d4edda','color':'black'};if(v<0)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};return null}""")
-            for sc_col in ['Wk_Setup_Score','Wk_RelDist_Score','Wk_TClose_Score','Tight_Score','Vol_Score','Vol_Arriving_Score','TClose_Score','MA20_Score','MA10_Score']:
+            for sc_col in ['Wk_Setup_Score','Wk_RelDist_Score','Wk_TClose_Score','Tight_Score','Vol_Score','Vol_Confirmed_Score','Vol_Arriving_Score','ADR_SweetSpot_Score','TClose_Score','MA20_Score','MA10_Score']:
                 if sc_col in fdf.columns: gb.configure_column(sc_col, minWidth=45, maxWidth=60, cellStyle=sc)
             if 'Stuck_Risk_Score' in fdf.columns:
-                gb.configure_column('Stuck_Risk_Score', minWidth=45, maxWidth=60, headerName='Stuck?',
-                    cellStyle=JsCode("""function(p){const v=p.value;if(v===null||v===undefined||v>=0)return null;return{'backgroundColor':'#dc3545','color':'white','fontWeight':'bold'}}"""))
+                gb.configure_column('Stuck_Risk_Score', minWidth=45, maxWidth=60, headerName='Stuck?', cellStyle=JsCode("""function(p){const v=p.value;if(v===null||v===undefined||v>=0)return null;return{'backgroundColor':'#dc3545','color':'white','fontWeight':'bold'}}"""))
+
 
             wp = JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;if(v>=1.0)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v>=0.95)return{'backgroundColor':'#8ee68e','color':'black'};if(v>=0.85)return{'backgroundColor':'#d4edda','color':'black'};return null}""")
             if 'W_PctOf10wkHigh' in fdf.columns: gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95, maxWidth=120, cellStyle=wp)
@@ -729,7 +771,7 @@ def main():
             if 'W_TightCloses_10w' in fdf.columns: gb.configure_column('W_TightCloses_10w', headerName='Wk Tight 10w/5', minWidth=85, maxWidth=105)
             if 'W_InsideBars' in fdf.columns: gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
 
-            hs = {'Change':'Chg','_chg_percentclose':'Chg %','_avgvol_mln':'AvgVolcr','_bo_dollar_vol_mln':'BO$Volcr','_avg_vol_float_ratio':'VolFloatR','_bo_engulfing_cndl':'BOEngulf','_days_since_bo':'DaysSinceBO','Sector_Percentile':'SectPctile','_nr4_previous':'NR4Prev','_period_perf':'PeriodPerf','_10wmadist':'10wMADist','_10madist':'10MADist','_20madist':'20MADist','_insideday':'InsideDay','Tight_Score':'Tight','Vol_Score':'Vol','TClose_Score':'TClose','MA20_Score':'MA20','MA10_Score':'MA10','W_Dist10wMA':'Wk 10wMA %','_rel_wk_dist':'Rel Wk Dist','W_PctOf10wkHigh':'Wk % of 10wHi','W_CloseChg_Pct':'Wk CloseChg%','W_TightCloses':'Wk TightCl/5','W_InsideBars':'Wk InsideB/8','Wk_Setup_Score':'WkAbs','Wk_RelDist_Score':'WkRel','Vol_Arriving_Score':'VolArr','Stuck_Risk_Score':'Stuck'}
+            hs = {'Change':'Chg','_chg_percentclose':'Chg %','_avgvol_mln':'AvgVolcr','_bo_dollar_vol_mln':'BO$Volcr','_avg_vol_float_ratio':'VolFloatR','_bo_engulfing_cndl':'BOEngulf','_days_since_bo':'DaysSinceBO','Sector_Percentile':'SectPctile','_nr4_previous':'NR4Prev','_period_perf':'PeriodPerf','_10wmadist':'10wMADist','_10madist':'10MADist','_20madist':'20MADist','_insideday':'InsideDay','Tight_Score':'Tight','Vol_Score':'Vol','TClose_Score':'TClose','MA20_Score':'MA20','MA10_Score':'MA10','W_Dist10wMA':'Wk 10wMA %','_rel_wk_dist':'Rel Wk Dist','W_PctOf10wkHigh':'Wk % of 10wHi','W_CloseChg_Pct':'Wk CloseChg%','W_TightCloses':'Wk TightCl/5','W_InsideBars':'Wk InsideB/8','Wk_Setup_Score':'WkAbs','Wk_RelDist_Score':'WkRel','Vol_Arriving_Score':'VolArr','Stuck_Risk_Score':'Stuck','Vol_Confirmed_Score': 'VolConf', 'ADR_SweetSpot_Score': 'ADRsweet'}
             for rc, sn in hs.items():
                 if rc in fdf.columns: gb.configure_column(rc, headerName=sn)
 
