@@ -32,8 +32,10 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO"]
+PROCESS_VERSION = "v2026-09-25c · ratings, continuation, skip"   # shown on the page so you can tell which code is running
+SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
+               "CONTINUATION": "Continuation — second leg after an earlier breakout",
                "UNTAGGED": "Untagged (old saved list)"}
 NO_TAG = "—"
 RATINGS = ["—", "3★", "4★", "5★"]
@@ -66,6 +68,7 @@ BREAKOUT_DEFAULTS = {
     "ep_min_chg": 8.0, "ep_min_vol": 3.0,   # EP: big move on huge volume
     "tight_max_reltight": 1.0,              # TIGHT_BO: yesterday's NR4 / ADR
     "wema_max_adr": 2.0,                    # WEMA_BO: within N ADRs of the 10w EMA
+    "cont_max_days": 15,                    # CONTINUATION: an earlier breakout within this many days (scan's days-since-BO)
 }
 CLEANUP_DEFAULTS = {"max_age_days": 30, "unseen_days": 10}
 
@@ -180,6 +183,7 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
                                + (f" · {stars[s]}★" if s in stars else ""))
     d["Label"] = "SCANNED"
     d["Reason"] = ""
+    d["CONT"] = False
 
     chg = d["_chg_percentclose"].fillna(0)
     vol = d["_vol_ratio"].fillna(0)
@@ -223,7 +227,9 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
             which = "10" if d10 <= d20 else "20"
             d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"{row['setup_type']}: pulled back to {which} MA ({min(d10, d20):.1f}% away)"
         elif rt <= cfg["max_reltight"] and near_bo:
-            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"{row['setup_type']}: quiet near breakout level (rel tight {rt:.2f})"
+            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"Continuation setup ({row['setup_type']}): tight near breakout level (rel tight {rt:.2f})"
+            if "CONTINUATION" not in all_tags.get(sym, []):
+                d.at[sym, "CONT"] = True
         else:
             age = _age_days(row, today)
             if age is not None and age >= cfg["stale_days"]:
@@ -261,6 +267,7 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     if missing:
         d = pd.concat([d, pd.DataFrame(missing).set_index("Symbol", drop=False)])
 
+    d["CONT"] = d["CONT"].fillna(False).astype(bool)
     d["Rank"] = np.nan
     cm = d["Label"] == "CANDIDATE"
     ranked = d[cm].sort_values(["Scan_Count", "_rel_tightness_today", "Avg_RS"],
@@ -273,7 +280,7 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     return d, updates
 
 
-def suggest_tags(r, cfg):
+def suggest_tags(r, cfg, saved_as=None):
     """Every setup type the scan columns point to (a breakout can be TIGHT_BO and WEMA_BO). Confirm on the chart."""
     chg, vol = _num(r.get("_chg_percentclose"), 0), _num(r.get("_vol_ratio"), 0)
     rtp = _num(r.get("_rel_tightness_prev"), 99)
@@ -286,6 +293,12 @@ def suggest_tags(r, cfg):
         tags.append("TIGHT_BO"); why.append(f"TIGHT: tight before (rel {rtp:.2f}), above 10 & 20 — confirm both rising")
     if rwd <= cfg["wema_max_adr"]:
         tags.append("WEMA_BO"); why.append(f"WEMA: {rwd:.1f} ADR from 10w EMA")
+    dsb = _num(r.get("_days_since_bo"), 0)
+    prev = sorted(t for t in (saved_as or set()) if t != "CONTINUATION")
+    if prev:
+        tags.append("CONTINUATION"); why.append(f"CONT: already saved as {'+'.join(prev)} — breaking out again")
+    elif 2 <= dsb <= cfg["cont_max_days"]:
+        tags.append("CONTINUATION"); why.append(f"CONT: earlier breakout {dsb:.0f} days ago — confirm on the chart")
     return tags, ("; ".join(why) if why else "no clear setup — check the chart")
 
 
@@ -300,7 +313,7 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None):
         active.setdefault(r["symbol"], set()).add(r["setup_type"])
         if r.get("rating"):
             rated[r["symbol"]] = max(rated.get(r["symbol"], 0), int(r["rating"]))
-    sug = [suggest_tags(r, cfg) for _, r in bo.iterrows()]
+    sug = [suggest_tags(r, cfg, active.get(r["Symbol"])) for _, r in bo.iterrows()]
     bo["Suggested"] = [" + ".join(t) if t else NO_TAG for t, _ in sug]
     bo["Why"] = [w for _, w in sug]
     for t in SETUP_TYPES:
@@ -308,6 +321,7 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None):
     bo["On_List"] = bo["Symbol"].isin(yesterday_list)
     bo["In_Watchlist"] = bo["Symbol"].map(lambda s: ", ".join(sorted(active.get(s, []))))
     bo["Rating"] = bo["Symbol"].map(lambda s: rating_label(rated.get(s)))
+    bo["Skip"] = False
     bo["Batch"] = np.where(bo["_vol_ratio"].fillna(0) >= cfg["strong_min_vol"], "Strong", "Moderate")
     return bo.sort_values("_vol_ratio", ascending=False).reset_index(drop=True)
 
@@ -410,6 +424,8 @@ def save_breakouts(sb, bo, snap_date, mcfg):
     lists = []
     for _, r in bo.iterrows():
         prior = [t for t in str(r.get("In_Watchlist", "")).split(", ") if t]
+        if bool(r.get("Skip")):
+            lists.append("SKIPPED"); continue
         ticked = [t for t in SETUP_TYPES if bool(r.get(t))]
         for t in ticked:
             if t in prior:
@@ -427,7 +443,7 @@ def save_breakouts(sb, bo, snap_date, mcfg):
         lists.append("+".join(t for t in allt if t in SETUP_TYPES) or "NOT_SAVED")
     snap = bo.copy()
     snap["_list"] = lists
-    snap["_sel"] = snap["_list"] != "NOT_SAVED"
+    snap["_sel"] = ~snap["_list"].isin(["NOT_SAVED", "SKIPPED"])
     upsert_snapshots(sb, snapshot_rows(snap, snap_date, mcfg, "BREAKOUT", "_list", "_sel"))
     return added, len(bo)
 
@@ -509,8 +525,7 @@ def render_quick_save(st, sb, selected, base_df, scan_mode, mcfg):
             st.error("Database not connected."); return
         sd = session_date(market_now(mcfg), mcfg)
         order = (["TOMORROW"] + SETUP_TYPES) if scan_mode == "Anticipation" else (SETUP_TYPES + ["TOMORROW"])
-        labels = {"TOMORROW": "Add to tomorrow's list", "EP": "Save as EP", "TIGHT_BO": "Save as TIGHT_BO",
-                  "WEMA_BO": "Save as WEMA_BO"}
+        labels = {"TOMORROW": "Add to tomorrow's list", **{t: f"Save as {t}" for t in SETUP_TYPES}}
         primary = "TOMORROW" if scan_mode == "Anticipation" else None
         for col, k in zip(st.columns(len(order)), order):
             kind = "primary" if (k == primary or (primary is None and k in SETUP_TYPES)) else "secondary"
@@ -592,14 +607,16 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
         c.metric(n, int(counts.get(k, 0)))
 
-    show = ["Keep", "Label", "Symbol", "Reason", "Tag", "Rank", "Scan_Count", "_chg_percentclose", "_vol_ratio",
+    show = ["Keep", "CONT", "Label", "Symbol", "Reason", "Tag", "Rank", "Scan_Count", "_chg_percentclose", "_vol_ratio",
             "Adr", "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS", "Sector"]
     view = lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]]
     edited = st.data_editor(
         view, hide_index=True, height=480, key="bt_editor",
-        disabled=[c for c in view.columns if c != "Keep"],
+        disabled=[c for c in view.columns if c not in ("Keep", "CONT")],
         column_config={
             "Keep": st.column_config.CheckboxColumn("Tomorrow", help="On tomorrow's list"),
+            "CONT": st.column_config.CheckboxColumn("Save CONT", help="Also save to the watchlist as CONTINUATION "
+                                                    "(tight around the breakout candle)"),
             "Label": st.column_config.TextColumn("Situation"),
             "Tag": st.column_config.TextColumn("Saved as"),
             "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
@@ -610,6 +627,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         })
     lab = lab.set_index("Symbol", drop=False)
     lab.loc[edited["Symbol"], "Keep"] = edited["Keep"].astype(bool).values
+    lab.loc[edited["Symbol"], "CONT"] = edited["CONT"].fillna(False).astype(bool).values
     lab = lab.reset_index(drop=True)
 
     removes = [u for u in updates if u["action"] == "remove"]
@@ -630,7 +648,10 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     if st.button(f"Save tomorrow's list  ({sd})", type="primary", key="bt_save"):
         try:
             n, r = save_tomorrow(sb, lab, updates, sd, mcfg)
-            st.success(f"Saved {n} names for tomorrow and a snapshot of {len(lab)} stocks. Removed {r} saved breakouts.")
+            cont = lab[lab["CONT"] == True]["Symbol"].tolist()  # noqa: E712
+            c_added = save_symbols_to_watchlist(sb, cont, "CONTINUATION", base_df, sd, mcfg, "ANTICIPATION")[0] if cont else 0
+            st.success(f"Saved {n} names for tomorrow and a snapshot of {len(lab)} stocks. "
+                       f"Saved {c_added} as CONTINUATION. Removed {r} saved breakouts.")
         except Exception as ex:
             st.error(f"Save failed: {ex}")
 
@@ -639,6 +660,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
     """Post Breakout mode: once, late in the session or after the close."""
     st.markdown("---")
     st.subheader("Tag breakouts  ·  once a day")
+    st.caption(f"gtt_process {PROCESS_VERSION}")
     if sb is None:
         st.error("Database not connected."); return
     sd = _header_time(st, mcfg)
@@ -666,14 +688,16 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
     if part.empty:
         st.info("Nothing in this batch."); return
 
-    show = SETUP_TYPES + ["Rating", "Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose", "_vol_ratio",
+    show = ["Skip"] + SETUP_TYPES + ["Rating", "Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose", "_vol_ratio",
                           "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist", "Scan_Count", "Avg_RS", "Sector"]
     view = part[[c for c in show if c in part.columns]].reset_index(drop=True)
     ekey = f"bo_editor_{pick}"
     edited = st.data_editor(
         view, hide_index=True, height=440, key=ekey,
-        disabled=[c for c in view.columns if c not in SETUP_TYPES + ["Rating"]],
+        disabled=[c for c in view.columns if c not in ["Skip"] + SETUP_TYPES + ["Rating"]],
         column_config={
+            "Skip": st.column_config.CheckboxColumn("Skip", help="Don't save this stock, whatever is ticked"),
+            "CONTINUATION": st.column_config.CheckboxColumn("CONT", help="Continuation — second leg after an earlier breakout"),
             "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True,
                                                        help="Your grade after the chart check: 3★, 4★, 5★"),
             "EP": st.column_config.CheckboxColumn("EP", help="Episodic pivot"),
@@ -694,10 +718,12 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
     for t in SETUP_TYPES:
         part[t] = edited[t].fillna(False).astype(bool).values
     part["Rating"] = edited["Rating"].fillna("—").values
-    counts = {t: int(part[t].sum()) for t in SETUP_TYPES}
+    part["Skip"] = edited["Skip"].fillna(False).astype(bool).values
+    live = part[~part["Skip"]]
+    counts = {t: int(live[t].sum()) for t in SETUP_TYPES}
     n = sum(counts.values())
     st.caption("To save: " + ", ".join(f"{t} {c}" for t, c in counts.items()) +
-               f" · {int(part[SETUP_TYPES].any(axis=1).sum())} stocks")
+               f" · {int(live[SETUP_TYPES].any(axis=1).sum())} stocks · {int(part['Skip'].sum())} skipped")
     if st.button(f"Save {pick.lower()} batch to watchlist ({n} tags)  ·  {sd}", type="primary", key=f"bo_save_{pick}"):
         try:
             a, t = save_breakouts(sb, part, sd, mcfg)
@@ -710,6 +736,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
 def render_watchlist_tab(st, sb, base_df, mcfg):
     """Working watchlist: generate lists, update entries, clean up, history."""
     st.subheader(f"Watchlist · {mcfg['market']}")
+    st.caption(f"gtt_process {PROCESS_VERSION}")
     if sb is None:
         st.error("Database not connected."); return
     try:
