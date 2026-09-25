@@ -755,7 +755,8 @@ def main():
                                               'max_rwd': coil_max_rwd, 'min_wktight': coil_min_wktight,
                                               'min_chg': coil_min_chg, 'max_chg': coil_max_chg})
             else:
-                render_breakout_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG)
+                render_breakout_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG,
+                                      shared={'bo_min_chg': vol_bo_min_chg, 'bo_min_vol': vol_bo_min_vol})
 
             # ── Export ──
             st.markdown("---"); st.subheader("Export Scanner Data for Analysis")
@@ -778,8 +779,13 @@ def main():
                 st.markdown("---"); st.subheader("Copy Symbols to TradingView")
                 cc1, cc2, cc3 = st.columns(3)
                 if scan_mode == "Post Breakout" and '_vol_ratio' in sdf.columns:
-                    strong = sdf[sdf['_vol_ratio'].fillna(0) >= 3.5]['Symbol'].dropna().unique().tolist()
-                    moderate = sdf[(sdf['_vol_ratio'].fillna(0) >= 1.5) & (sdf['_vol_ratio'].fillna(0) < 3.5)]['Symbol'].dropna().unique().tolist()
+                    # Same list as the Tag breakouts panel (up ≥ Min Chg% on ≥ Min Vol Ratio), split Strong / Moderate
+                    _bl = st.session_state.get('bo_list')
+                    if _bl is not None and not _bl.empty:
+                        strong = _bl[_bl['Batch'] == 'Strong']['Symbol'].tolist()
+                        moderate = _bl[_bl['Batch'] == 'Moderate']['Symbol'].tolist()
+                    else:
+                        strong, moderate = [], []
                     stv = ",".join([f"nse:{s}" for s in strong])
                     mtv = ",".join([f"nse:{s}" for s in moderate])
                     with cc1:
@@ -787,7 +793,7 @@ def main():
                         if strong: st.code(stv, language=None); st.caption(f"Click to copy {len(strong)} symbols.")
                         else: st.info("No strong breakouts.")
                     with cc2:
-                        st.markdown(f"**Moderate (Vol 1.5-3.5x)** — `{len(moderate)} symbols`")
+                        st.markdown(f"**Moderate BO (Vol {vol_bo_min_vol:g}-3.5x)** — `{len(moderate)} symbols`")
                         if moderate: st.code(mtv, language=None); st.caption(f"Click to copy {len(moderate)} symbols.")
                         else: st.info("No moderate breakouts.")
                     with cc3:

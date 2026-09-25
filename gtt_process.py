@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-25d · continuation only for earlier breakouts"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-25e · one breakout definition (sidebar)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "CONTINUATION": "Continuation — second leg after an earlier breakout",
@@ -660,7 +660,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             st.error(f"Save failed: {ex}")
 
 
-def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
+def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     """Post Breakout mode: once, late in the session or after the close."""
     st.markdown("---")
     st.subheader("Tag breakouts  ·  once a day")
@@ -668,7 +668,12 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
     if sb is None:
         st.error("Database not connected."); return
     sd = _header_time(st, mcfg)
-    cfg = _rules_editor(st, "Breakout tagging rules", BREAKOUT_DEFAULTS, saved_prefs.get("breakout_tags"), "bo_cfg")
+    shared = shared or {}
+    own = {k: v for k, v in BREAKOUT_DEFAULTS.items() if k not in shared}   # Min Chg% / Min Vol come from the sidebar
+    cfg = {**_rules_editor(st, "Breakout tagging rules", own, saved_prefs.get("breakout_tags"), "bo_cfg"), **shared}
+    if shared:
+        st.caption("Breakout = up ≥ {:g}% on ≥ {:g}x volume (sidebar Volume Breakout Filters).".format(
+            cfg["bo_min_chg"], cfg["bo_min_vol"]))
     try:
         _, ylist = load_last_list(sb, mcfg, before_date=sd)   # the list you traded this session
         watch = load_active_watchlist(sb, mcfg)
@@ -676,6 +681,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
         st.error(f"Could not read the database. Did you run supabase_migration.sql? ({e})"); return
     on_list = set(ylist)
     bo = find_breakouts(base_df, on_list, watch, cfg, today=sd)
+    st.session_state["bo_list"] = bo[["Symbol", "Batch"]].copy()   # the Copy Symbols buttons use this same list
     if st.session_state.get("bo_msg"):
         st.success(st.session_state.pop("bo_msg"))
     if bo.empty:
