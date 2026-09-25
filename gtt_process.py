@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-25g · copy all saved breakouts"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-25h · session date from scan data"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "CONTINUATION": "Continuation — second leg after an earlier breakout",
@@ -535,7 +535,7 @@ def render_quick_save(st, sb, selected, base_df, scan_mode, mcfg):
         c2.markdown(f"**{len(syms)} to save:** " + (", ".join(syms) if syms else "_none — tick rows above_"))
         if sb is None:
             st.error("Database not connected."); return
-        sd = session_date(market_now(mcfg), mcfg)
+        sd = effective_session(base_df, mcfg)[0]
         order = (["TOMORROW"] + SETUP_TYPES) if scan_mode == "Anticipation" else (SETUP_TYPES + ["TOMORROW"])
         labels = {"TOMORROW": "Add to tomorrow's list", **{t: f"Save as {t}" for t in SETUP_TYPES}}
         primary = "TOMORROW" if scan_mode == "Anticipation" else None
@@ -552,12 +552,47 @@ def render_quick_save(st, sb, selected, base_df, scan_mode, mcfg):
                         st.success(f"Saved {a} as {k}." + (f" Already saved: {', '.join(skip)}." if skip else ""))
                 except Exception as ex:
                     st.error(f"Save failed: {ex}. Did you run supabase_migration.sql?")
-def _header_time(st, mcfg):
+def scan_data_date(base_df):
+    """Trading date the scan data is actually from (MarketInOut's Timestamp column), or None if unreadable."""
+    if base_df is None or base_df.empty or "Timestamp" not in base_df.columns:
+        return None
+    ts = base_df["Timestamp"]
+    try:
+        num = pd.to_numeric(ts, errors="coerce")
+        if num.notna().mean() > 0.8 and num.dropna().median() > 1e9:        # epoch seconds / ms
+            unit = "ms" if num.dropna().median() > 1e12 else "s"
+            parsed = pd.to_datetime(num, unit=unit, errors="coerce")
+        else:
+            try:
+                parsed = pd.to_datetime(ts.astype(str), errors="coerce", format="mixed")
+            except (TypeError, ValueError):
+                parsed = pd.to_datetime(ts.astype(str), errors="coerce")
+        parsed = parsed.dropna()
+        if len(parsed) < max(3, 0.5 * len(ts)):
+            return None
+        d = parsed.dt.date.mode().iloc[0]
+        return d if 2000 < d.year < 2100 else None
+    except Exception:
+        return None
+
+
+def effective_session(base_df, mcfg):
+    """(session date to record under, data date or None, clock session date)."""
     now = market_now(mcfg)
-    sd = session_date(now, mcfg)
-    if market_is_open(now, mcfg):
-        st.warning(f"{mcfg['market']} is open ({now:%H:%M}). Numbers are intraday — the routine runs after the close "
-                   f"({mcfg['close'][0]}:{mcfg['close'][1]:02d} local, {mcfg['local_hint']}).")
+    clock = session_date(now, mcfg)
+    dd = scan_data_date(base_df)
+    return (dd or clock), dd, clock
+
+
+def _header_time(st, mcfg, base_df=None):
+    now = market_now(mcfg)
+    sd, dd, clock = effective_session(base_df, mcfg)
+    if dd and dd < clock:
+        st.warning(f"The scan data is still from **{dd}** — MarketInOut hasn't updated for {clock} yet. "
+                   f"Anything you save now is recorded under {dd}. Click Refresh Now in a while for today's numbers.")
+    elif market_is_open(now, mcfg):
+        st.info(f"{mcfg['market']} is open ({now:%H:%M}). Intraday numbers: volume ratio is only part of the day, "
+                "so it reads low early on. Fine for adding breakouts you spot — the evening run records the close.")
     return sd
 
 
@@ -584,7 +619,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     st.subheader("Tomorrow's list  ·  evening, once")
     if sb is None:
         st.error("Database not connected."); return
-    sd = _header_time(st, mcfg)
+    sd = _header_time(st, mcfg, base_df)
     shared = shared or {}
     own = {k: v for k, v in TOMORROW_DEFAULTS.items() if k not in shared}   # the rest come from the sidebar
     cfg = {**_rules_editor(st, "More list rules (scan count, liquidity, list size, breakouts, re-setups)", own,
@@ -675,7 +710,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     st.caption(f"gtt_process {PROCESS_VERSION}")
     if sb is None:
         st.error("Database not connected."); return
-    sd = _header_time(st, mcfg)
+    sd = _header_time(st, mcfg, base_df)
     shared = shared or {}
     own = {k: v for k, v in BREAKOUT_DEFAULTS.items() if k not in shared}   # Min Chg% / Min Vol come from the sidebar
     cfg = {**_rules_editor(st, "Breakout tagging rules", own, saved_prefs.get("breakout_tags"), "bo_cfg"), **shared}
@@ -890,7 +925,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         c3.write(""); c3.write("")
         syms = _parse_symbols(sym)
         if c3.button("Add", key="wl_add_btn", disabled=not syms):
-            sd = session_date(market_now(mcfg), mcfg)
+            sd = effective_session(base_df, mcfg)[0]
             try:
                 if tag == "Tomorrow's list":
                     add_to_tomorrow(sb, syms, base_df, sd, mcfg)
