@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-25c · ratings, continuation, skip"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-25d · continuation only for earlier breakouts"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "CONTINUATION": "Continuation — second leg after an earlier breakout",
@@ -302,18 +302,22 @@ def suggest_tags(r, cfg, saved_as=None):
     return tags, ("; ".join(why) if why else "no clear setup — check the chart")
 
 
-def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None):
+def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None, today=None):
     """Post Breakout: today's breakouts, split Strong / Moderate, one tick column per setup type (pre-ticked from
     the suggestion, never for a tag it's already saved under)."""
     cfg = {**BREAKOUT_DEFAULTS, **(cfg or {})}
     d = add_derived(scan_df).drop_duplicates("Symbol")
     bo = d[(d["_chg_percentclose"].fillna(0) >= cfg["bo_min_chg"]) & (d["_vol_ratio"].fillna(0) >= cfg["bo_min_vol"])].copy()
-    active, rated = {}, {}
+    active, earlier, rated = {}, {}, {}
     for r in watch_rows or []:
         active.setdefault(r["symbol"], set()).add(r["setup_type"])
+        # CONTINUATION needs an EARLIER breakout — a tag saved for this same session doesn't count
+        td = str(r.get("trigger_date") or r.get("added_date") or "")[:10]
+        if today is None or (td and td < today.isoformat()):
+            earlier.setdefault(r["symbol"], set()).add(r["setup_type"])
         if r.get("rating"):
             rated[r["symbol"]] = max(rated.get(r["symbol"], 0), int(r["rating"]))
-    sug = [suggest_tags(r, cfg, active.get(r["Symbol"])) for _, r in bo.iterrows()]
+    sug = [suggest_tags(r, cfg, earlier.get(r["Symbol"])) for _, r in bo.iterrows()]
     bo["Suggested"] = [" + ".join(t) if t else NO_TAG for t, _ in sug]
     bo["Why"] = [w for _, w in sug]
     for t in SETUP_TYPES:
@@ -671,7 +675,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
     except Exception as e:
         st.error(f"Could not read the database. Did you run supabase_migration.sql? ({e})"); return
     on_list = set(ylist)
-    bo = find_breakouts(base_df, on_list, watch, cfg)
+    bo = find_breakouts(base_df, on_list, watch, cfg, today=sd)
     if st.session_state.get("bo_msg"):
         st.success(st.session_state.pop("bo_msg"))
     if bo.empty:
