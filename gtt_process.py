@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-25f · one watchlist entry per stock"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-25g · copy all saved breakouts"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "CONTINUATION": "Continuation — second leg after an earlier breakout",
@@ -846,7 +846,19 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             if r["Action"] != "keep" or tagset(r) != tagset(o) or r["Rating"] != o["Rating"]:
                 changes.append(r)
         st.caption("One row per stock. Tick/untick its tags, set the rating, or mark it traded / remove, then Apply.")
-        if st.button(f"Apply changes ({len(changes)})", key="wl_apply", disabled=not changes):
+        # everything in the table (best rating first), respecting the "Minimum rating" choice above
+        keep_rows = ed[ed["Action"] == "keep"]
+        rmap = dict(zip(wdf["symbol"], wdf["rating"].fillna(0)))
+        allsyms = [s_ for s_ in keep_rows["symbol"].tolist() if rmap.get(s_, 0) >= min_n]
+        exmap = dict(zip(wdf["symbol"], wdf["exchange"]))
+        b1, b2, _ = st.columns([1, 1.6, 4])
+        if b2.button(f"Copy all for TradingView ({len(allsyms)})", key="wl_copy_all", disabled=not allsyms,
+                     help="All saved breakouts in the table, best rating first" + (f", {min_r} only" if min_n else "")):
+            st.session_state["wl_copy_all_on"] = True
+        if st.session_state.get("wl_copy_all_on") and allsyms:
+            st.code(",".join(tv_symbol(s_, mcfg, exmap.get(s_)) for s_ in allsyms), language=None)
+            st.caption(f"{len(allsyms)} symbols — click the copy icon, then paste into a TradingView watchlist.")
+        if b1.button(f"Apply changes ({len(changes)})", key="wl_apply", disabled=not changes):
             errs = []
             for r in changes:
                 try:
