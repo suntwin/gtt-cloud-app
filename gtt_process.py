@@ -54,8 +54,8 @@ BREAKOUT_DEFAULTS = {
 }
 CLEANUP_DEFAULTS = {"max_age_days": 30, "unseen_days": 10}
 
-LIST_LABELS = ["1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "4_RESETUP", "5_REMOVE", "CANDIDATE", "CHECK", "SCANNED"]
-LABEL_NAMES = {"1_BUY_SIGNAL": "1 · Buy signal", "2_SAVE": "2 · Save (tag it)", "3_WAIT": "3 · Wait",
+LIST_LABELS = ["ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "4_RESETUP", "5_REMOVE", "CANDIDATE", "CHECK", "SCANNED"]
+LABEL_NAMES = {"ADDED": "Added by you", "1_BUY_SIGNAL": "1 · Buy signal", "2_SAVE": "2 · Save (tag it)", "3_WAIT": "3 · Wait",
                "4_RESETUP": "4 · Re-setup", "5_REMOVE": "5 · Remove", "CANDIDATE": "New candidate",
                "CHECK": "Check chart"}
 TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's list
@@ -281,7 +281,7 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None):
     bo["On_List"] = bo["Symbol"].isin(yesterday_list)
     bo["In_Watchlist"] = bo["Symbol"].map(lambda s: ", ".join(sorted(active.get(s, []))))
     strong = bo["_vol_ratio"].fillna(0) >= cfg["save_min_vol"]
-    already = bo.apply(lambda r: r["Suggested"] in active.get(r["Symbol"], set()), axis=1) if len(bo) else pd.Series(dtype=bool)
+    already = bo["Symbol"].isin(active.keys())   # saved already (any tag) → don't pre-fill again
     bo["Tag"] = np.where(strong & ~already & (bo["Suggested"] != NO_TAG), bo["Suggested"], NO_TAG)
     bo["Missed"] = bo["On_List"]   # on the list and broke out: tag it only if you missed the entry
     return bo.sort_values("_vol_ratio", ascending=False).reset_index(drop=True)
@@ -378,7 +378,8 @@ def save_tomorrow(sb, labelled, updates, snap_date, mcfg):
 
 
 def save_breakouts(sb, bo, snap_date, mcfg):
-    tagged = bo[bo["Tag"].isin(SETUP_TYPES)]
+    already = bo.apply(lambda r: r["Tag"] in str(r.get("In_Watchlist", "")).split(", "), axis=1)
+    tagged = bo[bo["Tag"].isin(SETUP_TYPES) & ~already]
     for _, r in tagged.iterrows():
         tags = ["missed"] if bool(r.get("On_List")) else ["off-list"]
         sb.rpc("add_to_watchlist", {"p_user": mcfg["user_id"], "p_market": mcfg["market"], "p_symbol": r["Symbol"],
@@ -386,15 +387,106 @@ def save_breakouts(sb, bo, snap_date, mcfg):
                                     "p_trigger_date": snap_date.isoformat(), "p_data": breakout_payload(r, mcfg),
                                     "p_tags": tags}).execute()
     snap = bo.copy()
-    snap["_list"] = np.where(snap["Tag"].isin(SETUP_TYPES), snap["Tag"], "NOT_SAVED")
-    snap["_sel"] = snap["Tag"].isin(SETUP_TYPES)
+    prior = snap["In_Watchlist"].fillna("").str.split(", ").str[0] if "In_Watchlist" in snap else ""
+    snap["_list"] = np.where(snap["Tag"].isin(SETUP_TYPES), snap["Tag"], np.where(prior != "", prior, "NOT_SAVED"))
+    snap["_sel"] = snap["_list"] != "NOT_SAVED"
     upsert_snapshots(sb, snapshot_rows(snap, snap_date, mcfg, "BREAKOUT", "_list", "_sel"))
     return len(tagged), len(bo)
+
+
+def _snap_q(sb, mcfg, scanner, sd):
+    return (sb.table("daily_snapshots").select("symbol,list,selected").eq("user_id", mcfg["user_id"])
+            .eq("market", mcfg["market"]).eq("scanner", scanner).eq("snap_date", sd.isoformat()))
+
+
+def load_today_selected(sb, mcfg, sd):
+    """Symbols already put on tomorrow's list today (e.g. added from the scanner table)."""
+    return {r["symbol"] for r in _snap_q(sb, mcfg, "ANTICIPATION", sd).eq("selected", True).execute().data}
+
+
+def _one_row(base_df, sym):
+    if base_df is None or base_df.empty or sym not in set(base_df["Symbol"]):
+        return None
+    return add_derived(base_df[base_df["Symbol"] == sym]).iloc[0]
+
+
+def add_to_tomorrow(sb, symbols, base_df, sd, mcfg):
+    """Put symbols on tomorrow's list straight away (today's ANTICIPATION snapshot, selected = true)."""
+    existing = {r["symbol"] for r in _snap_q(sb, mcfg, "ANTICIPATION", sd).in_("symbol", list(symbols)).execute().data}
+    for s in symbols:
+        if s in existing:
+            sb.table("daily_snapshots").update({"selected": True}).eq("user_id", mcfg["user_id"]) \
+                .eq("market", mcfg["market"]).eq("scanner", "ANTICIPATION").eq("snap_date", sd.isoformat()) \
+                .eq("symbol", s).execute()
+    new = [s for s in symbols if s not in existing]
+    if new:
+        rows = []
+        for s in new:
+            r = _one_row(base_df, s)
+            df = pd.DataFrame([r]) if r is not None else pd.DataFrame([{"Symbol": s}])
+            df["Symbol"], df["Label"], df["Keep"], df["Reason"] = s, "ADDED", True, "Added from the scanner"
+            rows += snapshot_rows(df, sd, mcfg, "ANTICIPATION", "Label", "Keep")
+        upsert_snapshots(sb, rows)
+    return len(symbols)
+
+
+def save_symbols_to_watchlist(sb, symbols, tag, base_df, sd, mcfg, source="BREAKOUT"):
+    """Save symbols under one setup tag straight from the scanner table. Skips ones already saved with that tag."""
+    active = {(r["symbol"], r["setup_type"]) for r in load_active_watchlist(sb, mcfg)}
+    added, skipped, snap = 0, [], []
+    for s in symbols:
+        if (s, tag) in active:
+            skipped.append(s); continue
+        r = _one_row(base_df, s)
+        data = breakout_payload(r, mcfg) if r is not None else {"exchange": mcfg["exchange"]}
+        sb.rpc("add_to_watchlist", {"p_user": mcfg["user_id"], "p_market": mcfg["market"], "p_symbol": s,
+                                    "p_setup_type": tag, "p_source": source, "p_trigger_date": sd.isoformat(),
+                                    "p_data": data, "p_tags": ["scanner" if r is not None else "manual"]}).execute()
+        added += 1
+        if r is not None:
+            df = pd.DataFrame([r]); df["_list"], df["_sel"] = tag, True
+            snap += snapshot_rows(df, sd, mcfg, "BREAKOUT", "_list", "_sel")
+    if snap:
+        upsert_snapshots(sb, snap)
+    return added, skipped
+
+
+def _parse_symbols(text):
+    return [t.strip().upper() for t in (text or "").replace("\n", ",").replace(" ", ",").split(",") if t.strip()]
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # Streamlit panels
 # ════════════════════════════════════════════════════════════════════════════
+def render_quick_save(st, sb, selected, base_df, scan_mode, mcfg):
+    """Right under the scanner table: save ticked rows (or typed symbols) in one click."""
+    with st.container(border=True):
+        st.markdown("**Save from the scanner** — tick rows in the table above, or type any other symbol you spotted")
+        c1, c2 = st.columns([2, 3])
+        typed = c1.text_input("Other symbols (comma separated)", key=f"qs_typed_{scan_mode}",
+                              placeholder="e.g. HAL, BEL")
+        syms = list(dict.fromkeys([str(s).upper() for s in (selected or []) if s] + _parse_symbols(typed)))
+        c2.markdown(f"**{len(syms)} to save:** " + (", ".join(syms) if syms else "_none — tick rows above_"))
+        if sb is None:
+            st.error("Database not connected."); return
+        sd = session_date(market_now(mcfg), mcfg)
+        order = (["TOMORROW"] + SETUP_TYPES) if scan_mode == "Anticipation" else (SETUP_TYPES + ["TOMORROW"])
+        labels = {"TOMORROW": "Add to tomorrow's list", "EP": "Save as EP", "TIGHT_BO": "Save as TIGHT_BO",
+                  "WEMA_BO": "Save as WEMA_BO"}
+        primary = "TOMORROW" if scan_mode == "Anticipation" else None
+        for col, k in zip(st.columns(len(order)), order):
+            kind = "primary" if (k == primary or (primary is None and k in SETUP_TYPES)) else "secondary"
+            if col.button(labels[k], key=f"qs_{scan_mode}_{k}", type=kind, disabled=not syms, use_container_width=True):
+                try:
+                    if k == "TOMORROW":
+                        n = add_to_tomorrow(sb, syms, base_df, sd, mcfg)
+                        st.success(f"Added {n} to tomorrow's list ({sd}).")
+                    else:
+                        a, skip = save_symbols_to_watchlist(sb, syms, k, base_df, sd, mcfg,
+                                                            "BREAKOUT" if scan_mode != "Anticipation" else "ANTICIPATION")
+                        st.success(f"Saved {a} as {k}." + (f" Already saved: {', '.join(skip)}." if skip else ""))
+                except Exception as ex:
+                    st.error(f"Save failed: {ex}. Did you run supabase_migration.sql?")
 def _header_time(st, mcfg):
     now = market_now(mcfg)
     sd = session_date(now, mcfg)
@@ -406,15 +498,17 @@ def _header_time(st, mcfg):
 
 def _rules_editor(st, title, defaults, saved, key):
     cfg = {**defaults, **(saved or {})}
-    with st.expander(title):
-        cols = st.columns(3)
-        for i, (k, v) in enumerate(defaults.items()):
+    with st.container(border=True):
+        show = st.toggle(title, value=False, key=f"{key}_show")
+        cols = st.columns(3) if show else []
+        for i, (k, v) in enumerate(defaults.items() if show else []):
             with cols[i % 3]:
                 if isinstance(v, int) and not isinstance(v, bool):
                     cfg[k] = int(st.number_input(k, value=int(cfg[k]), step=1, key=f"{key}_{k}"))
                 else:
                     cfg[k] = float(st.number_input(k, value=float(cfg[k]), step=0.5, key=f"{key}_{k}"))
-        st.caption("Saved with 'Save filter settings'. Don't change these during the 8 weeks.")
+        if show:
+            st.caption("Saved with 'Save filter settings'. Don't change these during the 8 weeks.")
     st.session_state[key] = cfg
     return cfg
 
@@ -436,6 +530,21 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg):
                f"and {len(watch)} saved breakouts.")
 
     lab, updates = classify_tomorrow(base_df, set(ylist), watch, cfg, sd)
+    try:
+        added_today = load_today_selected(sb, mcfg, sd)
+    except Exception:
+        added_today = set()
+    if added_today:
+        lab = lab.set_index("Symbol", drop=False)
+        extra = [s for s in added_today if s not in lab.index]
+        if extra:
+            lab = pd.concat([lab, pd.DataFrame([{"Symbol": s, "Label": "ADDED", "Reason": "Added from the scanner",
+                                                 "Scan_Count": 0} for s in extra]).set_index("Symbol", drop=False)])
+        m = lab["Symbol"].isin(added_today)
+        lab.loc[m & lab["Label"].isin(["SCANNED", "CHECK"]), "Reason"] = "Added from the scanner"
+        lab.loc[m & (lab["Label"] == "SCANNED"), "Label"] = "ADDED"
+        lab.loc[m, "Keep"] = True
+        lab = lab.reset_index(drop=True)
     counts = lab["Label"].value_counts()
     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
         c.metric(n, int(counts.get(k, 0)))
@@ -620,23 +729,27 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
                 st.success("Updated."); st.rerun()
 
     # ── 3. Add manually ──
-    with st.expander("Add a stock manually"):
+    with st.container(border=True):
+        st.markdown("**Add a stock manually**")
         c1, c2, c3 = st.columns([2, 2, 1])
-        sym = c1.text_input("Symbol", key="wl_add_sym").upper().strip()
-        tag = c2.selectbox("Tag", SETUP_TYPES, key="wl_add_tag")
+        sym = c1.text_input("Symbols (comma separated)", key="wl_add_sym")
+        tag = c2.selectbox("Save to", ["Tomorrow's list"] + SETUP_TYPES, key="wl_add_tag")
         c3.write(""); c3.write("")
-        if c3.button("Add", key="wl_add_btn") and sym:
-            data = {"exchange": mcfg["exchange"]}
-            if base_df is not None and not base_df.empty and sym in set(base_df["Symbol"]):
-                data = breakout_payload(add_derived(base_df[base_df["Symbol"] == sym]).iloc[0], mcfg)
+        syms = _parse_symbols(sym)
+        if c3.button("Add", key="wl_add_btn", disabled=not syms):
             sd = session_date(market_now(mcfg), mcfg)
-            sb.rpc("add_to_watchlist", {"p_user": mcfg["user_id"], "p_market": mcfg["market"], "p_symbol": sym,
-                                        "p_setup_type": tag, "p_source": "MANUAL", "p_trigger_date": sd.isoformat(),
-                                        "p_data": data, "p_tags": ["manual"]}).execute()
-            st.success(f"Added {sym} as {tag}."); st.rerun()
+            try:
+                if tag == "Tomorrow's list":
+                    add_to_tomorrow(sb, syms, base_df, sd, mcfg)
+                else:
+                    save_symbols_to_watchlist(sb, syms, tag, base_df, sd, mcfg, "MANUAL")
+                st.success(f"Added {', '.join(syms)} to {tag}."); st.rerun()
+            except Exception as ex:
+                st.error(f"Save failed: {ex}")
 
     # ── 4. Clean-up (weekend) ──
-    with st.expander("Clean-up  ·  weekend"):
+    with st.container(border=True):
+        st.markdown("**Clean-up** · weekend")
         c1, c2, c3 = st.columns(3)
         age = c1.number_input("Expire if older than (days)", 1, 365, CLEANUP_DEFAULTS["max_age_days"], key="wl_c_age")
         unseen = c2.number_input("…or not in a scan for (days)", 1, 365, CLEANUP_DEFAULTS["unseen_days"], key="wl_c_unseen")
@@ -665,7 +778,8 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             st.success(f"Expired {len(res.data or [])} entries."); st.rerun()
 
     # ── 5. History ──
-    with st.expander("History  ·  daily snapshots"):
+    with st.container(border=True):
+        st.markdown("**History** · daily snapshots")
         try:
             dates = sorted({x["snap_date"] for x in sb.table("daily_snapshots").select("snap_date")
                             .eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])

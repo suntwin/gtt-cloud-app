@@ -7,7 +7,7 @@ from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_object_d
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
 import os, json, time
 from datetime import datetime
-from gtt_process import MARKETS, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab
+from gtt_process import MARKETS, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab
 
 st.set_page_config(page_title="GTT Trade Generator (NSE)", page_icon="⚡", layout="wide")
 
@@ -344,7 +344,10 @@ def main():
         .main .block-container { padding-top: 2rem; padding-bottom: 2rem; max-width: 95% !important; }
         h1, h2, h3, h4 { font-weight: 700 !important; letter-spacing: -0.5px !important; margin-bottom: 0.5rem !important; margin-top: 1.5rem !important; }
         .stDataFrame { font-size: 14px !important; }
-        details summary span:first-child { display: none !important; }
+        /* The font rule above also hits Streamlit's icons (their classes start with "st-"), so icons showed as
+           words like "arrow_upward" / "keyboard_arrow_down". Give icons their icon font back. */
+        [data-testid="stIconMaterial"], [class*="material-symbols"], [class*="material-icons"],
+        span[translate="no"][aria-hidden="true"] { font-family: 'Material Symbols Rounded' !important; }
     </style>
     """, unsafe_allow_html=True)
     st.title("GTT Trade Generator (NSE)")
@@ -596,6 +599,7 @@ def main():
             gb = GridOptionsBuilder.from_dataframe(fdf)
             gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
             gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True)
+            gb.configure_selection(selection_mode='multiple', use_checkbox=True)
             for col in fdf.columns: gb.configure_column(col, headerTooltip=col)
 
             abs_comparator = JsCode("""
@@ -716,7 +720,7 @@ def main():
 
             # ── Symbol renderer ──
             sr = JsCode("""function(p){const s=p.value;const r=p.data.Sector_Rank;const t=p.data.Sector_Total;if(r&&t&&r>0)return s+' ('+r+'/'+t+')';return s}""")
-            gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')
+            gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left', checkboxSelection=True, headerCheckboxSelection=True)
             if 'Sector' in fdf.columns: gb.configure_column('Sector', minWidth=120, maxWidth=150)
             if 'Industry' in fdf.columns: gb.configure_column('Industry', minWidth=120, maxWidth=150)
             if 'Sector_Rank' in fdf.columns: gb.configure_column('Sector_Rank', hide=True)
@@ -727,6 +731,13 @@ def main():
             go = gb.build()
             safe_df = clean_df_for_json(fdf)
             grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%', update_mode=GridUpdateMode.MODEL_CHANGED, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
+
+            # ── Save straight from the table: ticked rows → tomorrow's list / watchlist ──
+            _sel = grid_response['selected_rows'] if grid_response is not None else None
+            if _sel is None: _sel_syms = []
+            elif isinstance(_sel, pd.DataFrame): _sel_syms = _sel['Symbol'].dropna().tolist() if 'Symbol' in _sel else []
+            else: _sel_syms = [r.get('Symbol') for r in _sel if r]
+            render_quick_save(st, supabase, _sel_syms, st.session_state.gtt_base_df, scan_mode, MARKET_CFG)
 
             # ── Daily process: one save per mode ──
             if scan_mode == "Anticipation":
