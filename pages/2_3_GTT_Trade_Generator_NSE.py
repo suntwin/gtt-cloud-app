@@ -7,8 +7,11 @@ from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_object_d
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
 import os, json, time
 from datetime import datetime
+from gtt_process import MARKETS, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab
 
 st.set_page_config(page_title="GTT Trade Generator (NSE)", page_icon="⚡", layout="wide")
+
+MARKET_CFG = MARKETS["NSE"]   # exchange NSE, user nse_user, IST hours — the USA page will use MARKETS["USA"]
 
 from supabase import create_client, Client
 
@@ -354,22 +357,11 @@ def main():
     else: st.sidebar.error("Symbols_NSE.csv not found!")
 
     st.sidebar.markdown("---")
-    auto_refresh = st.sidebar.checkbox("Auto-refresh every 10 min", value=False, key="auto_refresh_toggle")
-    refresh_clicked = st.sidebar.button("Refresh Now", key="manual_refresh_btn")
-    if auto_refresh:
-        ARI = 600
-        if 'last_refresh_ts' not in st.session_state: st.session_state.last_refresh_ts = time.time()
-        el = time.time() - st.session_state.last_refresh_ts
-        if el >= ARI or refresh_clicked:
-            st.session_state.last_refresh_ts = time.time(); st.cache_data.clear()
-        el = time.time() - st.session_state.last_refresh_ts
-        rem = max(0, int(ARI - el))
-        lrd = datetime.fromtimestamp(st.session_state.last_refresh_ts)
-        st.sidebar.caption(f"Last refreshed: {lrd.strftime('%H:%M:%S')}")
-        m, s = divmod(rem, 60)
-        st.sidebar.markdown(f"""<div style="font-size:13px;color:#888;">Next refresh in <span id="cd-m">{m}</span>m <span id="cd-s">{s:02d}</span>s</div><script>let t={rem};const a=document.getElementById('cd-m'),b=document.getElementById('cd-s');const x=setInterval(function(){{t--;if(t<=0){{clearInterval(x);window.top.location.reload();}}else{{a.textContent=Math.floor(t/60);b.textContent=(t%60<10?'0':'')+(t%60);}}}},1000);</script>""", unsafe_allow_html=True)
-    else:
-        if 'last_refresh_ts' in st.session_state: del st.session_state['last_refresh_ts']
+    # No auto-refresh: the routine runs the scanner at set times, not all day.
+    refresh_clicked = st.sidebar.button("Refresh Now", key="manual_refresh_btn",
+                                        help="Clear cached scans and fetch again")
+    if refresh_clicked:
+        st.cache_data.clear()
 
     sector_df = load_sector_mapping(SECTOR_FILE)
     scan_mode = st.radio("Select Scanner Mode", ("Anticipation", "Post Breakout"), horizontal=True)
@@ -419,6 +411,8 @@ def main():
                              'min_adr': vol_bo_min_adr, 'max_adr': vol_bo_max_adr, 'max_rwd': vol_bo_max_rwd},
             'coiled': {'min_wktight': coil_min_wktight, 'max_reltight': coil_max_reltight, 'max_rwd': coil_max_rwd,
                        'min_chg': coil_min_chg, 'max_chg': coil_max_chg},
+            'build_tomorrow': st.session_state.get('bt_cfg', saved_prefs.get('build_tomorrow', {})),
+            'breakout_tags': st.session_state.get('bo_cfg', saved_prefs.get('breakout_tags', {})),
         }
         save_scoring_prefs(prefs_to_save, "NSE")
         st.sidebar.success("Saved!")
@@ -455,8 +449,7 @@ def main():
     with c3: nr4_threshold = st.number_input("Max Tightness Range (NR4 %)", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
 
     manual_fetch = st.button("Generate GTT Trading Plan", type="primary")
-    auto_fetch = auto_refresh and ('gtt_base_df' in st.session_state)
-    should_fetch = manual_fetch or auto_fetch or refresh_clicked
+    should_fetch = manual_fetch or refresh_clicked
 
     if should_fetch:
         with st.spinner("Fetching and merging multi-timeframe scans..."):
@@ -514,7 +507,7 @@ def main():
             else:
                 st.error("Failed to retrieve base 1M scan data."); st.session_state.gtt_base_df = None
 
-    tab1, tab2, tab3 = st.tabs(["GTT Scanner", "Market Themes & Leaders", "Saved Breakouts"])
+    tab1, tab2, tab3 = st.tabs(["GTT Scanner", "Market Themes & Leaders", "Watchlist"])
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 1: SCANNER (NO SCORING — just computed columns + filters)
@@ -603,7 +596,6 @@ def main():
             gb = GridOptionsBuilder.from_dataframe(fdf)
             gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
             gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True)
-            gb.configure_selection(selection_mode='multiple', use_checkbox=True)
             for col in fdf.columns: gb.configure_column(col, headerTooltip=col)
 
             abs_comparator = JsCode("""
@@ -724,7 +716,7 @@ def main():
 
             # ── Symbol renderer ──
             sr = JsCode("""function(p){const s=p.value;const r=p.data.Sector_Rank;const t=p.data.Sector_Total;if(r&&t&&r>0)return s+' ('+r+'/'+t+')';return s}""")
-            gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left', checkboxSelection=True)
+            gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')
             if 'Sector' in fdf.columns: gb.configure_column('Sector', minWidth=120, maxWidth=150)
             if 'Industry' in fdf.columns: gb.configure_column('Industry', minWidth=120, maxWidth=150)
             if 'Sector_Rank' in fdf.columns: gb.configure_column('Sector_Rank', hide=True)
@@ -735,6 +727,12 @@ def main():
             go = gb.build()
             safe_df = clean_df_for_json(fdf)
             grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%', update_mode=GridUpdateMode.MODEL_CHANGED, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
+
+            # ── Daily process: one save per mode ──
+            if scan_mode == "Anticipation":
+                render_tomorrow_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG)
+            else:
+                render_breakout_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG)
 
             # ── Export ──
             st.markdown("---"); st.subheader("Export Scanner Data for Analysis")
@@ -748,24 +746,6 @@ def main():
                     efl = st.session_state.gtt_scored_df.copy()
                     st.download_button("Download Full Dataset (CSV)", efl.to_csv(index=False), f"gtt_full_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
                     st.caption(f"{len(efl)} rows, {len(efl.columns)} columns")
-
-            # ── Selected rows → Saved Breakouts ──
-            sr2 = grid_response['selected_rows']
-            if sr2 is not None and len(sr2) > 0:
-                ss = sr2['Symbol'].tolist() if isinstance(sr2, pd.DataFrame) else [r.get('Symbol') for r in sr2 if r]
-                st.markdown(f"**{len(ss)} symbols selected.**")
-                if st.button("Add selected to Saved Breakouts"):
-                    try:
-                        r = supabase.table("saved_breakouts").select("symbol").eq("user_id", "nse_user").execute()
-                        es = [b['symbol'] for b in r.data]
-                    except: es = []
-                    na = 0
-                    for s in ss:
-                        if s not in es:
-                            try: supabase.table("saved_breakouts").insert({"symbol":s,"saved_date":datetime.now().strftime("%Y-%m-%d %H:%M"),"user_id":"nse_user"}).execute(); na += 1
-                            except Exception as e: st.error(f"Failed to save {s}: {e}")
-                    if na > 0: st.success(f"Added {na} new ticker(s)!")
-                    else: st.info("All selected tickers already saved.")
 
             # ── Copy to TradingView (grouped by volume strength) ──
             # ── Copy to TradingView (mode-specific) ──
@@ -882,69 +862,10 @@ def main():
             st.info("Generate data first.")
 
     # ════════════════════════════════════════════════════════════════════
-    # TAB 3: SAVED BREAKOUTS
+    # TAB 3: WATCHLIST — generate lists, update, clean up, history
     # ════════════════════════════════════════════════════════════════════
     with tab3:
-        st.subheader("Saved Exceptional Breakouts")
-        st.caption("Track multi-day bases and retests. Stored securely in your Supabase cloud database.")
-        try:
-            r = supabase.table("saved_breakouts").select("*").eq("user_id", "nse_user").execute()
-            saved_breakouts = r.data
-        except Exception as e:
-            saved_breakouts = []; st.error(f"Database error: {e}")
-        c1, c2 = st.columns([3, 1])
-        with c1: new_ticker = st.text_input("Enter Ticker to Track manually:", key="save_ticker_input").upper().strip()
-        with c2:
-            st.write(""); st.write("")
-            if st.button("Save Ticker", key="save_ticker_btn") and new_ticker:
-                if not any(b['symbol'] == new_ticker for b in saved_breakouts):
-                    try:
-                        supabase.table("saved_breakouts").insert({"symbol": new_ticker, "saved_date": datetime.now().strftime("%Y-%m-%d %H:%M"), "user_id": "nse_user"}).execute()
-                        st.success(f"Saved {new_ticker}!"); st.rerun()
-                    except Exception as e: st.error(f"Failed: {e}")
-                else: st.warning("Already saved.")
-        st.markdown("---")
-        if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None and saved_breakouts:
-            ldf = st.session_state.gtt_scored_df.copy()
-            sdf2 = pd.DataFrame(saved_breakouts).rename(columns={'symbol':'Symbol','saved_date':'Saved_On'})
-            mdf = sdf2[['Symbol','Saved_On']].merge(ldf, on='Symbol', how='left')
-            mdf['Status'] = mdf['_vol_ratio'].apply(lambda x: 'Active (Vol ≥1x)' if pd.notna(x) and x >= 1.0 else ('In Scanner' if pd.notna(x) else 'Dropped'))
-            ct3 = ['Symbol','Saved_On','Status','_vol_ratio','_chg_percentclose','W_Dist10wMA','_rel_wk_dist','_rel_tightness','Adr','Ti65','_nr4','Avg_RS','Sector','Sector_Percentile','_avgvol_mln','_20madist','_10madist','W_TightCloses_10w','W_PctOf10wkHigh','Last']
-            ac3 = [c for c in ct3 if c in mdf.columns]; mdf = mdf[ac3]
-            for c in mdf.columns:
-                if c not in ['Symbol','Saved_On','Status']: mdf[c] = mdf[c].fillna('N/A')
-            st.markdown("---"); st.subheader("Copy Saved Symbols to TradingView")
-            als = mdf['Symbol'].dropna().unique().tolist(); atv = ",".join([f"nse:{s}" for s in als])
-            cc1, cc2 = st.columns([1, 2])
-            with cc1:
-                if st.button("Copy All Saved Symbols"): st.code(atv, language=None); st.caption(f"Click to copy {len(als)} symbols.")
-            st.markdown("---"); st.markdown("#### Manage Watchlist")
-            ctd = st.multiselect("Select tickers to remove:", mdf['Symbol'].tolist(), key="remove_saved")
-            if st.button("Remove Selected", key="remove_saved_btn"):
-                try:
-                    for s in ctd: supabase.table("saved_breakouts").delete().eq("symbol", s).eq("user_id", "nse_user").execute()
-                    st.success("Removed!"); st.rerun()
-                except Exception as e: st.error(f"Failed: {e}")
-            st.markdown("#### Live Tracked Data")
-            gb3 = GridOptionsBuilder.from_dataframe(mdf); gb3.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
-            gb3.configure_side_bar(); gb3.configure_grid_options(enableBrowserTooltips=True)
-            if 'Symbol' in mdf.columns: gb3.configure_column('Symbol', minWidth=90, maxWidth=130, pinned='left')
-            gb3.configure_column('Status', minWidth=120, maxWidth=150, cellStyle=JsCode("""function(p){if(!p.value)return null;if(p.value.includes('Active'))return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(p.value.includes('Dropped'))return{'backgroundColor':'#dc3545','color':'white','fontWeight':'bold'};return{'backgroundColor':'#fff3cd','color':'#664d03'}}"""))
-            if '_vol_ratio' in mdf.columns: gb3.configure_column('_vol_ratio', minWidth=60, maxWidth=85, headerName='Vol Ratio', cellStyle=vol_jscode if '_vol_ratio' in fdf.columns else None)
-            if '_rel_tightness' in mdf.columns: gb3.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight', cellStyle=JsCode("""function(p){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'}}"""), comparator=abs_comparator)
-            if '_rel_wk_dist' in mdf.columns: gb3.configure_column('_rel_wk_dist', minWidth=70, maxWidth=90, headerName='Rel Wk Dist', cellStyle=rel_wk_dist_jscode if '_rel_wk_dist' in fdf.columns else None, comparator=abs_comparator)
-            if '_chg_percentclose' in mdf.columns: gb3.configure_column('_chg_percentclose', minWidth=80, maxWidth=110)
-            if 'Adr' in mdf.columns: gb3.configure_column('Adr', minWidth=55, maxWidth=75)
-            if 'Ti65' in mdf.columns: gb3.configure_column('Ti65', minWidth=55, maxWidth=75)
-            if 'Avg_RS' in mdf.columns: gb3.configure_column('Avg_RS', minWidth=55, maxWidth=75)
-            hs3 = {'_chg_percentclose':'Chg %','_avgvol_mln':'AvgVolcr','Sector_Percentile':'SectPctile','_nr4_previous':'NR4Prev','_10madist':'10MADist','_20madist':'20MADist','W_PctOf10wkHigh':'Wk % of 10wHi','W_TightCloses_10w':'Wk TightCl/5','_rel_wk_dist':'RelWkDist','_vol_ratio':'VolRatio'}
-            for rc, sn in hs3.items():
-                if rc in mdf.columns: gb3.configure_column(rc, headerName=sn)
-            AgGrid(clean_df_for_json(mdf), gridOptions=gb3.build(), update_mode=GridUpdateMode.MODEL_CHANGED, fit_columns_on_grid_load=False, height=600, theme='streamlit', key='nse_saved_breakouts_grid', allow_unsafe_jscode=True)
-        elif not saved_breakouts:
-            st.info("No saved breakouts yet. Select rows in the main scanner or add a ticker manually above.")
-        else:
-            st.warning("Click 'Generate GTT Trading Plan' first to pull live data for your saved tickers.")
+        render_watchlist_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
 
 if __name__ == "__main__":
     main()
