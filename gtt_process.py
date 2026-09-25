@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-25e · one breakout definition (sidebar)"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-25f · one watchlist entry per stock"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "CONTINUATION": "Continuation — second leg after an earlier breakout",
@@ -145,8 +145,16 @@ def add_derived(df):
     return d
 
 
+def tags_of(row):
+    """All setup tags of a watchlist entry (one entry per stock)."""
+    t = row.get("setup_types")
+    if isinstance(t, (list, tuple)) and len(t):
+        return [x for x in t if x]
+    return [row["setup_type"]] if row.get("setup_type") else []
+
+
 def _age_days(row, today):
-    s = row.get("trigger_date") or row.get("added_date")
+    s = row.get("last_trigger_date") or row.get("trigger_date") or row.get("added_date")
     if not s:
         return None
     try:
@@ -176,7 +184,7 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     d["Saved"] = d["Symbol"].isin(watch.keys())
     all_tags, stars = {}, {}
     for r in watch_rows or []:
-        all_tags.setdefault(r["symbol"], []).append(r["setup_type"])
+        all_tags.setdefault(r["symbol"], []).extend(tags_of(r))
         if r.get("rating"):
             stars[r["symbol"]] = max(stars.get(r["symbol"], 0), int(r["rating"]))
     d["Tag"] = d["Symbol"].map(lambda s: " + ".join(sorted(all_tags.get(s, [])))
@@ -225,9 +233,9 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
             np.isfinite(last) and bo_close * (1 - radr / 100) <= last <= bo_close * (1 + 2 * radr / 100))
         if min(d10, d20) <= cfg["pullback_band"]:
             which = "10" if d10 <= d20 else "20"
-            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"{row['setup_type']}: pulled back to {which} MA ({min(d10, d20):.1f}% away)"
+            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"{'+'.join(tags_of(row))}: pulled back to {which} MA ({min(d10, d20):.1f}% away)"
         elif rt <= cfg["max_reltight"] and near_bo:
-            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"Continuation setup ({row['setup_type']}): tight near breakout level (rel tight {rt:.2f})"
+            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"Continuation setup ({'+'.join(tags_of(row))}): tight near breakout level (rel tight {rt:.2f})"
             if "CONTINUATION" not in all_tags.get(sym, []):
                 d.at[sym, "CONT"] = True
         else:
@@ -236,7 +244,7 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
                 d.at[sym, "Label"], d.at[sym, "Reason"] = "5_REMOVE", f"Stale: {age} days, no re-setup"
                 updates.append({"id": wid, "symbol": sym, "action": "remove", "reason": "stale"})
                 continue
-            d.at[sym, "Reason"] = f"{row['setup_type']}: saved, not set up yet"
+            d.at[sym, "Reason"] = f"{'+'.join(tags_of(row))}: saved, not set up yet"
         updates.append({"id": wid, "symbol": sym, "action": "seen"})
 
     # New tight candidates
@@ -263,7 +271,7 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
         else:
             label, reason = "CHECK", "Not in today's scan — check chart"
         missing.append({"Symbol": sym, "Label": label, "Reason": reason, "On_List": sym in yesterday_list,
-                        "Saved": row is not None, "Tag": row["setup_type"] if row else "", "Scan_Count": 0})
+                        "Saved": row is not None, "Tag": " + ".join(tags_of(row)) if row else "", "Scan_Count": 0})
     if missing:
         d = pd.concat([d, pd.DataFrame(missing).set_index("Symbol", drop=False)])
 
@@ -310,11 +318,11 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None, today=None):
     bo = d[(d["_chg_percentclose"].fillna(0) >= cfg["bo_min_chg"]) & (d["_vol_ratio"].fillna(0) >= cfg["bo_min_vol"])].copy()
     active, earlier, rated = {}, {}, {}
     for r in watch_rows or []:
-        active.setdefault(r["symbol"], set()).add(r["setup_type"])
+        active.setdefault(r["symbol"], set()).update(tags_of(r))
         # CONTINUATION needs an EARLIER breakout — a tag saved for this same session doesn't count
         td = str(r.get("trigger_date") or r.get("added_date") or "")[:10]
         if today is None or (td and td < today.isoformat()):
-            earlier.setdefault(r["symbol"], set()).add(r["setup_type"])
+            earlier.setdefault(r["symbol"], set()).update(tags_of(r))
         if r.get("rating"):
             rated[r["symbol"]] = max(rated.get(r["symbol"], 0), int(r["rating"]))
     sug = [suggest_tags(r, cfg, earlier.get(r["Symbol"])) for _, r in bo.iterrows()]
@@ -490,7 +498,7 @@ def add_to_tomorrow(sb, symbols, base_df, sd, mcfg):
 
 def save_symbols_to_watchlist(sb, symbols, tag, base_df, sd, mcfg, source="BREAKOUT"):
     """Save symbols under one setup tag straight from the scanner table. Skips ones already saved with that tag."""
-    active = {(r["symbol"], r["setup_type"]) for r in load_active_watchlist(sb, mcfg)}
+    active = {(r["symbol"], t) for r in load_active_watchlist(sb, mcfg) for t in tags_of(r)}
     added, skipped, snap = 0, [], []
     for s in symbols:
         if (s, tag) in active:
@@ -636,7 +644,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
 
     removes = [u for u in updates if u["action"] == "remove"]
     if removes:
-        untagged = {r["symbol"] for r in watch if r.get("setup_type") == "UNTAGGED"}
+        untagged = {r["symbol"] for r in watch if "UNTAGGED" in tags_of(r)}
         ok = st.multiselect("Remove these saved breakouts when you save:", [u["symbol"] for u in removes],
                             default=[u["symbol"] for u in removes if u["symbol"] not in untagged], key="bt_rm",
                             help="Old UNTAGGED stocks aren't pre-selected — retag or remove them in the Watchlist tab.")
@@ -755,10 +763,12 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
     except Exception as e:
         st.error(f"Could not read the database. Did you run supabase_migration.sql? ({e})"); return
     wdf = pd.DataFrame(watch)
+    if not wdf.empty:
+        wdf["_tags"] = [tags_of(r) for r in watch]
 
     # ── 1. Generate lists ──
     st.markdown("#### Generate a list")
-    counts = wdf["setup_type"].value_counts().to_dict() if not wdf.empty else {}
+    counts = pd.Series([t for ts in wdf["_tags"] for t in ts]).value_counts().to_dict() if not wdf.empty else {}
     btns = [("TOMORROW", f"Tomorrow's list ({len(tlist)})")] + [(t, f"{t} ({counts.get(t, 0)})") for t in SETUP_TYPES]
     if counts.get("UNTAGGED"):
         btns.append(("UNTAGGED", f"UNTAGGED ({counts['UNTAGGED']})"))
@@ -773,7 +783,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             syms, ex = tlist, {}
             st.caption(f"Tomorrow's list saved on {tdate or '—'} — tight names plus re-setups.")
         else:
-            part = wdf[wdf["setup_type"] == show] if not wdf.empty else wdf
+            part = wdf[wdf["_tags"].map(lambda ts: show in ts)] if not wdf.empty else wdf
             if not part.empty and min_n:
                 part = part[part["rating"].fillna(0) >= min_n]
             if not part.empty:
@@ -794,9 +804,15 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
     else:
         live = add_derived(base_df).drop_duplicates("Symbol").set_index("Symbol") if base_df is not None and not base_df.empty else None
         wdf["Rating"] = wdf["rating"].map(rating_label) if "rating" in wdf.columns else "—"
-        v = wdf[["id", "symbol", "setup_type", "Rating", "trigger_date", "trigger_close", "prev_close", "vol_ratio", "last_seen",
-                 "last_status", "tags"]].copy()
-        v["age"] = v["trigger_date"].fillna(wdf["added_date"]).map(
+        for c in ("last_trigger_date",):
+            if c not in wdf.columns:
+                wdf[c] = None
+        v = wdf[["id", "symbol", "Rating", "trigger_date", "last_trigger_date", "trigger_close", "prev_close", "vol_ratio",
+                 "last_seen", "last_status", "tags"]].copy()
+        for t in SETUP_TYPES:
+            v.insert(2 + SETUP_TYPES.index(t), t, wdf["_tags"].map(lambda ts, t=t: t in ts).values)
+        v.insert(2, "UNTAGGED", wdf["_tags"].map(lambda ts: "UNTAGGED" in ts).values)
+        v["age"] = v["last_trigger_date"].fillna(v["trigger_date"]).fillna(wdf["added_date"]).map(
             lambda s: (date.today() - pd.to_datetime(s).date()).days if s else None)
         if live is not None:
             for c, src in [("Last", "Last"), ("Chg %", "_chg_percentclose"), ("Vol x", "_vol_ratio"),
@@ -805,24 +821,31 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             v["In scan"] = v["symbol"].isin(live.index)
         v["tags"] = v["tags"].map(lambda t: ", ".join(t) if isinstance(t, list) else "")
         v.insert(0, "Action", "keep")
-        v = v.sort_values(["setup_type", "trigger_date"], ascending=[True, False])
+        v = v.assign(_r=wdf["rating"].fillna(0).values).sort_values(["_r", "symbol"], ascending=[False, True]).drop(columns="_r")
+        if not v["UNTAGGED"].any():
+            v = v.drop(columns="UNTAGGED")
+        editable = ["Action", "Rating"] + SETUP_TYPES
         ed = st.data_editor(
             v, hide_index=True, height=420, key="wl_editor",
-            disabled=[c for c in v.columns if c not in ("Action", "setup_type", "Rating")],
+            disabled=[c for c in v.columns if c not in editable],
             column_config={
                 "id": None,
                 "Action": st.column_config.SelectboxColumn("Action", options=["keep", "traded", "remove"], required=True),
-                "setup_type": st.column_config.SelectboxColumn("Tag", options=SETUP_TYPES + ["UNTAGGED"], required=True),
+                "UNTAGGED": st.column_config.CheckboxColumn("Untagged", help="Old saved stock — tick its real tag(s)"),
+                "CONTINUATION": st.column_config.CheckboxColumn("CONT"),
+                "last_trigger_date": "Latest BO",
                 "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True),
                 "trigger_date": "Breakout day", "trigger_close": "BO close", "prev_close": "Fail level",
                 "vol_ratio": st.column_config.NumberColumn("BO vol x", format="%.1f"),
             })
         changes = []
         orig = v.set_index("id")
+        tagset = lambda r: [t for t in SETUP_TYPES if bool(r[t])]
         for _, r in ed.iterrows():
             o = orig.loc[r["id"]]
-            if r["Action"] != "keep" or r["setup_type"] != o["setup_type"] or r["Rating"] != o["Rating"]:
+            if r["Action"] != "keep" or tagset(r) != tagset(o) or r["Rating"] != o["Rating"]:
                 changes.append(r)
+        st.caption("One row per stock. Tick/untick its tags, set the rating, or mark it traded / remove, then Apply.")
         if st.button(f"Apply changes ({len(changes)})", key="wl_apply", disabled=not changes):
             errs = []
             for r in changes:
@@ -832,10 +855,13 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
                                                          "p_status": "traded" if r["Action"] == "traded" else "removed"}).execute()
                     if r["Action"] == "keep" and r["Rating"] != orig.loc[r["id"], "Rating"]:
                         sb.table("watchlist").update({"rating": rating_int(r["Rating"])}).eq("id", int(r["id"])).execute()
-                    if r["Action"] == "keep" and r["setup_type"] != orig.loc[r["id"], "setup_type"]:
-                        sb.table("watchlist").update({"setup_type": r["setup_type"]}).eq("id", int(r["id"])).execute()
+                    new_t, old_t = tagset(r), tagset(orig.loc[r["id"]])
+                    if r["Action"] == "keep" and new_t != old_t:
+                        if not new_t:
+                            raise ValueError("no tag ticked — tick at least one, or set Action to remove")
+                        sb.table("watchlist").update({"setup_types": new_t}).eq("id", int(r["id"])).execute()
                         sb.table("watchlist_events").insert({"watchlist_id": int(r["id"]), "event": "retagged",
-                                                             "detail": f"{orig.loc[r['id'], 'setup_type']} → {r['setup_type']}"}).execute()
+                                                             "detail": f"{'+'.join(old_t) or 'UNTAGGED'} → {'+'.join(new_t)}"}).execute()
                 except Exception as ex:
                     errs.append(f"{r['symbol']}: {ex}")
             if errs:
@@ -871,17 +897,17 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         only = c3.selectbox("Only", ["All"] + SETUP_TYPES + ["UNTAGGED"], key="wl_c_only")
         prev = []
         for r in watch:
-            if only != "All" and r["setup_type"] != only:
+            if only != "All" and only not in tags_of(r):
                 continue
             a = _age_days(r, date.today())
             ls = r.get("last_seen")
             un = (date.today() - pd.to_datetime(ls).date()).days if ls else None
             if r.get("expires_on") and pd.to_datetime(r["expires_on"]).date() < date.today():
-                prev.append((r["symbol"], r["setup_type"], "expired"))
+                prev.append((r["symbol"], " + ".join(tags_of(r)), "expired"))
             elif a is not None and a > age:
-                prev.append((r["symbol"], r["setup_type"], f"stale ({a} days)"))
+                prev.append((r["symbol"], " + ".join(tags_of(r)), f"stale ({a} days)"))
             elif un is not None and un > unseen:
-                prev.append((r["symbol"], r["setup_type"], f"unseen ({un} days)"))
+                prev.append((r["symbol"], " + ".join(tags_of(r)), f"unseen ({un} days)"))
         if prev:
             st.dataframe(pd.DataFrame(prev, columns=["Symbol", "Tag", "Reason"]), hide_index=True)
         else:
