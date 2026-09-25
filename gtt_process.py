@@ -36,6 +36,21 @@ SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "UNTAGGED": "Untagged (old saved list)"}
 NO_TAG = "—"
+RATINGS = ["—", "3★", "4★", "5★"]
+
+
+def rating_int(v):
+    try:
+        return int(str(v).strip()[0]) if str(v).strip()[:1] in "12345" else None
+    except Exception:
+        return None
+
+
+def rating_label(v):
+    try:
+        return f"{int(v)}★" if v is not None and not pd.isna(v) else "—"
+    except Exception:
+        return "—"
 
 # Anticipation / tomorrow's list rules (fixed for 8 weeks)
 TOMORROW_DEFAULTS = {
@@ -63,7 +78,7 @@ TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's lis
 SNAPSHOT_METRICS = ["Last", "_chg_percentclose", "_vol_ratio", "Adr", "_nr4", "_nr4_previous",
                     "_rel_tightness_today", "_rel_tightness_prev", "_rel_wk_dist", "W_Dist10wMA",
                     "W_TightCloses_10w", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS",
-                    "RS_1M", "RS_3M", "RS_6M", "Sector", "Suggested"]
+                    "RS_1M", "RS_3M", "RS_6M", "Sector", "Suggested", "rating"]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -156,10 +171,13 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
         watch[r["symbol"]] = r
     d["On_List"] = d["Symbol"].isin(yesterday_list)
     d["Saved"] = d["Symbol"].isin(watch.keys())
-    all_tags = {}
+    all_tags, stars = {}, {}
     for r in watch_rows or []:
         all_tags.setdefault(r["symbol"], []).append(r["setup_type"])
-    d["Tag"] = d["Symbol"].map(lambda s: " + ".join(sorted(all_tags.get(s, []))))
+        if r.get("rating"):
+            stars[r["symbol"]] = max(stars.get(r["symbol"], 0), int(r["rating"]))
+    d["Tag"] = d["Symbol"].map(lambda s: " + ".join(sorted(all_tags.get(s, [])))
+                               + (f" · {stars[s]}★" if s in stars else ""))
     d["Label"] = "SCANNED"
     d["Reason"] = ""
 
@@ -277,9 +295,11 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None):
     cfg = {**BREAKOUT_DEFAULTS, **(cfg or {})}
     d = add_derived(scan_df).drop_duplicates("Symbol")
     bo = d[(d["_chg_percentclose"].fillna(0) >= cfg["bo_min_chg"]) & (d["_vol_ratio"].fillna(0) >= cfg["bo_min_vol"])].copy()
-    active = {}
+    active, rated = {}, {}
     for r in watch_rows or []:
         active.setdefault(r["symbol"], set()).add(r["setup_type"])
+        if r.get("rating"):
+            rated[r["symbol"]] = max(rated.get(r["symbol"], 0), int(r["rating"]))
     sug = [suggest_tags(r, cfg) for _, r in bo.iterrows()]
     bo["Suggested"] = [" + ".join(t) if t else NO_TAG for t, _ in sug]
     bo["Why"] = [w for _, w in sug]
@@ -287,6 +307,7 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None):
         bo[t] = [(t in tags) and (t not in active.get(sym, set())) for (tags, _), sym in zip(sug, bo["Symbol"])]
     bo["On_List"] = bo["Symbol"].isin(yesterday_list)
     bo["In_Watchlist"] = bo["Symbol"].map(lambda s: ", ".join(sorted(active.get(s, []))))
+    bo["Rating"] = bo["Symbol"].map(lambda s: rating_label(rated.get(s)))
     bo["Batch"] = np.where(bo["_vol_ratio"].fillna(0) >= cfg["strong_min_vol"], "Strong", "Moderate")
     return bo.sort_values("_vol_ratio", ascending=False).reset_index(drop=True)
 
@@ -313,6 +334,8 @@ def snapshot_rows(df, snap_date, mcfg, scanner, list_col, selected_col):
                 m[k.lower()] = r[k]
         if "On_List" in r.index:
             m["on_list"] = bool(r["On_List"])
+        if "Rating" in r.index and rating_int(r["Rating"]):
+            m["rating"] = rating_int(r["Rating"])
         rows.append({"user_id": mcfg["user_id"], "market": mcfg["market"], "exchange": mcfg["exchange"],
                      "scanner": scanner, "snap_date": snap_date.isoformat(), "symbol": r["Symbol"],
                      "list": str(r[list_col]), "selected": bool(r[selected_col]),
@@ -332,7 +355,7 @@ def breakout_payload(r, mcfg):
          "dist_10ma_pct": _num(r.get("_10madist"), None), "dist_20ma_pct": _num(r.get("_20madist"), None),
          "scan_count": int(_num(r.get("Scan_Count"), 0)),
          "sector": r.get("Sector") if isinstance(r.get("Sector"), str) else None,
-         "why": r.get("Why")}
+         "why": r.get("Why"), "rating": rating_int(r.get("Rating"))}
     return {k: v for k, v in p.items() if v is not None}
 
 
@@ -396,6 +419,10 @@ def save_breakouts(sb, bo, snap_date, mcfg):
                                         "p_trigger_date": snap_date.isoformat(), "p_data": breakout_payload(r, mcfg),
                                         "p_tags": ["missed"] if bool(r.get("On_List")) else ["off-list"]}).execute()
             added += 1
+        rt = rating_int(r.get("Rating"))
+        if rt and prior:
+            sb.table("watchlist").update({"rating": rt}).eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]) \
+                .eq("symbol", r["Symbol"]).eq("status", "active").execute()
         allt = sorted(set(prior) | set(ticked), key=SETUP_TYPES.index) if (prior or ticked) else []
         lists.append("+".join(t for t in allt if t in SETUP_TYPES) or "NOT_SAVED")
     snap = bo.copy()
@@ -639,14 +666,16 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
     if part.empty:
         st.info("Nothing in this batch."); return
 
-    show = SETUP_TYPES + ["Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose", "_vol_ratio",
+    show = SETUP_TYPES + ["Rating", "Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose", "_vol_ratio",
                           "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist", "Scan_Count", "Avg_RS", "Sector"]
     view = part[[c for c in show if c in part.columns]].reset_index(drop=True)
     ekey = f"bo_editor_{pick}"
     edited = st.data_editor(
         view, hide_index=True, height=440, key=ekey,
-        disabled=[c for c in view.columns if c not in SETUP_TYPES],
+        disabled=[c for c in view.columns if c not in SETUP_TYPES + ["Rating"]],
         column_config={
+            "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True,
+                                                       help="Your grade after the chart check: 3★, 4★, 5★"),
             "EP": st.column_config.CheckboxColumn("EP", help="Episodic pivot"),
             "TIGHT_BO": st.column_config.CheckboxColumn("TIGHT_BO", help="Breakout from a tight range, 10 & 20 rising"),
             "WEMA_BO": st.column_config.CheckboxColumn("WEMA_BO", help="Breakout from the 10-week EMA"),
@@ -664,6 +693,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
     part = part.reset_index(drop=True)
     for t in SETUP_TYPES:
         part[t] = edited[t].fillna(False).astype(bool).values
+    part["Rating"] = edited["Rating"].fillna("—").values
     counts = {t: int(part[t].sum()) for t in SETUP_TYPES}
     n = sum(counts.values())
     st.caption("To save: " + ", ".join(f"{t} {c}" for t, c in counts.items()) +
@@ -698,6 +728,8 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
     for c, (k, label) in zip(st.columns(len(btns)), btns):
         if c.button(label, key=f"wl_btn_{k}", use_container_width=True):
             st.session_state["wl_show"] = k
+    min_r = st.radio("Minimum rating for breakout lists", ["Any", "3★+", "4★+", "5★"], horizontal=True, key="wl_minr")
+    min_n = {"Any": 0, "3★+": 3, "4★+": 4, "5★": 5}[min_r]
     show = st.session_state.get("wl_show")
     if show:
         if show == "TOMORROW":
@@ -705,7 +737,11 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             st.caption(f"Tomorrow's list saved on {tdate or '—'} — tight names plus re-setups.")
         else:
             part = wdf[wdf["setup_type"] == show] if not wdf.empty else wdf
-            syms = sorted(part["symbol"].tolist()) if not part.empty else []
+            if not part.empty and min_n:
+                part = part[part["rating"].fillna(0) >= min_n]
+            if not part.empty:
+                part = part.assign(_r=part["rating"].fillna(0)).sort_values(["_r", "symbol"], ascending=[False, True])
+            syms = part["symbol"].tolist() if not part.empty else []
             ex = dict(zip(part["symbol"], part["exchange"])) if not part.empty else {}
             st.caption(SETUP_NAMES.get(show, show))
         if syms:
@@ -720,7 +756,8 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         st.info("Nothing saved yet. Tag breakouts in the scanner's Post Breakout mode.")
     else:
         live = add_derived(base_df).drop_duplicates("Symbol").set_index("Symbol") if base_df is not None and not base_df.empty else None
-        v = wdf[["id", "symbol", "setup_type", "trigger_date", "trigger_close", "prev_close", "vol_ratio", "last_seen",
+        wdf["Rating"] = wdf["rating"].map(rating_label) if "rating" in wdf.columns else "—"
+        v = wdf[["id", "symbol", "setup_type", "Rating", "trigger_date", "trigger_close", "prev_close", "vol_ratio", "last_seen",
                  "last_status", "tags"]].copy()
         v["age"] = v["trigger_date"].fillna(wdf["added_date"]).map(
             lambda s: (date.today() - pd.to_datetime(s).date()).days if s else None)
@@ -734,11 +771,12 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         v = v.sort_values(["setup_type", "trigger_date"], ascending=[True, False])
         ed = st.data_editor(
             v, hide_index=True, height=420, key="wl_editor",
-            disabled=[c for c in v.columns if c not in ("Action", "setup_type")],
+            disabled=[c for c in v.columns if c not in ("Action", "setup_type", "Rating")],
             column_config={
                 "id": None,
                 "Action": st.column_config.SelectboxColumn("Action", options=["keep", "traded", "remove"], required=True),
                 "setup_type": st.column_config.SelectboxColumn("Tag", options=SETUP_TYPES + ["UNTAGGED"], required=True),
+                "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True),
                 "trigger_date": "Breakout day", "trigger_close": "BO close", "prev_close": "Fail level",
                 "vol_ratio": st.column_config.NumberColumn("BO vol x", format="%.1f"),
             })
@@ -746,7 +784,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         orig = v.set_index("id")
         for _, r in ed.iterrows():
             o = orig.loc[r["id"]]
-            if r["Action"] != "keep" or r["setup_type"] != o["setup_type"]:
+            if r["Action"] != "keep" or r["setup_type"] != o["setup_type"] or r["Rating"] != o["Rating"]:
                 changes.append(r)
         if st.button(f"Apply changes ({len(changes)})", key="wl_apply", disabled=not changes):
             errs = []
@@ -755,7 +793,9 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
                     if r["Action"] in ("traded", "remove"):
                         sb.rpc("remove_from_watchlist", {"p_id": int(r["id"]), "p_reason": "manual" if r["Action"] == "remove" else "traded",
                                                          "p_status": "traded" if r["Action"] == "traded" else "removed"}).execute()
-                    elif r["setup_type"] != orig.loc[r["id"], "setup_type"]:
+                    if r["Action"] == "keep" and r["Rating"] != orig.loc[r["id"], "Rating"]:
+                        sb.table("watchlist").update({"rating": rating_int(r["Rating"])}).eq("id", int(r["id"])).execute()
+                    if r["Action"] == "keep" and r["setup_type"] != orig.loc[r["id"], "setup_type"]:
                         sb.table("watchlist").update({"setup_type": r["setup_type"]}).eq("id", int(r["id"])).execute()
                         sb.table("watchlist_events").insert({"watchlist_id": int(r["id"]), "event": "retagged",
                                                              "detail": f"{orig.loc[r['id'], 'setup_type']} → {r['setup_type']}"}).execute()
