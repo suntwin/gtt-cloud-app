@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-25h · session date from scan data"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-25j · per-stock update time"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "CONTINUATION": "Continuation — second leg after an earlier breakout",
@@ -122,6 +122,26 @@ def tv_symbol(sym, mcfg, exchange=None):
     return f"{exchange or mcfg['exchange']}:{sym}"
 
 
+def parse_ts_dates(ts):
+    """MarketInOut Timestamp (e.g. '09/25/2026 09:31') → date per row (NaT if unreadable)."""
+    try:
+        num = pd.to_numeric(ts, errors="coerce")
+        if num.notna().mean() > 0.8 and num.dropna().median() > 1e9:        # epoch seconds / ms
+            unit = "ms" if num.dropna().median() > 1e12 else "s"
+            parsed = pd.to_datetime(num, unit=unit, errors="coerce")
+        else:
+            txt = ts.astype(str).str.strip()
+            parsed = pd.to_datetime(txt, errors="coerce", format="%m/%d/%Y %H:%M")   # MarketInOut format
+            if parsed.notna().mean() < 0.5:
+                try:
+                    parsed = pd.to_datetime(txt, errors="coerce", format="mixed")
+                except (TypeError, ValueError):
+                    parsed = pd.to_datetime(txt, errors="coerce")
+        return parsed.dt.date.where(parsed.notna(), None)
+    except Exception:
+        return pd.Series([None] * len(ts), index=ts.index)
+
+
 def add_derived(df):
     """Scan count and tightness/distance metrics. Never drops rows."""
     d = df.copy()
@@ -142,6 +162,7 @@ def add_derived(df):
     elif "_vol_ratio" not in d.columns:
         d["_vol_ratio"] = np.nan
     d["Missing_Weekly"] = d["W_Dist10wMA"].isna() | d["W_TightCloses_10w"].isna()
+    d["Data_Date"] = parse_ts_dates(d["Timestamp"]) if "Timestamp" in d.columns else None
     return d
 
 
@@ -205,6 +226,9 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
         d.loc[m, "Reason"] = reason if isinstance(reason, str) else reason[m]
 
     c1, v1 = chg.round(1).astype(str), vol.round(1).astype(str)
+    if "Data_Date" in d.columns:
+        stale = d["Data_Date"].map(lambda x: x is not None and not pd.isna(x) and x < today)
+        put(stale, "CHECK", "Not updated yet — still " + d["Data_Date"].astype(str) + " data. Refresh later.")
     put(d["On_List"] & too_far, "5_REMOVE", "Ran " + c1 + "% (> " + str(cfg["gap_max_adr"]) + " ADR). Skip.")
     put(d["On_List"] & broke_out & (vol >= cfg["bo_min_vol"]), "1_BUY_SIGNAL", "On list, +" + c1 + "% on " + v1 + "x vol")
     put(d["On_List"] & broke_out & (vol < cfg["bo_min_vol"]), "3_WAIT", "Broke out on only " + v1 + "x vol. Keep waiting.")
@@ -315,7 +339,10 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None, today=None):
     the suggestion, never for a tag it's already saved under)."""
     cfg = {**BREAKOUT_DEFAULTS, **(cfg or {})}
     d = add_derived(scan_df).drop_duplicates("Symbol")
-    bo = d[(d["_chg_percentclose"].fillna(0) >= cfg["bo_min_chg"]) & (d["_vol_ratio"].fillna(0) >= cfg["bo_min_vol"])].copy()
+    fresh = pd.Series(True, index=d.index)
+    if today is not None and "Data_Date" in d.columns:
+        fresh = d["Data_Date"].map(lambda x: x is None or pd.isna(x) or x >= today)
+    bo = d[fresh & (d["_chg_percentclose"].fillna(0) >= cfg["bo_min_chg"]) & (d["_vol_ratio"].fillna(0) >= cfg["bo_min_vol"])].copy()
     active, earlier, rated = {}, {}, {}
     for r in watch_rows or []:
         active.setdefault(r["symbol"], set()).update(tags_of(r))
@@ -535,7 +562,7 @@ def render_quick_save(st, sb, selected, base_df, scan_mode, mcfg):
         c2.markdown(f"**{len(syms)} to save:** " + (", ".join(syms) if syms else "_none — tick rows above_"))
         if sb is None:
             st.error("Database not connected."); return
-        sd = effective_session(base_df, mcfg)[0]
+        sd = effective_session(base_df, mcfg, sb)[0]
         order = (["TOMORROW"] + SETUP_TYPES) if scan_mode == "Anticipation" else (SETUP_TYPES + ["TOMORROW"])
         labels = {"TOMORROW": "Add to tomorrow's list", **{t: f"Save as {t}" for t in SETUP_TYPES}}
         primary = "TOMORROW" if scan_mode == "Anticipation" else None
@@ -553,43 +580,79 @@ def render_quick_save(st, sb, selected, base_df, scan_mode, mcfg):
                 except Exception as ex:
                     st.error(f"Save failed: {ex}. Did you run supabase_migration.sql?")
 def scan_data_date(base_df):
-    """Trading date the scan data is actually from (MarketInOut's Timestamp column), or None if unreadable."""
+    """Newest trading date in the scan (each stock carries its own update time). Needs ≥5% of stocks on that date."""
     if base_df is None or base_df.empty or "Timestamp" not in base_df.columns:
         return None
-    ts = base_df["Timestamp"]
+    dates = pd.Series(parse_ts_dates(base_df["Timestamp"])).dropna()
+    if len(dates) < max(3, 0.5 * len(base_df)):
+        return None
+    counts = dates.value_counts()
+    ok = [d for d, n in counts.items() if n >= max(3, 0.05 * len(dates))]
+    d = max(ok) if ok else counts.idxmax()
+    return d if 2000 < d.year < 2100 else None
+
+
+def not_updated(base_df, sd):
+    """Symbols whose own timestamp is older than the session — MarketInOut hasn't refreshed them yet."""
+    if base_df is None or base_df.empty or "Timestamp" not in base_df.columns or sd is None:
+        return {}
+    dd = parse_ts_dates(base_df["Timestamp"])
+    out = {}
+    for sym, x in zip(base_df["Symbol"], dd):
+        if x is not None and not pd.isna(x) and x < sd:
+            out[sym] = x
+    return out
+
+
+def stale_snapshot_date(sb, base_df, mcfg, clock):
+    """If today's scan is identical to the last saved snapshot (same Last and Chg% for the same stocks),
+    MarketInOut hasn't updated yet — return that snapshot's date."""
+    if sb is None or base_df is None or base_df.empty:
+        return None
     try:
-        num = pd.to_numeric(ts, errors="coerce")
-        if num.notna().mean() > 0.8 and num.dropna().median() > 1e9:        # epoch seconds / ms
-            unit = "ms" if num.dropna().median() > 1e12 else "s"
-            parsed = pd.to_datetime(num, unit=unit, errors="coerce")
-        else:
-            try:
-                parsed = pd.to_datetime(ts.astype(str), errors="coerce", format="mixed")
-            except (TypeError, ValueError):
-                parsed = pd.to_datetime(ts.astype(str), errors="coerce")
-        parsed = parsed.dropna()
-        if len(parsed) < max(3, 0.5 * len(ts)):
+        r = (sb.table("daily_snapshots").select("snap_date").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
+             .lt("snap_date", clock.isoformat()).order("snap_date", desc=True).limit(1).execute().data)
+        if not r:
             return None
-        d = parsed.dt.date.mode().iloc[0]
-        return d if 2000 < d.year < 2100 else None
+        last = r[0]["snap_date"]
+        rows = (sb.table("daily_snapshots").select("symbol,metrics").eq("user_id", mcfg["user_id"])
+                .eq("market", mcfg["market"]).eq("snap_date", last).limit(3000).execute().data)
+        prev = {x["symbol"]: x["metrics"] or {} for x in rows}
+        now = base_df.drop_duplicates("Symbol").set_index("Symbol")
+        same = total = 0
+        for sym, m in prev.items():
+            if sym not in now.index or "Last" not in m or "_chg_percentclose" not in m:
+                continue
+            total += 1
+            a, b = _num(now.at[sym, "Last"]), _num(now.at[sym, "_chg_percentclose"])
+            if abs(a - float(m["Last"])) < 1e-6 and abs(b - float(m["_chg_percentclose"])) < 1e-6:
+                same += 1
+        if total >= 5 and same / total >= 0.8:
+            return pd.to_datetime(last).date()
     except Exception:
         return None
+    return None
 
 
-def effective_session(base_df, mcfg):
+def effective_session(base_df, mcfg, sb=None):
     """(session date to record under, data date or None, clock session date)."""
     now = market_now(mcfg)
     clock = session_date(now, mcfg)
     dd = scan_data_date(base_df)
+    if dd is None or dd >= clock:
+        stale = stale_snapshot_date(sb, base_df, mcfg, clock)
+        if stale:
+            dd = stale
     return (dd or clock), dd, clock
 
 
-def _header_time(st, mcfg, base_df=None):
+def _header_time(st, mcfg, base_df=None, sb=None):
     now = market_now(mcfg)
-    sd, dd, clock = effective_session(base_df, mcfg)
+    sd, dd, clock = effective_session(base_df, mcfg, sb)
     if dd and dd < clock:
-        st.warning(f"The scan data is still from **{dd}** — MarketInOut hasn't updated for {clock} yet. "
-                   f"Anything you save now is recorded under {dd}. Click Refresh Now in a while for today's numbers.")
+        st.warning(f"The scan data is still from **{dd}** (same prices as that day's snapshot) — MarketInOut hasn't "
+                   f"updated for {clock} yet. Anything you save now is recorded under {dd}. "
+                   "Click Refresh Now in a while for today's numbers.")
     elif market_is_open(now, mcfg):
         st.info(f"{mcfg['market']} is open ({now:%H:%M}). Intraday numbers: volume ratio is only part of the day, "
                 "so it reads low early on. Fine for adding breakouts you spot — the evening run records the close.")
@@ -619,7 +682,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     st.subheader("Tomorrow's list  ·  evening, once")
     if sb is None:
         st.error("Database not connected."); return
-    sd = _header_time(st, mcfg, base_df)
+    sd = _header_time(st, mcfg, base_df, sb)
     shared = shared or {}
     own = {k: v for k, v in TOMORROW_DEFAULTS.items() if k not in shared}   # the rest come from the sidebar
     cfg = {**_rules_editor(st, "More list rules (scan count, liquidity, list size, breakouts, re-setups)", own,
@@ -710,7 +773,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     st.caption(f"gtt_process {PROCESS_VERSION}")
     if sb is None:
         st.error("Database not connected."); return
-    sd = _header_time(st, mcfg, base_df)
+    sd = _header_time(st, mcfg, base_df, sb)
     shared = shared or {}
     own = {k: v for k, v in BREAKOUT_DEFAULTS.items() if k not in shared}   # Min Chg% / Min Vol come from the sidebar
     cfg = {**_rules_editor(st, "Breakout tagging rules", own, saved_prefs.get("breakout_tags"), "bo_cfg"), **shared}
@@ -725,6 +788,14 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     on_list = set(ylist)
     bo = find_breakouts(base_df, on_list, watch, cfg, today=sd)
     st.session_state["bo_list"] = bo[["Symbol", "Batch"]].copy()   # the Copy Symbols buttons use this same list
+    old = not_updated(base_df, sd)
+    if old:
+        d0 = add_derived(base_df)
+        left = d0[d0["Symbol"].isin(old.keys()) & (d0["_chg_percentclose"].fillna(0) >= cfg["bo_min_chg"])
+                  & (d0["_vol_ratio"].fillna(0) >= cfg["bo_min_vol"])]["Symbol"].tolist()
+        st.warning(f"{len(old)} stocks not updated by MarketInOut yet (still {min(old.values())} data) — left out until "
+                   "they refresh." + (f" Includes old breakouts: {', '.join(left[:12])}{'…' if len(left) > 12 else ''}."
+                                       if left else "") + " Click Refresh Now in a few minutes.")
     if st.session_state.get("bo_msg"):
         st.success(st.session_state.pop("bo_msg"))
     if bo.empty:
@@ -925,7 +996,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         c3.write(""); c3.write("")
         syms = _parse_symbols(sym)
         if c3.button("Add", key="wl_add_btn", disabled=not syms):
-            sd = effective_session(base_df, mcfg)[0]
+            sd = effective_session(base_df, mcfg, sb)[0]
             try:
                 if tag == "Tomorrow's list":
                     add_to_tomorrow(sb, syms, base_df, sd, mcfg)
