@@ -47,7 +47,7 @@ TOMORROW_DEFAULTS = {
 # Post-breakout tagging rules
 BREAKOUT_DEFAULTS = {
     "bo_min_chg": 2.0, "bo_min_vol": 1.5,   # what counts as a breakout
-    "save_min_vol": 2.0,                    # pre-fill a tag only at this volume or more
+    "strong_min_vol": 3.5,                  # Strong BO batch (same split as "Copy Symbols": ≥3.5x strong, 1.5–3.5x moderate)
     "ep_min_chg": 8.0, "ep_min_vol": 3.0,   # EP: big move on huge volume
     "tight_max_reltight": 1.0,              # TIGHT_BO: yesterday's NR4 / ADR
     "wema_max_adr": 2.0,                    # WEMA_BO: within N ADRs of the 10w EMA
@@ -156,7 +156,10 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
         watch[r["symbol"]] = r
     d["On_List"] = d["Symbol"].isin(yesterday_list)
     d["Saved"] = d["Symbol"].isin(watch.keys())
-    d["Tag"] = d["Symbol"].map(lambda s: watch[s]["setup_type"] if s in watch else "")
+    all_tags = {}
+    for r in watch_rows or []:
+        all_tags.setdefault(r["symbol"], []).append(r["setup_type"])
+    d["Tag"] = d["Symbol"].map(lambda s: " + ".join(sorted(all_tags.get(s, []))))
     d["Label"] = "SCANNED"
     d["Reason"] = ""
 
@@ -252,38 +255,39 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     return d, updates
 
 
-def suggest_tag(r, cfg):
-    """Best-guess setup type from scan columns. Confirm on the chart."""
-    chg, vol, adr = _num(r.get("_chg_percentclose"), 0), _num(r.get("_vol_ratio"), 0), _num(r.get("Adr"), 0)
-    if chg >= cfg["ep_min_chg"] and vol >= cfg["ep_min_vol"]:
-        return "EP", f"+{chg:.1f}% on {vol:.1f}x vol"
+def suggest_tags(r, cfg):
+    """Every setup type the scan columns point to (a breakout can be TIGHT_BO and WEMA_BO). Confirm on the chart."""
+    chg, vol = _num(r.get("_chg_percentclose"), 0), _num(r.get("_vol_ratio"), 0)
     rtp = _num(r.get("_rel_tightness_prev"), 99)
     d10, d20 = _num(r.get("_10madist"), -1), _num(r.get("_20madist"), -1)
-    if rtp <= cfg["tight_max_reltight"] and d10 > 0 and d20 > 0:
-        return "TIGHT_BO", f"tight before (rel {rtp:.2f}), above 10 & 20 MA — confirm both rising"
     rwd = _num(r.get("_rel_wk_dist"), 99)
+    tags, why = [], []
+    if chg >= cfg["ep_min_chg"] and vol >= cfg["ep_min_vol"]:
+        tags.append("EP"); why.append(f"EP: +{chg:.1f}% on {vol:.1f}x vol — confirm the gap")
+    if rtp <= cfg["tight_max_reltight"] and d10 > 0 and d20 > 0:
+        tags.append("TIGHT_BO"); why.append(f"TIGHT: tight before (rel {rtp:.2f}), above 10 & 20 — confirm both rising")
     if rwd <= cfg["wema_max_adr"]:
-        return "WEMA_BO", f"{rwd:.1f} ADR from 10w EMA"
-    return NO_TAG, "no clear setup"
+        tags.append("WEMA_BO"); why.append(f"WEMA: {rwd:.1f} ADR from 10w EMA")
+    return tags, ("; ".join(why) if why else "no clear setup — check the chart")
 
 
 def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None):
-    """Post Breakout: today's breakouts with a suggested tag. Pre-fills Tag only for strong volume."""
+    """Post Breakout: today's breakouts, split Strong / Moderate, one tick column per setup type (pre-ticked from
+    the suggestion, never for a tag it's already saved under)."""
     cfg = {**BREAKOUT_DEFAULTS, **(cfg or {})}
     d = add_derived(scan_df).drop_duplicates("Symbol")
     bo = d[(d["_chg_percentclose"].fillna(0) >= cfg["bo_min_chg"]) & (d["_vol_ratio"].fillna(0) >= cfg["bo_min_vol"])].copy()
     active = {}
     for r in watch_rows or []:
         active.setdefault(r["symbol"], set()).add(r["setup_type"])
-    sug = bo.apply(lambda r: suggest_tag(r, cfg), axis=1)
-    bo["Suggested"] = [s[0] for s in sug]
-    bo["Why"] = [s[1] for s in sug]
+    sug = [suggest_tags(r, cfg) for _, r in bo.iterrows()]
+    bo["Suggested"] = [" + ".join(t) if t else NO_TAG for t, _ in sug]
+    bo["Why"] = [w for _, w in sug]
+    for t in SETUP_TYPES:
+        bo[t] = [(t in tags) and (t not in active.get(sym, set())) for (tags, _), sym in zip(sug, bo["Symbol"])]
     bo["On_List"] = bo["Symbol"].isin(yesterday_list)
     bo["In_Watchlist"] = bo["Symbol"].map(lambda s: ", ".join(sorted(active.get(s, []))))
-    strong = bo["_vol_ratio"].fillna(0) >= cfg["save_min_vol"]
-    already = bo["Symbol"].isin(active.keys())   # saved already (any tag) → don't pre-fill again
-    bo["Tag"] = np.where(strong & ~already & (bo["Suggested"] != NO_TAG), bo["Suggested"], NO_TAG)
-    bo["Missed"] = bo["On_List"]   # on the list and broke out: tag it only if you missed the entry
+    bo["Batch"] = np.where(bo["_vol_ratio"].fillna(0) >= cfg["strong_min_vol"], "Strong", "Moderate")
     return bo.sort_values("_vol_ratio", ascending=False).reset_index(drop=True)
 
 
@@ -378,20 +382,27 @@ def save_tomorrow(sb, labelled, updates, snap_date, mcfg):
 
 
 def save_breakouts(sb, bo, snap_date, mcfg):
-    already = bo.apply(lambda r: r["Tag"] in str(r.get("In_Watchlist", "")).split(", "), axis=1)
-    tagged = bo[bo["Tag"].isin(SETUP_TYPES) & ~already]
-    for _, r in tagged.iterrows():
-        tags = ["missed"] if bool(r.get("On_List")) else ["off-list"]
-        sb.rpc("add_to_watchlist", {"p_user": mcfg["user_id"], "p_market": mcfg["market"], "p_symbol": r["Symbol"],
-                                    "p_setup_type": r["Tag"], "p_source": "BREAKOUT",
-                                    "p_trigger_date": snap_date.isoformat(), "p_data": breakout_payload(r, mcfg),
-                                    "p_tags": tags}).execute()
+    """Save every ticked tag (a row can have several). Tags it's already saved under are skipped."""
+    added = 0
+    lists = []
+    for _, r in bo.iterrows():
+        prior = [t for t in str(r.get("In_Watchlist", "")).split(", ") if t]
+        ticked = [t for t in SETUP_TYPES if bool(r.get(t))]
+        for t in ticked:
+            if t in prior:
+                continue
+            sb.rpc("add_to_watchlist", {"p_user": mcfg["user_id"], "p_market": mcfg["market"], "p_symbol": r["Symbol"],
+                                        "p_setup_type": t, "p_source": "BREAKOUT",
+                                        "p_trigger_date": snap_date.isoformat(), "p_data": breakout_payload(r, mcfg),
+                                        "p_tags": ["missed"] if bool(r.get("On_List")) else ["off-list"]}).execute()
+            added += 1
+        allt = sorted(set(prior) | set(ticked), key=SETUP_TYPES.index) if (prior or ticked) else []
+        lists.append("+".join(t for t in allt if t in SETUP_TYPES) or "NOT_SAVED")
     snap = bo.copy()
-    prior = snap["In_Watchlist"].fillna("").str.split(", ").str[0] if "In_Watchlist" in snap else ""
-    snap["_list"] = np.where(snap["Tag"].isin(SETUP_TYPES), snap["Tag"], np.where(prior != "", prior, "NOT_SAVED"))
+    snap["_list"] = lists
     snap["_sel"] = snap["_list"] != "NOT_SAVED"
     upsert_snapshots(sb, snapshot_rows(snap, snap_date, mcfg, "BREAKOUT", "_list", "_sel"))
-    return len(tagged), len(bo)
+    return added, len(bo)
 
 
 def _snap_q(sb, mcfg, scanner, sd):
@@ -513,14 +524,19 @@ def _rules_editor(st, title, defaults, saved, key):
     return cfg
 
 
-def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg):
+def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     """Anticipation mode: evening, once."""
     st.markdown("---")
     st.subheader("Tomorrow's list  ·  evening, once")
     if sb is None:
         st.error("Database not connected."); return
     sd = _header_time(st, mcfg)
-    cfg = _rules_editor(st, "Tomorrow's list rules", TOMORROW_DEFAULTS, saved_prefs.get("build_tomorrow"), "bt_cfg")
+    shared = shared or {}
+    own = {k: v for k, v in TOMORROW_DEFAULTS.items() if k not in shared}   # the rest come from the sidebar
+    cfg = {**_rules_editor(st, "More list rules (scan count, liquidity, list size, breakouts, re-setups)", own,
+                           saved_prefs.get("build_tomorrow"), "bt_cfg"), **shared}
+    if shared:
+        st.caption("From the sidebar's Coiled Setup Filters: " + ", ".join(f"{k} {v:g}" for k, v in shared.items()))
     try:
         prev_date, ylist = load_last_list(sb, mcfg, before_date=sd)
         watch = load_active_watchlist(sb, mcfg)
@@ -607,37 +623,59 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg):
         st.error(f"Could not read the database. Did you run supabase_migration.sql? ({e})"); return
     on_list = set(ylist)
     bo = find_breakouts(base_df, on_list, watch, cfg)
-    st.caption(f"Session **{sd}** · {len(bo)} breakouts (≥{cfg['bo_min_chg']}% on ≥{cfg['bo_min_vol']}x vol). "
-               f"Tags are pre-filled at ≥{cfg['save_min_vol']}x volume — change or clear them after checking the chart.")
+    if st.session_state.get("bo_msg"):
+        st.success(st.session_state.pop("bo_msg"))
     if bo.empty:
-        st.info("No breakouts today."); return
-    show = ["Tag", "Symbol", "Suggested", "Why", "On_List", "In_Watchlist", "_chg_percentclose", "_vol_ratio", "Adr",
-            "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist", "Scan_Count", "Avg_RS", "Sector"]
-    view = bo[[c for c in show if c in bo.columns]]
+        st.caption(f"Session **{sd}**"); st.info("No breakouts."); return
+
+    ns, nm = int((bo["Batch"] == "Strong").sum()), int((bo["Batch"] == "Moderate").sum())
+    opts = {f"Strong BO (≥{cfg['strong_min_vol']:g}x) · {ns}": "Strong",
+            f"Moderate BO ({cfg['bo_min_vol']:g}–{cfg['strong_min_vol']:g}x) · {nm}": "Moderate",
+            f"All · {len(bo)}": "All"}
+    pick = opts[st.radio("Work through", list(opts), horizontal=True, key="bo_batch")]
+    part = bo if pick == "All" else bo[bo["Batch"] == pick]
+    st.caption(f"Session **{sd}** · {len(part)} breakouts. Ticks are my suggestion from the scan — check each chart, "
+               "then tick/untick EP, TIGHT_BO, WEMA_BO (a stock can have more than one) and save this batch.")
+    if part.empty:
+        st.info("Nothing in this batch."); return
+
+    show = SETUP_TYPES + ["Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose", "_vol_ratio",
+                          "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist", "Scan_Count", "Avg_RS", "Sector"]
+    view = part[[c for c in show if c in part.columns]].reset_index(drop=True)
+    ekey = f"bo_editor_{pick}"
     edited = st.data_editor(
-        view, hide_index=True, height=440, key="bo_editor",
-        disabled=[c for c in view.columns if c != "Tag"],
+        view, hide_index=True, height=440, key=ekey,
+        disabled=[c for c in view.columns if c not in SETUP_TYPES],
         column_config={
-            "Tag": st.column_config.SelectboxColumn("Tag", options=[NO_TAG] + SETUP_TYPES, required=True,
-                                                    help="Blank = don't save"),
-            "On_List": st.column_config.CheckboxColumn("Was on list"),
+            "EP": st.column_config.CheckboxColumn("EP", help="Episodic pivot"),
+            "TIGHT_BO": st.column_config.CheckboxColumn("TIGHT_BO", help="Breakout from a tight range, 10 & 20 rising"),
+            "WEMA_BO": st.column_config.CheckboxColumn("WEMA_BO", help="Breakout from the 10-week EMA"),
+            "Suggested": st.column_config.TextColumn("My suggestion"),
+            "Why": st.column_config.TextColumn("Why", width="large"),
             "In_Watchlist": st.column_config.TextColumn("Already saved as"),
+            "On_List": st.column_config.CheckboxColumn("Was on list"),
             "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
             "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
             "_rel_tightness_prev": st.column_config.NumberColumn("Rel tight (prev)", format="%.2f"),
             "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
+            "_10madist": st.column_config.NumberColumn("10MA %", format="%.1f"),
+            "_20madist": st.column_config.NumberColumn("20MA %", format="%.1f"),
         })
-    bo["Tag"] = edited["Tag"].fillna(NO_TAG).values
-    n = int(bo["Tag"].isin(SETUP_TYPES).sum())
-    by = bo[bo["Tag"].isin(SETUP_TYPES)].groupby("Tag")["Symbol"].count().to_dict()
-    st.caption("To save: " + (", ".join(f"{k} {v}" for k, v in by.items()) if by else "nothing tagged"))
-    if st.button(f"Save to watchlist ({n})  ·  {sd}", type="primary", key="bo_save"):
+    part = part.reset_index(drop=True)
+    for t in SETUP_TYPES:
+        part[t] = edited[t].fillna(False).astype(bool).values
+    counts = {t: int(part[t].sum()) for t in SETUP_TYPES}
+    n = sum(counts.values())
+    st.caption("To save: " + ", ".join(f"{t} {c}" for t, c in counts.items()) +
+               f" · {int(part[SETUP_TYPES].any(axis=1).sum())} stocks")
+    if st.button(f"Save {pick.lower()} batch to watchlist ({n} tags)  ·  {sd}", type="primary", key=f"bo_save_{pick}"):
         try:
-            a, t = save_breakouts(sb, bo, sd, mcfg)
-            st.success(f"Saved {a} to the watchlist. Snapshot of {t} breakouts stored.")
+            a, t = save_breakouts(sb, part, sd, mcfg)
+            st.session_state["bo_msg"] = f"{pick} batch: saved {a} tags to the watchlist; {t} breakouts recorded."
+            st.session_state.pop(ekey, None)
+            st.rerun()
         except Exception as ex:
             st.error(f"Save failed: {ex}")
-
 
 def render_watchlist_tab(st, sb, base_df, mcfg):
     """Working watchlist: generate lists, update entries, clean up, history."""

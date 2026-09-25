@@ -189,7 +189,10 @@ def clean_df_for_json(df):
 def filter_dataframe(df, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_wktight,
                      vol_bo_min_adr, vol_bo_max_adr, vol_bo_max_rwd,
                      coil_min_wktight, coil_max_reltight, coil_max_rwd,
-                     coil_min_chg, coil_max_chg):
+                     coil_min_chg, coil_max_chg, coil_min_adr=0.0):
+    # Anticipation: Min ADR is a base rule — always applied, same value the Tomorrow's list uses
+    if scan_mode == "Anticipation" and 'Adr' in df.columns:
+        df = df[df['Adr'].fillna(0) >= coil_min_adr]
     modify = st.checkbox("Add Advanced Filters")
 
     # ── Mode-specific checkbox ──
@@ -288,7 +291,7 @@ def filter_dataframe(df, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_w
                     custom_ranges = {
                         '_rel_tightness': (0.0, 0.8),
                         '_chg_percentclose': (-1.0, 3.0),
-                        'Adr': (2.0, _max),
+                        'Adr': (coil_min_adr, _max),
                         '_avgvol_mln': (10.0, _max),
                         '_nr4': (0.0, 3.0),
                         '_nr4_previous': (0.0, 3.0),
@@ -393,19 +396,25 @@ def main():
         vol_bo_max_rwd = st.sidebar.number_input("Max Rel Wk Dist (ADRs from 10w EMA)", value=float(vol_prefs.get('max_rwd', 3.0)), step=0.5, key="vb_rwd")
         st.sidebar.caption(f"Colors: Vol 1-2.5x = light green, 2.5-3.5x = green, 3.5x+ = dark green bold")
     else:
-        vol_bo_min_chg = 2.0; vol_bo_min_vol = 1.5; vol_bo_min_wktight = 1
-        vol_bo_min_adr = 3.0; vol_bo_max_adr = 6.0; vol_bo_max_rwd = 3.0
+        # not shown in this mode — keep the saved values so "Save filter settings" doesn't reset them
+        vol_bo_min_chg = float(vol_prefs.get('min_chg', 2.0)); vol_bo_min_vol = float(vol_prefs.get('min_vol', 1.5))
+        vol_bo_min_wktight = int(vol_prefs.get('min_wktight', 1)); vol_bo_min_adr = float(vol_prefs.get('min_adr', 3.0))
+        vol_bo_max_adr = float(vol_prefs.get('max_adr', 6.0)); vol_bo_max_rwd = float(vol_prefs.get('max_rwd', 3.0))
 
     if scan_mode == "Anticipation":
         st.sidebar.subheader("Coiled Setup Filters")
+        st.sidebar.caption("These also drive Tomorrow's list.")
+        coil_min_adr = st.sidebar.number_input("Min ADR", value=float(coil_prefs.get('min_adr', saved_prefs.get('build_tomorrow', {}).get('min_adr', 3.0))), step=0.5, key="cl_adr")
         coil_min_wktight = st.sidebar.number_input("Min W_TightCloses", value=int(coil_prefs.get('min_wktight', 2)), min_value=0, max_value=5, step=1, key="cl_wt")
         coil_max_reltight = st.sidebar.number_input("Max Rel Tightness", value=float(coil_prefs.get('max_reltight', 0.8)), step=0.1, key="cl_rt")
         coil_max_rwd = st.sidebar.number_input("Max Rel Wk Dist (on 10w EMA)", value=float(coil_prefs.get('max_rwd', 1.0)), step=0.5, key="cl_rwd")
         coil_min_chg = st.sidebar.number_input("Min Chg% (not yet broken out)", value=float(coil_prefs.get('min_chg', -1.0)), step=0.5, key="cl_chg1")
         coil_max_chg = st.sidebar.number_input("Max Chg%", value=float(coil_prefs.get('max_chg', 3.0)), step=0.5, key="cl_chg2")
     else:
-        coil_min_wktight = 2; coil_max_reltight = 0.8; coil_max_rwd = 1.0
-        coil_min_chg = -1.0; coil_max_chg = 3.0
+        coil_min_wktight = int(coil_prefs.get('min_wktight', 2)); coil_max_reltight = float(coil_prefs.get('max_reltight', 0.8))
+        coil_max_rwd = float(coil_prefs.get('max_rwd', 1.0)); coil_min_chg = float(coil_prefs.get('min_chg', -1.0))
+        coil_max_chg = float(coil_prefs.get('max_chg', 3.0))
+        coil_min_adr = float(coil_prefs.get('min_adr', saved_prefs.get('build_tomorrow', {}).get('min_adr', 3.0)))
 
     # ── Save Settings ──
     if st.sidebar.button("Save filter settings", key="save_prefs"):
@@ -413,7 +422,7 @@ def main():
             'vol_breakout': {'min_chg': vol_bo_min_chg, 'min_vol': vol_bo_min_vol, 'min_wktight': vol_bo_min_wktight,
                              'min_adr': vol_bo_min_adr, 'max_adr': vol_bo_max_adr, 'max_rwd': vol_bo_max_rwd},
             'coiled': {'min_wktight': coil_min_wktight, 'max_reltight': coil_max_reltight, 'max_rwd': coil_max_rwd,
-                       'min_chg': coil_min_chg, 'max_chg': coil_max_chg},
+                       'min_chg': coil_min_chg, 'max_chg': coil_max_chg, 'min_adr': coil_min_adr},
             'build_tomorrow': st.session_state.get('bt_cfg', saved_prefs.get('build_tomorrow', {})),
             'breakout_tags': st.session_state.get('bo_cfg', saved_prefs.get('breakout_tags', {})),
         }
@@ -575,7 +584,7 @@ def main():
             fdf = filter_dataframe(ddf, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_wktight,
                                    vol_bo_min_adr, vol_bo_max_adr, vol_bo_max_rwd,
                                    coil_min_wktight, coil_max_reltight, coil_max_rwd,
-                                   coil_min_chg, coil_max_chg)
+                                   coil_min_chg, coil_max_chg, coil_min_adr)
 
             st.caption(f"**{len(fdf)} stocks** after filtering.")
 
@@ -741,7 +750,10 @@ def main():
 
             # ── Daily process: one save per mode ──
             if scan_mode == "Anticipation":
-                render_tomorrow_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG)
+                render_tomorrow_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG,
+                                      shared={'min_adr': coil_min_adr, 'max_reltight': coil_max_reltight,
+                                              'max_rwd': coil_max_rwd, 'min_wktight': coil_min_wktight,
+                                              'min_chg': coil_min_chg, 'max_chg': coil_max_chg})
             else:
                 render_breakout_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG)
 
