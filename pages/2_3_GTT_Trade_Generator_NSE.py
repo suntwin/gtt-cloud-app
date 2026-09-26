@@ -7,7 +7,7 @@ from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_object_d
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
 import os, json, time
 from datetime import datetime
-from gtt_process import MARKETS, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab
+from gtt_process import MARKETS, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab
 
 st.set_page_config(page_title="GTT Trade Generator (NSE)", page_icon="⚡", layout="wide")
 
@@ -741,6 +741,33 @@ def main():
             safe_df = clean_df_for_json(fdf)
             grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%', update_mode=GridUpdateMode.MODEL_CHANGED, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
 
+            # ── Copy Symbols to TradingView — right under the table. No buttons: the copy icon is instant ──
+            sdf = grid_response['data'] if (grid_response is not None and grid_response['data'] is not None
+                                            and not grid_response['data'].empty) else fdf
+            if not sdf.empty and 'Symbol' in sdf.columns:
+                al = sdf['Symbol'].dropna().unique().tolist()
+                _tv = lambda xs: ",".join(f"NSE:{x}" for x in xs)
+                if scan_mode == "Post Breakout":
+                    _bcfg = st.session_state.get('bo_cfg', saved_prefs.get('breakout_tags', {}))
+                    strong, moderate = breakout_batch_lists(st.session_state.gtt_base_df, MARKET_CFG,
+                                                            vol_bo_min_chg, vol_bo_min_vol, _bcfg)
+                    _sv = float((_bcfg or {}).get('strong_min_vol', 3.5))
+                    groups = [(f"Strong BO (≥{_sv:g}x vol)", strong), (f"Moderate BO ({vol_bo_min_vol:g}–{_sv:g}x)", moderate),
+                              ("All in the table", al)]
+                else:
+                    tightest = (sdf.nsmallest(20, '_rel_tightness', keep='first')['Symbol'].dropna().unique().tolist()
+                                if '_rel_tightness' in sdf.columns and len(sdf) > 20 else al)
+                    groups = [("Top 20 tightest", tightest), ("All in the table", al)]
+                with st.container(border=True):
+                    st.markdown("**Copy to TradingView** — hover a list and click its copy icon")
+                    for _col, (_lab, _xs) in zip(st.columns(len(groups)), groups):
+                        with _col:
+                            st.caption(f"{_lab} · {len(_xs)}")
+                            if _xs:
+                                st.code(_tv(_xs), language=None)
+                            else:
+                                st.caption("—")
+
             # ── Save straight from the table: ticked rows → tomorrow's list / watchlist ──
             _sel = grid_response['selected_rows'] if grid_response is not None else None
             if _sel is None: _sel_syms = []
@@ -771,55 +798,6 @@ def main():
                     efl = st.session_state.gtt_scored_df.copy()
                     st.download_button("Download Full Dataset (CSV)", efl.to_csv(index=False), f"gtt_full_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
                     st.caption(f"{len(efl)} rows, {len(efl.columns)} columns")
-
-            # ── Copy to TradingView (grouped by volume strength) ──
-            # ── Copy to TradingView (mode-specific) ──
-            sdf = grid_response['data'] if grid_response and 'data' in grid_response and not grid_response['data'].empty else fdf
-            if not sdf.empty and 'Symbol' in sdf.columns:
-                al = sdf['Symbol'].dropna().unique().tolist(); atv = ",".join([f"nse:{s}" for s in al])
-                st.markdown("---"); st.subheader("Copy Symbols to TradingView")
-                cc1, cc2, cc3 = st.columns(3)
-                if scan_mode == "Post Breakout" and '_vol_ratio' in sdf.columns:
-                    # Same list as the Tag breakouts panel (up ≥ Min Chg% on ≥ Min Vol Ratio), split Strong / Moderate
-                    _bl = st.session_state.get('bo_list')
-                    if _bl is not None and not _bl.empty:
-                        strong = _bl[_bl['Batch'] == 'Strong']['Symbol'].tolist()
-                        moderate = _bl[_bl['Batch'] == 'Moderate']['Symbol'].tolist()
-                    else:
-                        strong, moderate = [], []
-                    stv = ",".join([f"nse:{s}" for s in strong])
-                    mtv = ",".join([f"nse:{s}" for s in moderate])
-                    with cc1:
-                        st.markdown(f"**Strong BO (Vol ≥3.5x)** — `{len(strong)} symbols`")
-                        if strong: st.code(stv, language=None); st.caption(f"Click to copy {len(strong)} symbols.")
-                        else: st.info("No strong breakouts.")
-                    with cc2:
-                        st.markdown(f"**Moderate BO (Vol {vol_bo_min_vol:g}-3.5x)** — `{len(moderate)} symbols`")
-                        if moderate: st.code(mtv, language=None); st.caption(f"Click to copy {len(moderate)} symbols.")
-                        else: st.info("No moderate breakouts.")
-                    with cc3:
-                        st.markdown(f"**All filtered** — `{len(al)} symbols`")
-                        if al:
-                            if st.button("Copy All", key="copy_all"): st.code(atv, language=None)
-                        else: st.info("No symbols in view.")
-                else:
-                    # Anticipation mode: copy by tightness
-                    if '_rel_tightness' in sdf.columns:
-                        tightest = sdf.nsmallest(20, '_rel_tightness', keep='first')['Symbol'].dropna().unique().tolist() if len(sdf) > 20 else al
-                    else:
-                        tightest = al
-                    ttv = ",".join([f"nse:{s}" for s in tightest])
-                    with cc1:
-                        st.markdown(f"**Top 20 Tightest** — `{len(tightest)} symbols`")
-                        if tightest: st.code(ttv, language=None); st.caption(f"Click to copy {len(tightest)} symbols.")
-                        else: st.info("No symbols.")
-                    with cc2:
-                        st.markdown(f"**All filtered** — `{len(al)} symbols`")
-                        if al:
-                            if st.button("Copy All", key="copy_all"): st.code(atv, language=None)
-                        else: st.info("No symbols in view.")
-                    with cc3:
-                        st.write("")  # empty third column for anticipation mode
         else:
             st.info("Click 'Generate GTT Trading Plan' to load data.")
 

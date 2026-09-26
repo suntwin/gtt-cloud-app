@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-27e · Entry Rules tab"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-27f · copy lists under the table"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -463,6 +463,17 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None, today=None):
     bo["Skip"] = False
     bo["Batch"] = np.where(bo["_vol_ratio"].fillna(0) >= cfg["strong_min_vol"], "Strong", "Moderate")
     return bo.sort_values("_vol_ratio", ascending=False).reset_index(drop=True)
+
+
+def breakout_batch_lists(base_df, mcfg, bo_min_chg, bo_min_vol, bo_prefs=None):
+    """(strong, moderate) symbol lists — exactly the Tag breakouts panel's batches, no database needed."""
+    if base_df is None or base_df.empty:
+        return [], []
+    cfg = {**BREAKOUT_DEFAULTS, **(bo_prefs or {}), "bo_min_chg": bo_min_chg, "bo_min_vol": bo_min_vol}
+    bo = find_breakouts(base_df, set(), [], cfg, today=effective_session(base_df, mcfg)[0])
+    if bo.empty:
+        return [], []
+    return bo[bo["Batch"] == "Strong"]["Symbol"].tolist(), bo[bo["Batch"] == "Moderate"]["Symbol"].tolist()
 
 
 def _clean_metrics(r, cols):
