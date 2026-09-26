@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-27b · saved breakouts checked for tightness first"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-27c · colours, saved-check summary, fail-rule fix"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -167,6 +167,87 @@ def add_derived(df):
     return d
 
 
+# ── Colours: same bands as the main scanner grid ──
+def _css(bg, fg="black", bold=False):
+    return f"background-color:{bg};color:{fg}" + (";font-weight:bold" if bold else "")
+
+
+def _c_vol(v):
+    v = _num(v)
+    if not np.isfinite(v) or v <= 0: return ""
+    if v >= 6.5: return _css("#155724", "white", True)
+    if v >= 3.5: return _css("#28a745", "white", True)
+    if v >= 2.5: return _css("#5cb85c", "white", True)
+    if v >= 1.5: return _css("#8ee68e")
+    if v >= 1.0: return _css("#d4edda")
+    if v < 0.5: return _css("#f8d7da", "#721c24")
+    return ""
+
+
+def _c_relwk(v):
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    if v < 1: return _css("#28a745", "white", True)
+    if v < 2: return _css("#8ee68e")
+    if v < 3: return _css("#d4edda")
+    if v < 5: return _css("#fff3cd", "#664d03")
+    return _css("#f8d7da", "#721c24")
+
+
+def _c_madist(v):
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    if v < -6: return _css("#f8d7da", "#721c24", True)
+    a = abs(v)
+    if a < 2: return _css("#28a745", "white", True)
+    if a < 4: return _css("#8ee68e")
+    if a < 6: return _css("#d4edda")
+    return ""
+
+
+def _c_tight(v):
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    if v <= 0.5: return _css("#fff3cd", "#664d03", True)
+    if v <= 1.0: return _css("#fff3cd", "#664d03")
+    return ""
+
+
+def _c_chg(v):
+    v = _num(v)
+    if not np.isfinite(v) or v <= 0: return ""
+    if v >= 8: return _css("#8c008c", "white", True)
+    if v >= 5: return _css("#b44cb4", "white")
+    if v >= 2: return _css("#e6b3e6")
+    return _css("#ffe6ff")
+
+
+SITUATION_COLOURS = {"Saved & tight": _css("#28a745", "white", True), "Saved, not tight yet": _css("#d4edda"),
+                     "Added by you": _css("#e2d9f3", "#3d2a73"), "1 · Buy signal": _css("#155724", "white", True),
+                     "2 · Save (tag it)": _css("#cfe2ff", "#084298"), "3 · Wait": _css("#fff3cd", "#664d03"),
+                     "5 · Remove": _css("#f8d7da", "#721c24", True), "Check chart": _css("#ffe5d0", "#8a4b08")}
+
+
+def _c_rating(v):
+    return {"5★": _css("#28a745", "white", True), "4★": _css("#8ee68e"), "3★": _css("#d4edda")}.get(str(v), "")
+
+
+def style_table(df):
+    """pandas Styler with the scanner's colour bands (works inside st.data_editor)."""
+    cols = set(df.columns)
+    sty = df.style
+    for c, f in [("_vol_ratio", _c_vol), ("_rel_wk_dist", _c_relwk), ("_10madist", _c_madist), ("_20madist", _c_madist),
+                 ("_rel_tightness_today", _c_tight), ("_rel_tightness_prev", _c_tight), ("_chg_percentclose", _c_chg),
+                 ("Rating", _c_rating)]:
+        if c in cols:
+            sty = sty.map(f, subset=[c])
+    if "Label" in cols:
+        sty = sty.map(lambda v: SITUATION_COLOURS.get(str(v), ""), subset=["Label"])
+    fmt = {c: "{:.1f}" for c in ["_chg_percentclose", "_vol_ratio", "Adr", "_rel_wk_dist", "_10madist", "_20madist"] if c in cols}
+    fmt.update({c: "{:.2f}" for c in ["_rel_tightness_today", "_rel_tightness_prev"] if c in cols})
+    return sty.format(fmt, na_rep="")
+
+
 def _multi_ok(st):
     """True if this Streamlit has the pick-list (multiselect) table column."""
     return hasattr(st.column_config, "MultiselectColumn")
@@ -205,12 +286,14 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     """
     cfg = {**TOMORROW_DEFAULTS, **(cfg or {})}
     today = today or date.today()
-    d = add_derived(scan_df).drop_duplicates("Symbol").set_index("Symbol", drop=False)
+    d = add_derived(scan_df)
+    d["Symbol"] = d["Symbol"].astype(str).str.strip().str.upper()
+    d = d.drop_duplicates("Symbol").set_index("Symbol", drop=False)
 
     # one entry per symbol (a stock can sit under two tags; use the most recent trigger)
     watch = {}
     for r in sorted(watch_rows or [], key=lambda r: str(r.get("trigger_date") or r.get("added_date") or "")):
-        watch[r["symbol"]] = r
+        watch[str(r["symbol"]).strip().upper()] = r
     d["On_List"] = d["Symbol"].isin(yesterday_list)
     d["Saved"] = d["Symbol"].isin(watch.keys())
     all_tags, stars = {}, {}
@@ -260,7 +343,8 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
         radr = _num(r["Adr"], 0)
         d10, d20 = abs(_num(r["_10madist"], 99)), abs(_num(r["_20madist"], 99))
         rt = _num(r["_rel_tightness_today"], 99)
-        if np.isfinite(prev_close) and np.isfinite(last) and last < prev_close:
+        saved_on_bo = _num(row.get("chg_pct"), 0) >= cfg["bo_min_chg"]
+        if saved_on_bo and rt > cfg["max_reltight"] and np.isfinite(prev_close) and np.isfinite(last) and last < prev_close:
             d.at[sym, "Label"], d.at[sym, "Reason"] = "5_REMOVE", f"Failed: closed {last:g} below pre-breakout close {prev_close:g}"
             updates.append({"id": wid, "symbol": sym, "action": "remove", "reason": "failed"})
             continue
@@ -735,12 +819,20 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
 
     show = ["Keep", "CONT", "Label", "Symbol", "Reason", "Tag", "Rank", "Scan_Count", "_chg_percentclose", "_vol_ratio",
             "Adr", "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS", "Sector"]
-    view = lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]]
+    saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
+    if len(saved_rows):
+        grp = {}
+        for _, r_ in saved_rows.iterrows():
+            grp.setdefault(LABEL_NAMES.get(r_["Label"], r_["Label"]), []).append(r_["Symbol"])
+        st.markdown(f"**Saved breakouts checked: {len(saved_rows)}** — " + " · ".join(
+            f"{k} {len(v)}: {', '.join(v[:15])}{'…' if len(v) > 15 else ''}" for k, v in grp.items()))
+    view = lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]].copy()
+    view["Label"] = view["Label"].map(lambda x: LABEL_NAMES.get(x, x))
     pre = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
     st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
     form = st.form("bt_form", border=False)
     edited = form.data_editor(
-        view, hide_index=True, height=480, key="bt_editor",
+        style_table(view), hide_index=True, height=480, key="bt_editor",
         disabled=[c for c in view.columns if c not in ("Keep", "CONT")],
         column_config={
             "Keep": st.column_config.CheckboxColumn("Tomorrow", help="On tomorrow's list"),
@@ -870,7 +962,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     else:
         cfgcols["CONTINUATION"] = st.column_config.CheckboxColumn("CONT")
     with st.form(f"bo_form_{pick}", border=False):
-        edited = st.data_editor(view, hide_index=True, height=440, key=ekey,
+        edited = st.data_editor(style_table(view), hide_index=True, height=440, key=ekey,
                                 disabled=[c for c in view.columns if c not in ["Skip"] + tagcols + ["Rating"]],
                                 column_config=cfgcols)
         submitted = st.form_submit_button(f"Save {pick.lower()} batch to watchlist  ·  {sd}", type="primary")
