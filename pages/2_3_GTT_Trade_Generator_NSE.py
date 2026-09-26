@@ -246,8 +246,8 @@ def filter_dataframe(df, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_w
         if scan_mode == "Post Breakout":
             df2 = ['_rel_tightness', '_chg_percentclose', 'Adr', '_avgvol_mln', '_vol_ratio']
         else:
-            df2 = [tc, 'Sector_Percentile', 'Adr', '_avgvol_mln']
-        to_filter = st.multiselect("Filter dataframe on", df.columns, default=df2)
+            df2 = ['_rel_tightness', 'Sector_Percentile', 'Adr', '_avgvol_mln']   # = _nr4 / ADR in Anticipation
+        to_filter = st.multiselect("Filter dataframe on", df.columns, default=[c for c in df2 if c in df.columns])
         for column in to_filter:
             cs = df[column]; hn = cs.isna().any()
             if _is_categorical(cs) or cs.dropna().nunique() < 10:
@@ -289,7 +289,7 @@ def filter_dataframe(df, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_w
                     }
                 else:
                     custom_ranges = {
-                        '_rel_tightness': (0.0, 0.8),
+                        '_rel_tightness': (0.0, coil_max_reltight),   # same as the sidebar's Max Rel Tightness
                         '_chg_percentclose': (-1.0, 3.0),
                         'Adr': (coil_min_adr, _max),
                         '_avgvol_mln': (10.0, _max),
