@@ -32,9 +32,10 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-25j · per-stock update time"   # shown on the page so you can tell which code is running
-SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "CONTINUATION"]
+PROCESS_VERSION = "v2026-09-27 · ATH tag, pick-list tags, save in one go"   # shown on the page so you can tell which code is running
+SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
+               "ATH": "All-time-high breakout",
                "CONTINUATION": "Continuation — second leg after an earlier breakout",
                "UNTAGGED": "Untagged (old saved list)"}
 NO_TAG = "—"
@@ -164,6 +165,15 @@ def add_derived(df):
     d["Missing_Weekly"] = d["W_Dist10wMA"].isna() | d["W_TightCloses_10w"].isna()
     d["Data_Date"] = parse_ts_dates(d["Timestamp"]) if "Timestamp" in d.columns else None
     return d
+
+
+def _multi_ok(st):
+    """True if this Streamlit has the pick-list (multiselect) table column."""
+    return hasattr(st.column_config, "MultiselectColumn")
+
+
+def _tags_column(st, label="Tags", help_=None, extra=()):
+    return st.column_config.MultiselectColumn(label, options=list(SETUP_TYPES) + list(extra), help=help_, width="medium")
 
 
 def tags_of(row):
@@ -720,7 +730,10 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     show = ["Keep", "CONT", "Label", "Symbol", "Reason", "Tag", "Rank", "Scan_Count", "_chg_percentclose", "_vol_ratio",
             "Adr", "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS", "Sector"]
     view = lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]]
-    edited = st.data_editor(
+    pre = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
+    st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
+    form = st.form("bt_form", border=False)
+    edited = form.data_editor(
         view, hide_index=True, height=480, key="bt_editor",
         disabled=[c for c in view.columns if c not in ("Keep", "CONT")],
         column_config={
@@ -735,35 +748,41 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
             "_avgvol_mln": st.column_config.NumberColumn("Avg value", format="%.0f"),
         })
+    removes = [u for u in updates if u["action"] == "remove"]
+    ok = []
+    if removes:
+        untagged = {r["symbol"] for r in watch if "UNTAGGED" in tags_of(r)}
+        ok = form.multiselect("Remove these saved breakouts when you save:", [u["symbol"] for u in removes],
+                              default=[u["symbol"] for u in removes if u["symbol"] not in untagged], key="bt_rm",
+                              help="Old UNTAGGED stocks aren't pre-selected — retag or remove them in the Watchlist tab.")
+    submitted = form.form_submit_button(f"Save tomorrow's list  ({sd})", type="primary")
+    if st.session_state.get("bt_msg"):
+        msg, codes = st.session_state.pop("bt_msg")
+        st.success(msg)
+        if codes:
+            st.code(codes, language=None)
+    if not submitted:
+        return
+    for u in removes:
+        u["confirmed"] = u["symbol"] in ok
     lab = lab.set_index("Symbol", drop=False)
     lab.loc[edited["Symbol"], "Keep"] = edited["Keep"].astype(bool).values
     lab.loc[edited["Symbol"], "CONT"] = edited["CONT"].fillna(False).astype(bool).values
     lab = lab.reset_index(drop=True)
 
-    removes = [u for u in updates if u["action"] == "remove"]
-    if removes:
-        untagged = {r["symbol"] for r in watch if "UNTAGGED" in tags_of(r)}
-        ok = st.multiselect("Remove these saved breakouts when you save:", [u["symbol"] for u in removes],
-                            default=[u["symbol"] for u in removes if u["symbol"] not in untagged], key="bt_rm",
-                            help="Old UNTAGGED stocks aren't pre-selected — retag or remove them in the Watchlist tab.")
-        for u in removes:
-            u["confirmed"] = u["symbol"] in ok
-
     keep = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
-    st.markdown(f"**Tomorrow's list — {len(keep)} names**")
-    if keep:
-        st.code(",".join(tv_symbol(s, mcfg) for s in keep), language=None)
-    if len(keep) > 15:
-        st.warning("More than 15 names. The plan is the best 10 or so.")
-    if st.button(f"Save tomorrow's list  ({sd})", type="primary", key="bt_save"):
-        try:
-            n, r = save_tomorrow(sb, lab, updates, sd, mcfg)
-            cont = lab[lab["CONT"] == True]["Symbol"].tolist()  # noqa: E712
-            c_added = save_symbols_to_watchlist(sb, cont, "CONTINUATION", base_df, sd, mcfg, "ANTICIPATION")[0] if cont else 0
-            st.success(f"Saved {n} names for tomorrow and a snapshot of {len(lab)} stocks. "
-                       f"Saved {c_added} as CONTINUATION. Removed {r} saved breakouts.")
-        except Exception as ex:
-            st.error(f"Save failed: {ex}")
+    try:
+        n, r = save_tomorrow(sb, lab, updates, sd, mcfg)
+        cont = lab[lab["CONT"] == True]["Symbol"].tolist()  # noqa: E712
+        c_added = save_symbols_to_watchlist(sb, cont, "CONTINUATION", base_df, sd, mcfg, "ANTICIPATION")[0] if cont else 0
+        warn = " More than 15 names — the plan is the best 10 or so." if len(keep) > 15 else ""
+        st.session_state["bt_msg"] = (f"Saved {n} names for tomorrow and a snapshot of {len(lab)} stocks. "
+                                      f"Saved {c_added} as CONTINUATION. Removed {r} saved breakouts.{warn}",
+                                      ",".join(tv_symbol(s_, mcfg) for s_ in keep))
+        st.session_state.pop("bt_editor", None)
+        st.rerun()
+    except Exception as ex:
+        st.error(f"Save failed: {ex}")
 
 
 def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
@@ -812,50 +831,64 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     if part.empty:
         st.info("Nothing in this batch."); return
 
-    show = ["Skip"] + SETUP_TYPES + ["Rating", "Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose", "_vol_ratio",
-                          "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist", "Scan_Count", "Avg_RS", "Sector"]
-    view = part[[c for c in show if c in part.columns]].reset_index(drop=True)
-    ekey = f"bo_editor_{pick}"
-    edited = st.data_editor(
-        view, hide_index=True, height=440, key=ekey,
-        disabled=[c for c in view.columns if c not in ["Skip"] + SETUP_TYPES + ["Rating"]],
-        column_config={
-            "Skip": st.column_config.CheckboxColumn("Skip", help="Don't save this stock, whatever is ticked"),
-            "CONTINUATION": st.column_config.CheckboxColumn("CONT", help="Continuation — second leg after an earlier breakout"),
-            "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True,
-                                                       help="Your grade after the chart check: 3★, 4★, 5★"),
-            "EP": st.column_config.CheckboxColumn("EP", help="Episodic pivot"),
-            "TIGHT_BO": st.column_config.CheckboxColumn("TIGHT_BO", help="Breakout from a tight range, 10 & 20 rising"),
-            "WEMA_BO": st.column_config.CheckboxColumn("WEMA_BO", help="Breakout from the 10-week EMA"),
-            "Suggested": st.column_config.TextColumn("My suggestion"),
-            "Why": st.column_config.TextColumn("Why", width="large"),
-            "In_Watchlist": st.column_config.TextColumn("Already saved as"),
-            "On_List": st.column_config.CheckboxColumn("Was on list"),
-            "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
-            "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
-            "_rel_tightness_prev": st.column_config.NumberColumn("Rel tight (prev)", format="%.2f"),
-            "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
-            "_10madist": st.column_config.NumberColumn("10MA %", format="%.1f"),
-            "_20madist": st.column_config.NumberColumn("20MA %", format="%.1f"),
-        })
+    multi = _multi_ok(st)
     part = part.reset_index(drop=True)
-    for t in SETUP_TYPES:
-        part[t] = edited[t].fillna(False).astype(bool).values
-    part["Rating"] = edited["Rating"].fillna("—").values
-    part["Skip"] = edited["Skip"].fillna(False).astype(bool).values
-    live = part[~part["Skip"]]
-    counts = {t: int(live[t].sum()) for t in SETUP_TYPES}
-    n = sum(counts.values())
-    st.caption("To save: " + ", ".join(f"{t} {c}" for t, c in counts.items()) +
-               f" · {int(live[SETUP_TYPES].any(axis=1).sum())} stocks · {int(part['Skip'].sum())} skipped")
-    if st.button(f"Save {pick.lower()} batch to watchlist ({n} tags)  ·  {sd}", type="primary", key=f"bo_save_{pick}"):
+    tagcols = ["Tags"] if multi else list(SETUP_TYPES)
+    if multi:
+        part["Tags"] = [[t for t in SETUP_TYPES if bool(r[t])] for _, r in part.iterrows()]
+    show = ["Skip"] + tagcols + ["Rating", "Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
+                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist",
+                                 "Scan_Count", "Avg_RS", "Sector"]
+    view = part[[c for c in show if c in part.columns]]
+    pre = {t: int(part[t].sum()) for t in SETUP_TYPES}
+    st.caption("Pre-filled from the scan: " + ", ".join(f"{t} {c}" for t, c in pre.items() if c) +
+               ". Edit freely — nothing is sent until you press Save.")
+    ekey = f"bo_editor_{pick}"
+    cfgcols = {
+        "Skip": st.column_config.CheckboxColumn("Skip", help="Don't save this stock, whatever is tagged"),
+        "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True,
+                                                   help="Your grade after the chart check: 3★, 4★, 5★"),
+        "Suggested": st.column_config.TextColumn("My suggestion"),
+        "Why": st.column_config.TextColumn("Why", width="large"),
+        "In_Watchlist": st.column_config.TextColumn("Already saved as"),
+        "On_List": st.column_config.CheckboxColumn("Was on list"),
+        "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
+        "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
+        "_rel_tightness_prev": st.column_config.NumberColumn("Rel tight (prev)", format="%.2f"),
+        "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
+        "_10madist": st.column_config.NumberColumn("10MA %", format="%.1f"),
+        "_20madist": st.column_config.NumberColumn("20MA %", format="%.1f"),
+    }
+    if multi:
+        cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more: EP, TIGHT_BO, WEMA_BO, ATH, CONTINUATION")
+    else:
+        cfgcols["CONTINUATION"] = st.column_config.CheckboxColumn("CONT")
+    with st.form(f"bo_form_{pick}", border=False):
+        edited = st.data_editor(view, hide_index=True, height=440, key=ekey,
+                                disabled=[c for c in view.columns if c not in ["Skip"] + tagcols + ["Rating"]],
+                                column_config=cfgcols)
+        submitted = st.form_submit_button(f"Save {pick.lower()} batch to watchlist  ·  {sd}", type="primary")
+    if submitted:
+        if multi:
+            picked = edited["Tags"].map(lambda l: list(l) if isinstance(l, (list, tuple)) else [])
+            for t in SETUP_TYPES:
+                part[t] = picked.map(lambda l, t=t: t in l).values
+        else:
+            for t in SETUP_TYPES:
+                part[t] = edited[t].fillna(False).astype(bool).values
+        part["Rating"] = edited["Rating"].fillna("—").values
+        part["Skip"] = edited["Skip"].fillna(False).astype(bool).values
         try:
             a, t = save_breakouts(sb, part, sd, mcfg)
-            st.session_state["bo_msg"] = f"{pick} batch: saved {a} tags to the watchlist; {t} breakouts recorded."
+            live = part[~part["Skip"]]
+            st.session_state["bo_msg"] = (f"{pick} batch: saved {a} tags to the watchlist "
+                                          f"({int(live[SETUP_TYPES].any(axis=1).sum())} stocks, "
+                                          f"{int(part['Skip'].sum())} skipped); {t} breakouts recorded.")
             st.session_state.pop(ekey, None)
             st.rerun()
         except Exception as ex:
             st.error(f"Save failed: {ex}")
+
 
 def render_watchlist_tab(st, sb, base_df, mcfg):
     """Working watchlist: generate lists, update entries, clean up, history."""
@@ -913,11 +946,19 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         for c in ("last_trigger_date",):
             if c not in wdf.columns:
                 wdf[c] = None
+        multi = _multi_ok(st)
         v = wdf[["id", "symbol", "Rating", "trigger_date", "last_trigger_date", "trigger_close", "prev_close", "vol_ratio",
                  "last_seen", "last_status", "tags"]].copy()
-        for t in SETUP_TYPES:
-            v.insert(2 + SETUP_TYPES.index(t), t, wdf["_tags"].map(lambda ts, t=t: t in ts).values)
-        v.insert(2, "UNTAGGED", wdf["_tags"].map(lambda ts: "UNTAGGED" in ts).values)
+        has_untagged = any("UNTAGGED" in ts for ts in wdf["_tags"])
+        if multi:
+            v.insert(2, "Tags", [list(ts) for ts in wdf["_tags"]])
+            tagcols = ["Tags"]
+        else:
+            for t in SETUP_TYPES:
+                v.insert(2 + SETUP_TYPES.index(t), t, wdf["_tags"].map(lambda ts, t=t: t in ts).values)
+            if has_untagged:
+                v.insert(2, "UNTAGGED", wdf["_tags"].map(lambda ts: "UNTAGGED" in ts).values)
+            tagcols = list(SETUP_TYPES)
         v["age"] = v["last_trigger_date"].fillna(v["trigger_date"]).fillna(wdf["added_date"]).map(
             lambda s: (date.today() - pd.to_datetime(s).date()).days if s else None)
         if live is not None:
@@ -928,55 +969,49 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         v["tags"] = v["tags"].map(lambda t: ", ".join(t) if isinstance(t, list) else "")
         v.insert(0, "Action", "keep")
         v = v.assign(_r=wdf["rating"].fillna(0).values).sort_values(["_r", "symbol"], ascending=[False, True]).drop(columns="_r")
-        if not v["UNTAGGED"].any():
-            v = v.drop(columns="UNTAGGED")
-        editable = ["Action", "Rating"] + SETUP_TYPES
-        ed = st.data_editor(
-            v, hide_index=True, height=420, key="wl_editor",
-            disabled=[c for c in v.columns if c not in editable],
-            column_config={
-                "id": None,
-                "Action": st.column_config.SelectboxColumn("Action", options=["keep", "traded", "remove"], required=True),
-                "UNTAGGED": st.column_config.CheckboxColumn("Untagged", help="Old saved stock — tick its real tag(s)"),
-                "CONTINUATION": st.column_config.CheckboxColumn("CONT"),
-                "last_trigger_date": "Latest BO",
-                "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True),
-                "trigger_date": "Breakout day", "trigger_close": "BO close", "prev_close": "Fail level",
-                "vol_ratio": st.column_config.NumberColumn("BO vol x", format="%.1f"),
-            })
-        changes = []
-        orig = v.set_index("id")
-        tagset = lambda r: [t for t in SETUP_TYPES if bool(r[t])]
-        for _, r in ed.iterrows():
-            o = orig.loc[r["id"]]
-            if r["Action"] != "keep" or tagset(r) != tagset(o) or r["Rating"] != o["Rating"]:
-                changes.append(r)
-        st.caption("One row per stock. Tick/untick its tags, set the rating, or mark it traded / remove, then Apply.")
-        # everything in the table (best rating first), respecting the "Minimum rating" choice above
-        keep_rows = ed[ed["Action"] == "keep"]
-        rmap = dict(zip(wdf["symbol"], wdf["rating"].fillna(0)))
-        allsyms = [s_ for s_ in keep_rows["symbol"].tolist() if rmap.get(s_, 0) >= min_n]
-        exmap = dict(zip(wdf["symbol"], wdf["exchange"]))
-        b1, b2, _ = st.columns([1, 1.6, 4])
-        if b2.button(f"Copy all for TradingView ({len(allsyms)})", key="wl_copy_all", disabled=not allsyms,
-                     help="All saved breakouts in the table, best rating first" + (f", {min_r} only" if min_n else "")):
-            st.session_state["wl_copy_all_on"] = True
-        if st.session_state.get("wl_copy_all_on") and allsyms:
-            st.code(",".join(tv_symbol(s_, mcfg, exmap.get(s_)) for s_ in allsyms), language=None)
-            st.caption(f"{len(allsyms)} symbols — click the copy icon, then paste into a TradingView watchlist.")
-        if b1.button(f"Apply changes ({len(changes)})", key="wl_apply", disabled=not changes):
+        editable = ["Action", "Rating"] + tagcols
+        cfgcols = {
+            "id": None,
+            "Action": st.column_config.SelectboxColumn("Action", options=["keep", "traded", "remove"], required=True),
+            "UNTAGGED": st.column_config.CheckboxColumn("Untagged", help="Old saved stock — tick its real tag(s)"),
+            "CONTINUATION": st.column_config.CheckboxColumn("CONT"),
+            "last_trigger_date": "Latest BO",
+            "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True),
+            "trigger_date": "Breakout day", "trigger_close": "BO close", "prev_close": "Fail level",
+            "vol_ratio": st.column_config.NumberColumn("BO vol x", format="%.1f"),
+            "tags": "Notes",
+        }
+        if multi:
+            cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more", extra=("UNTAGGED",) if has_untagged else ())
+        st.caption("One row per stock. Change tags, rating or Action, then press Apply — nothing is sent until then.")
+        with st.form("wl_form", border=False):
+            ed = st.data_editor(v, hide_index=True, height=420, key="wl_editor",
+                                disabled=[c for c in v.columns if c not in editable], column_config=cfgcols)
+            applied = st.form_submit_button("Apply changes")
+
+        def tagset(r):
+            if multi:
+                l = r["Tags"] if isinstance(r["Tags"], (list, tuple)) else []
+                return [t for t in SETUP_TYPES if t in l]
+            return [t for t in SETUP_TYPES if bool(r[t])]
+
+        if applied:
+            orig = v.set_index("id")
+            changes = [r for _, r in ed.iterrows()
+                       if r["Action"] != "keep" or tagset(r) != tagset(orig.loc[r["id"]]) or r["Rating"] != orig.loc[r["id"], "Rating"]]
             errs = []
             for r in changes:
                 try:
                     if r["Action"] in ("traded", "remove"):
                         sb.rpc("remove_from_watchlist", {"p_id": int(r["id"]), "p_reason": "manual" if r["Action"] == "remove" else "traded",
                                                          "p_status": "traded" if r["Action"] == "traded" else "removed"}).execute()
-                    if r["Action"] == "keep" and r["Rating"] != orig.loc[r["id"], "Rating"]:
+                        continue
+                    if r["Rating"] != orig.loc[r["id"], "Rating"]:
                         sb.table("watchlist").update({"rating": rating_int(r["Rating"])}).eq("id", int(r["id"])).execute()
                     new_t, old_t = tagset(r), tagset(orig.loc[r["id"]])
-                    if r["Action"] == "keep" and new_t != old_t:
+                    if new_t != old_t:
                         if not new_t:
-                            raise ValueError("no tag ticked — tick at least one, or set Action to remove")
+                            raise ValueError("no tag picked — pick at least one, or set Action to remove")
                         sb.table("watchlist").update({"setup_types": new_t}).eq("id", int(r["id"])).execute()
                         sb.table("watchlist_events").insert({"watchlist_id": int(r["id"]), "event": "retagged",
                                                              "detail": f"{'+'.join(old_t) or 'UNTAGGED'} → {'+'.join(new_t)}"}).execute()
@@ -984,8 +1019,25 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
                     errs.append(f"{r['symbol']}: {ex}")
             if errs:
                 st.error("; ".join(errs))
+            elif changes:
+                st.session_state["wl_msg"] = f"Updated {len(changes)} stock(s)."
+                st.session_state.pop("wl_editor", None)
+                st.rerun()
             else:
-                st.success("Updated."); st.rerun()
+                st.info("No changes.")
+        if st.session_state.get("wl_msg"):
+            st.success(st.session_state.pop("wl_msg"))
+
+        # everything saved (best rating first), respecting the "Minimum rating" choice above
+        allsyms = [s_ for s_, r_ in sorted(zip(wdf["symbol"], wdf["rating"].fillna(0)), key=lambda x: (-x[1], x[0]))
+                   if r_ >= min_n]
+        exmap = dict(zip(wdf["symbol"], wdf["exchange"]))
+        if st.button(f"Copy all for TradingView ({len(allsyms)})", key="wl_copy_all", disabled=not allsyms,
+                     help="All saved breakouts, best rating first" + (f", {min_r} only" if min_n else "")):
+            st.session_state["wl_copy_all_on"] = True
+        if st.session_state.get("wl_copy_all_on") and allsyms:
+            st.code(",".join(tv_symbol(s_, mcfg, exmap.get(s_)) for s_ in allsyms), language=None)
+            st.caption(f"{len(allsyms)} symbols — click the copy icon, then paste into a TradingView watchlist.")
 
     # ── 3. Add manually ──
     with st.container(border=True):
