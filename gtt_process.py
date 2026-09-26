@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-27 · ATH tag, pick-list tags, save in one go"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-27b · saved breakouts checked for tightness first"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -73,9 +73,9 @@ BREAKOUT_DEFAULTS = {
 }
 CLEANUP_DEFAULTS = {"max_age_days": 30, "unseen_days": 10}
 
-LIST_LABELS = ["ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "4_RESETUP", "5_REMOVE", "CANDIDATE", "CHECK", "SCANNED"]
-LABEL_NAMES = {"ADDED": "Added by you", "1_BUY_SIGNAL": "1 · Buy signal", "2_SAVE": "2 · Save (tag it)", "3_WAIT": "3 · Wait",
-               "4_RESETUP": "4 · Re-setup", "5_REMOVE": "5 · Remove", "CANDIDATE": "New candidate",
+LIST_LABELS = ["4_RESETUP", "SAVED_WAIT", "ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "5_REMOVE", "CANDIDATE", "CHECK", "SCANNED"]
+LABEL_NAMES = {"4_RESETUP": "Saved & tight", "SAVED_WAIT": "Saved, not tight yet", "ADDED": "Added by you", "1_BUY_SIGNAL": "1 · Buy signal", "2_SAVE": "2 · Save (tag it)", "3_WAIT": "3 · Wait",
+               "5_REMOVE": "5 · Remove", "CANDIDATE": "New candidate",
                "CHECK": "Check chart"}
 TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's list
 
@@ -223,6 +223,7 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     d["Label"] = "SCANNED"
     d["Reason"] = ""
     d["CONT"] = False
+    d["Rating_n"] = 0.0
 
     chg = d["_chg_percentclose"].fillna(0)
     vol = d["_vol_ratio"].fillna(0)
@@ -263,22 +264,25 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
             d.at[sym, "Label"], d.at[sym, "Reason"] = "5_REMOVE", f"Failed: closed {last:g} below pre-breakout close {prev_close:g}"
             updates.append({"id": wid, "symbol": sym, "action": "remove", "reason": "failed"})
             continue
-        near_bo = (not np.isfinite(bo_close)) or (
-            np.isfinite(last) and bo_close * (1 - radr / 100) <= last <= bo_close * (1 + 2 * radr / 100))
-        if min(d10, d20) <= cfg["pullback_band"]:
-            which = "10" if d10 <= d20 else "20"
-            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"{'+'.join(tags_of(row))}: pulled back to {which} MA ({min(d10, d20):.1f}% away)"
-        elif rt <= cfg["max_reltight"] and near_bo:
-            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"Continuation setup ({'+'.join(tags_of(row))}): tight near breakout level (rel tight {rt:.2f})"
+        tags_txt = "+".join(tags_of(row))
+        since = f", {((last / bo_close) - 1) * 100:+.0f}% since breakout" if np.isfinite(bo_close) and bo_close and np.isfinite(last) else ""
+        d.at[sym, "Rating_n"] = _num(row.get("rating"), 0)
+        # 1st priority: the same tightness rule as the Anticipation scan, wherever the price is (catches flags / HTFs).
+        # Re-checked every evening, so a stock that keeps getting tighter keeps coming up.
+        if rt <= cfg["max_reltight"]:
+            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"{tags_txt}: tight (rel tight {rt:.2f}){since}"
             if "CONTINUATION" not in all_tags.get(sym, []):
                 d.at[sym, "CONT"] = True
+        elif min(d10, d20) <= cfg["pullback_band"]:
+            which = "10" if d10 <= d20 else "20"
+            d.at[sym, "Label"], d.at[sym, "Reason"] = "4_RESETUP", f"{tags_txt}: pulled back to {which} MA ({min(d10, d20):.1f}% away){since}"
         else:
             age = _age_days(row, today)
             if age is not None and age >= cfg["stale_days"]:
                 d.at[sym, "Label"], d.at[sym, "Reason"] = "5_REMOVE", f"Stale: {age} days, no re-setup"
                 updates.append({"id": wid, "symbol": sym, "action": "remove", "reason": "stale"})
                 continue
-            d.at[sym, "Reason"] = f"{'+'.join(tags_of(row))}: saved, not set up yet"
+            d.at[sym, "Label"], d.at[sym, "Reason"] = "SAVED_WAIT", f"{tags_txt}: not tight yet (rel tight {rt:.2f}){since}"
         updates.append({"id": wid, "symbol": sym, "action": "seen"})
 
     # New tight candidates
@@ -318,7 +322,9 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     d["Keep"] = d["Label"].isin(TOMORROW_LABELS) | (cm & (d["Rank"] <= cfg["list_size"]))
     order = {k: i for i, k in enumerate(LIST_LABELS)}
     d["_o"] = d["Label"].map(order)
-    d = d.sort_values(["_o", "Rank"], na_position="last").drop(columns="_o").reset_index(drop=True)
+    d["_rt"] = d["_rel_tightness_today"].fillna(99)
+    d = d.sort_values(["_o", "Rating_n", "_rt", "Rank"], ascending=[True, False, True, True],
+                      na_position="last").drop(columns=["_o", "_rt"]).reset_index(drop=True)
     return d, updates
 
 
