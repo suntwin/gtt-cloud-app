@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-27d · one breakout definition, plain-English rules"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-27e · Entry Rules tab"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1229,3 +1229,74 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
                 st.dataframe(hd.drop(columns="metrics").sort_values(["list", "symbol"]), hide_index=True)
             else:
                 st.caption("Nothing labelled that day.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Entry rules — reference tab (the swing-trading guardrails)
+# ════════════════════════════════════════════════════════════════════════════
+PLAYBOOK_URL = "https://claude.ai/code/artifact/d4a3eba7-800e-46a9-8d83-1145b008255b"
+
+
+def render_rules_tab(st, mcfg):
+    st.subheader("Entry rules · swing trades only")
+    st.error("**I am a swing trader.** Small timeframes decide *when* I enter. The daily chart decides *what* I buy, "
+             "*whether* I hold, and *when* I sell. Once I'm filled, it's a swing trade.")
+
+    st.markdown("""
+#### Swing, not intraday
+| Timeframe | Its only job |
+| --- | --- |
+| **Daily chart** | The setup, the tag, the rating, tomorrow's list, the stop after day 1, the exit (close below the 10/20 MA) |
+| **1 / 5-minute chart** | The entry trigger on the day — nothing else |
+
+- **The only intraday exit is my stop** (low of the day). I don't sell because a 5-minute candle looks weak.
+- **No profit-taking on day 1 or 2.** The first partial sale comes around days 3–5.
+- **No breakeven stop before that partial sale.** Normal day-2 pullbacks would shake me out.
+- **No new ideas during the session.** If it wasn't on tomorrow's list and it isn't an EP, I save it for later.
+- **After the fill, close the 1-minute chart.** Stop and alerts are set; the daily chart does the rest.
+""")
+
+    st.markdown("""
+#### Before I press buy
+1. It's **on tomorrow's list** (or it's an EP under my EP rule).
+2. Price is **above the trigger**: the higher of the level (range / day-1 / tight-day / wick high) and the opening-range high.
+3. **Volume is on pace** for well above normal, for the time of day.
+4. **Stop = low of the day, within ~1 ADR** of my entry. Wider → I'm late: skip, or starter size.
+5. **Size from the stop:** shares = (account × 1%) ÷ (entry − stop), within my max position %.
+6. **No more than 2–3 new trades today**, and not 3 in the same sector.
+7. **Market isn't weak** (index above its 10/20 MA).
+""")
+
+    st.markdown("""
+#### The entries
+| Entry | When | Trigger | Stop |
+| --- | --- | --- | --- |
+| **Day-1 breakout** | Tight range on my list breaks out | Higher of the range's highest high and the 1/5-min opening-range high | Low of the day |
+| **Day-2 follow-through** | I missed day 1, and day 1 **closed strong** | Day-2 opening-range high, and above day 1's high if it opened below it | Day 2's low |
+| **Day-3+ continuation** | Day 2 (or several days) went **tight** after the breakout — also flags and high tight flags | Break of the **latest tight day's high** | Low of the day, or the tight day's low |
+| **After a wick day** | Big volume but a long upper wick | Break of the tight days under the wick, or of the wick high — **not** the day-2 opening-range high | Low of the day |
+| **Pullback** | Saved breakout pulls back to the 10/20 MA and holds | Reclaim of the bounce day's high | Low of the day |
+| **EP** (only if I've adopted the rule) | News gap on huge volume, not on my list | Opening-range high (first 30–60 min) | Low of the day |
+
+**Skip day 2** if it gaps more than ~1 ADR above day 1's close. **No trade** if it falls back into the base or below day 1's low.
+""")
+
+    st.markdown("""
+#### Never an entry
+- Not on the list and not an EP → **save it**, buy its next setup.
+- Stop more than ~1 ADR away, or gapped more than 1 ADR → **late**.
+- Broke the level on thin volume.
+- Day 1 closed weak, back near or inside the range → failed breakout.
+- Adding to a loser, or **more than 1% risk because I really like it** or missed it before.
+""")
+
+    st.markdown("""
+#### After the entry (daily chart)
+1. **Entry day → day 5:** stop stays at the entry day's low. The close decides: a close back inside the range is a failed breakout — sell into the close or next open.
+2. **Days 3–5, if it's working:** sell ⅓–½, move the rest to breakeven.
+3. **Then:** trail with the 10-day MA (20 for slower movers). Sell on a **daily close** below it.
+4. **Adding:** only at a new setup, sized from its own stop, only if the first position is in profit.
+
+Most breakouts don't rip. Small losses are the cost; a few winners run for weeks.
+""")
+    st.caption(f"Full detail and worked examples: [Breakout Entry Playbook]({PLAYBOOK_URL})")

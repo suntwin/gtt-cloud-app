@@ -7,7 +7,7 @@ from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_object_d
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
 import os, json, time
 from datetime import datetime
-from gtt_process import MARKETS, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab
+from gtt_process import MARKETS, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab
 
 st.set_page_config(page_title="GTT Trade Generator (NSE)", page_icon="⚡", layout="wide")
 
@@ -519,7 +519,7 @@ def main():
             else:
                 st.error("Failed to retrieve base 1M scan data."); st.session_state.gtt_base_df = None
 
-    tab1, tab2, tab3 = st.tabs(["GTT Scanner", "Market Themes & Leaders", "Watchlist"])
+    tab1, tab2, tab3, tab4 = st.tabs(["GTT Scanner", "Market Themes & Leaders", "Watchlist", "Entry Rules"])
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 1: SCANNER (NO SCORING — just computed columns + filters)
@@ -896,6 +896,9 @@ def main():
     # ════════════════════════════════════════════════════════════════════
     with tab3:
         render_watchlist_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
+
+    with tab4:
+        render_rules_tab(st, MARKET_CFG)
 
 if __name__ == "__main__":
     main()
