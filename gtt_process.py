@@ -33,7 +33,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-09-27g · USA page on the same process"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-27h · US tickers without exchange prefix"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -121,8 +121,9 @@ def _num(x, default=np.nan):
 
 
 def tv_symbol(sym, mcfg, exchange=None):
-    if not mcfg.get("tv_prefix", True):
-        return str(sym)
+    """TradingView import symbol. USA → bare ticker (AAPL); NSE → NSE:RELIANCE."""
+    if mcfg.get("market") == "USA" or not mcfg.get("tv_prefix", True):
+        return str(sym).strip().upper()
     return f"{exchange or mcfg['exchange']}:{sym}"
 
 
