@@ -23,16 +23,17 @@ except Exception:  # pragma: no cover
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Market settings — add a USA entry's scanner page later with MARKETS["USA"]
+# Market settings — NSE page uses MARKETS["NSE"], USA page uses MARKETS["USA"]
 # ════════════════════════════════════════════════════════════════════════════
 MARKETS = {
     "NSE": {"market": "NSE", "exchange": "NSE", "user_id": "nse_user", "tz": "Asia/Kolkata",
             "open": (9, 15), "close": (15, 30), "local_hint": "8:00 PM Sydney"},
-    "USA": {"market": "USA", "exchange": "NASDAQ", "user_id": "usa_user", "tz": "America/New_York",
-            "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
+    "USA": {"market": "USA", "exchange": "NASDAQ", "user_id": "us_user", "tz": "America/New_York",
+            "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney",
+            "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-09-27f · copy lists under the table"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-27g · USA page on the same process"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -120,6 +121,8 @@ def _num(x, default=np.nan):
 
 
 def tv_symbol(sym, mcfg, exchange=None):
+    if not mcfg.get("tv_prefix", True):
+        return str(sym)
     return f"{exchange or mcfg['exchange']}:{sym}"
 
 
