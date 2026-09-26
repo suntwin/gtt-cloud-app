@@ -753,7 +753,8 @@ def main():
                 render_tomorrow_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG,
                                       shared={'min_adr': coil_min_adr, 'max_reltight': coil_max_reltight,
                                               'max_rwd': coil_max_rwd, 'min_wktight': coil_min_wktight,
-                                              'min_chg': coil_min_chg, 'max_chg': coil_max_chg})
+                                              'min_chg': coil_min_chg, 'max_chg': coil_max_chg,
+                                              'bo_min_chg': vol_bo_min_chg, 'bo_min_vol': vol_bo_min_vol})
             else:
                 render_breakout_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG,
                                       shared={'bo_min_chg': vol_bo_min_chg, 'bo_min_vol': vol_bo_min_vol})

@@ -32,7 +32,7 @@ MARKETS = {
             "open": (9, 30), "close": (16, 0), "local_hint": "6:00 AM Sydney"},
 }
 
-PROCESS_VERSION = "v2026-09-27c · colours, saved-check summary, fail-rule fix"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-27d · one breakout definition, plain-English rules"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -759,6 +759,25 @@ def _header_time(st, mcfg, base_df=None, sb=None):
     return sd
 
 
+RULE_LABELS = {
+    "min_scan_count": "New candidates: min scans (of 1M/3M/6M)",
+    "min_liq": "New candidates: min avg value (cr)",
+    "list_size": "New candidates to pre-tick",
+    "gap_max_adr": "Skip a listed stock that ran more than N ADRs",
+    "pullback_band": "Pullback distance to 10/20 MA (%)",
+    "stale_days": "Suggest removing a saved stock after N days",
+    "strong_min_vol": "Strong batch: min volume (x)",
+    "ep_min_chg": "Suggest EP: min % up",
+    "ep_min_vol": "Suggest EP: min volume (x)",
+    "tight_max_reltight": "Suggest TIGHT_BO: max tightness before (NR4/ADR)",
+    "wema_max_adr": "Suggest WEMA_BO: max ADRs from 10w EMA",
+    "cont_max_days": "Suggest CONT: earlier breakout within N days",
+}
+SHARED_LABELS = {"min_adr": "Min ADR", "max_reltight": "Max rel tightness", "max_rwd": "Max ADRs from 10w",
+                 "min_wktight": "Min weekly tight closes", "min_chg": "Min chg %", "max_chg": "Max chg %",
+                 "bo_min_chg": "Breakout min chg %", "bo_min_vol": "Breakout min volume (x)"}
+
+
 def _rules_editor(st, title, defaults, saved, key):
     cfg = {**defaults, **(saved or {})}
     with st.container(border=True):
@@ -767,9 +786,9 @@ def _rules_editor(st, title, defaults, saved, key):
         for i, (k, v) in enumerate(defaults.items() if show else []):
             with cols[i % 3]:
                 if isinstance(v, int) and not isinstance(v, bool):
-                    cfg[k] = int(st.number_input(k, value=int(cfg[k]), step=1, key=f"{key}_{k}"))
+                    cfg[k] = int(st.number_input(RULE_LABELS.get(k, k), value=int(cfg[k]), step=1, key=f"{key}_{k}"))
                 else:
-                    cfg[k] = float(st.number_input(k, value=float(cfg[k]), step=0.5, key=f"{key}_{k}"))
+                    cfg[k] = float(st.number_input(RULE_LABELS.get(k, k), value=float(cfg[k]), step=0.5, key=f"{key}_{k}"))
         if show:
             st.caption("Saved with 'Save filter settings'. Don't change these during the 8 weeks.")
     st.session_state[key] = cfg
@@ -785,10 +804,10 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     sd = _header_time(st, mcfg, base_df, sb)
     shared = shared or {}
     own = {k: v for k, v in TOMORROW_DEFAULTS.items() if k not in shared}   # the rest come from the sidebar
-    cfg = {**_rules_editor(st, "More list rules (scan count, liquidity, list size, breakouts, re-setups)", own,
+    cfg = {**_rules_editor(st, "More list rules (new candidates, skips, pullbacks, clean-up)", own,
                            saved_prefs.get("build_tomorrow"), "bt_cfg"), **shared}
     if shared:
-        st.caption("From the sidebar's Coiled Setup Filters: " + ", ".join(f"{k} {v:g}" for k, v in shared.items()))
+        st.caption("From the sidebar: " + ", ".join(f"{SHARED_LABELS.get(k, k)} {v:g}" for k, v in shared.items()))
     try:
         prev_date, ylist = load_last_list(sb, mcfg, before_date=sd)
         watch = load_active_watchlist(sb, mcfg)
