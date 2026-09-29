@@ -535,7 +535,7 @@ def main():
                 if tc in adf.columns:
                     adf['_rel_tightness'] = (adf[tc] / safe_adr).round(2)
                 if 'W_Dist10wMA' in adf.columns:
-                    adf['_rel_wk_dist'] = (adf['W_Dist10wMA'].fillna(999).abs() / safe_adr).round(2)
+                    adf['_rel_wk_dist'] = (adf['W_Dist10wMA'].abs() / safe_adr).round(2)
             if 'dvol' in adf.columns and '_avgvol_mln' in adf.columns:
                 adf['_vol_ratio'] = (adf['dvol'] / adf['_avgvol_mln'].replace(0, np.nan)).round(2)
 
