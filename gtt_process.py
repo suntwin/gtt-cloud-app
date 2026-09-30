@@ -33,7 +33,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-09-27h · US tickers without exchange prefix"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-30a · NSE circuit column"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -118,6 +118,23 @@ def _num(x, default=np.nan):
         return v if np.isfinite(v) else default
     except (TypeError, ValueError):
         return default
+
+
+CIRCUIT_HELP = "NSE price band %: 20 = free to move · 10 = caution · 5 or less = can lock in circuit, a stop may not fill"
+
+
+def _with_circuit(cols, mcfg, after="Adr"):
+    """NSE only: show the circuit (price band) column right after ADR."""
+    if mcfg.get("market") != "NSE" or "_circuit" in cols:
+        return cols
+    i = cols.index(after) + 1 if after in cols else len(cols)
+    return cols[:i] + ["_circuit"] + cols[i:]
+
+
+def _circuit_num(df):
+    if "_circuit" in df.columns:
+        df["_circuit"] = pd.to_numeric(df["_circuit"], errors="coerce")
+    return df
 
 
 def tv_symbol(sym, mcfg, exchange=None):
@@ -232,6 +249,15 @@ SITUATION_COLOURS = {"Saved & tight": _css("#28a745", "white", True), "Saved, no
                      "5 · Remove": _css("#f8d7da", "#721c24", True), "Check chart": _css("#ffe5d0", "#8a4b08")}
 
 
+def _c_circuit(v):
+    """NSE price band: 20% = free to move; 10% caution; 5% or less = can lock in circuit (stop may not fill)."""
+    v = _num(v)
+    if not np.isfinite(v) or v <= 0: return ""
+    if v <= 5: return _css("#f8d7da", "#721c24", True)
+    if v <= 10: return _css("#fff3cd", "#664d03")
+    return ""
+
+
 def _c_rating(v):
     return {"5★": _css("#28a745", "white", True), "4★": _css("#8ee68e"), "3★": _css("#d4edda")}.get(str(v), "")
 
@@ -242,12 +268,13 @@ def style_table(df):
     sty = df.style
     for c, f in [("_vol_ratio", _c_vol), ("_rel_wk_dist", _c_relwk), ("_10madist", _c_madist), ("_20madist", _c_madist),
                  ("_rel_tightness_today", _c_tight), ("_rel_tightness_prev", _c_tight), ("_chg_percentclose", _c_chg),
-                 ("Rating", _c_rating)]:
+                 ("Rating", _c_rating), ("_circuit", _c_circuit)]:
         if c in cols:
             sty = sty.map(f, subset=[c])
     if "Label" in cols:
         sty = sty.map(lambda v: SITUATION_COLOURS.get(str(v), ""), subset=["Label"])
     fmt = {c: "{:.1f}" for c in ["_chg_percentclose", "_vol_ratio", "Adr", "_rel_wk_dist", "_10madist", "_20madist"] if c in cols}
+    fmt.update({c: "{:.0f}" for c in ["_circuit"] if c in cols})
     fmt.update({c: "{:.2f}" for c in ["_rel_tightness_today", "_rel_tightness_prev"] if c in cols})
     return sty.format(fmt, na_rep="")
 
@@ -860,7 +887,8 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             grp.setdefault(LABEL_NAMES.get(r_["Label"], r_["Label"]), []).append(r_["Symbol"])
         st.markdown(f"**Saved breakouts checked: {len(saved_rows)}** — " + " · ".join(
             f"{k} {len(v)}: {', '.join(v[:15])}{'…' if len(v) > 15 else ''}" for k, v in grp.items()))
-    view = lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]].copy()
+    show = _with_circuit(show, mcfg)
+    view = _circuit_num(lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]].copy())
     view["Label"] = view["Label"].map(lambda x: LABEL_NAMES.get(x, x))
     pre = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
     st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
@@ -878,6 +906,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
             "_rel_tightness_today": st.column_config.NumberColumn("Rel tight", format="%.2f"),
             "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
+            "_circuit": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
             "_avgvol_mln": st.column_config.NumberColumn("Avg value", format="%.0f"),
         })
     removes = [u for u in updates if u["action"] == "remove"]
@@ -971,7 +1000,8 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     show = ["Skip"] + tagcols + ["Rating", "Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
                                  "_vol_ratio", "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist",
                                  "Scan_Count", "Avg_RS", "Sector"]
-    view = part[[c for c in show if c in part.columns]]
+    show = _with_circuit(show, mcfg)
+    view = _circuit_num(part[[c for c in show if c in part.columns]].copy())
     pre = {t: int(part[t].sum()) for t in SETUP_TYPES}
     st.caption("Pre-filled from the scan: " + ", ".join(f"{t} {c}" for t, c in pre.items() if c) +
                ". Edit freely — nothing is sent until you press Save.")
@@ -990,6 +1020,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
         "_10madist": st.column_config.NumberColumn("10MA %", format="%.1f"),
         "_20madist": st.column_config.NumberColumn("20MA %", format="%.1f"),
+        "_circuit": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
     }
     if multi:
         cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more: EP, TIGHT_BO, WEMA_BO, ATH, CONTINUATION")
