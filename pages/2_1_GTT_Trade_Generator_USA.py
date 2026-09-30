@@ -7,7 +7,7 @@ from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_object_d
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
 import os, json, time
 from datetime import datetime
-from gtt_process import MARKETS, tv_symbol, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab
+from gtt_process import MARKETS, tv_symbol, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
 
 st.set_page_config(page_title="GTT Trade Generator (USA)", page_icon="⚡", layout="wide")
 
@@ -19,7 +19,7 @@ SUPABASE_URL = "https://uroqarbpyrloymijbqaa.supabase.co"
 SUPABASE_KEY = "sb_publishable_bPnWVx9S7zI0_FdK8RCbRg_Gfc2Vqzt"
 
 try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase = cached_client(create_client(SUPABASE_URL, SUPABASE_KEY))   # reads cached, writes clear the cache
 except Exception as e:
     st.error(f"Database connection failed: {e}")
     supabase = None
@@ -367,7 +367,7 @@ def main():
     refresh_clicked = st.sidebar.button("Refresh Now", key="manual_refresh_btn",
                                         help="Clear cached scans and fetch again")
     if refresh_clicked:
-        st.cache_data.clear()
+        st.cache_data.clear(); clear_db_cache()
 
     sector_df = load_sector_mapping(SECTOR_FILE)
     scan_mode = st.radio("Select Scanner Mode", ("Anticipation", "Post Breakout"), horizontal=True)
@@ -739,7 +739,8 @@ def main():
 
             go = gb.build()
             safe_df = clean_df_for_json(fdf)
-            grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%', update_mode=GridUpdateMode.MODEL_CHANGED, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
+            st.caption("Sort, filter and tick rows freely — the page doesn't reload. Press **Update** (under the table) to use your ticks and filters below.")
+            grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%', update_mode=GridUpdateMode.MANUAL, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
 
             # ── Copy Symbols to TradingView — right under the table. No buttons: the copy icon is instant ──
             sdf = grid_response['data'] if (grid_response is not None and grid_response['data'] is not None
@@ -826,7 +827,7 @@ def main():
                         sgb.configure_column('Avg_Vol_Ratio', minWidth=90, maxWidth=120, headerName='Avg Vol Ratio',
                             cellStyle=JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v)||v<=0)return null;if(v>=3.5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v>=2.5)return{'backgroundColor':'#8ee68e','color':'black','fontWeight':'bold'};if(v>=1.5)return{'backgroundColor':'#d4edda','color':'black'};return null}"""))
                     sgb.configure_column('Sector', minWidth=140, maxWidth=200, pinned='left')
-                    AgGrid(ss, gridOptions=sgb.build(), height=400, width='100%', update_mode=GridUpdateMode.MODEL_CHANGED, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
+                    AgGrid(ss, gridOptions=sgb.build(), height=400, width='100%', update_mode=GridUpdateMode.NO_UPDATE, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
 
                     st.subheader("Top Setups by Sector")
                     for sec in ss.head(10)['Sector'].tolist():
@@ -861,7 +862,7 @@ def main():
                             if 'Sector_Percentile' in sd.columns: gb.configure_column('Sector_Percentile', minWidth=100, maxWidth=120)
                             if 'Sector' in sd.columns: gb.configure_column('Sector', minWidth=120, maxWidth=150)
                             if 'Industry' in sd.columns: gb.configure_column('Industry', minWidth=120, maxWidth=150)
-                            AgGrid(clean_df_for_json(sd), gridOptions=gb.build(), height=400, width='100%', update_mode=GridUpdateMode.MODEL_CHANGED, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
+                            AgGrid(clean_df_for_json(sd), gridOptions=gb.build(), height=400, width='100%', update_mode=GridUpdateMode.NO_UPDATE, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
                 else:
                     st.info("No stocks with volume above average found.")
             else:

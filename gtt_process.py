@@ -13,6 +13,8 @@ Goal: manage the lists so no potential trade is missed, with a fixed routine:
 Tables / functions: see supabase_migration.sql.
 """
 from datetime import datetime, date, timedelta
+import copy
+import time
 import numpy as np
 import pandas as pd
 
@@ -33,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-09-30a · NSE circuit column"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-09-30b · Skip by default, faster clicks"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -491,7 +493,7 @@ def find_breakouts(scan_df, yesterday_list, watch_rows, cfg=None, today=None):
     bo["On_List"] = bo["Symbol"].isin(yesterday_list)
     bo["In_Watchlist"] = bo["Symbol"].map(lambda s: ", ".join(sorted(active.get(s, []))))
     bo["Rating"] = bo["Symbol"].map(lambda s: rating_label(rated.get(s)))
-    bo["Skip"] = False
+    bo["Skip"] = True     # safe default: nothing is saved unless you untick Skip for that stock
     bo["Batch"] = np.where(bo["_vol_ratio"].fillna(0) >= cfg["strong_min_vol"], "Strong", "Moderate")
     return bo.sort_values("_vol_ratio", ascending=False).reset_index(drop=True)
 
@@ -557,6 +559,71 @@ def breakout_payload(r, mcfg):
 # ════════════════════════════════════════════════════════════════════════════
 # Database
 # ════════════════════════════════════════════════════════════════════════════
+# Every click in Streamlit reruns the page, and each rerun used to make 7-8 trips to Supabase.
+# CachedClient remembers read results (for DB_CACHE_TTL seconds) and forgets them all on any write,
+# so reruns are served from memory and saves are never shown stale.
+DB_CACHE_TTL = 300
+_DB_CACHE = {}
+
+
+def clear_db_cache():
+    _DB_CACHE.clear()
+
+
+class _CachedQuery:
+    def __init__(self, sb, head):
+        self._sb, self._calls = sb, [head]
+
+    def __getattr__(self, name):
+        def rec(*a, **k):
+            self._calls.append((name, a, k)); return self
+        return rec
+
+    def _replay(self):
+        (kind, name, a0, k0), rest = self._calls[0], self._calls[1:]
+        obj = getattr(self._sb, kind)(name, *a0, **k0)
+        for name_, a, k in rest:
+            obj = getattr(obj, name_)(*a, **k)
+        return obj
+
+    def execute(self):
+        head = self._calls[0]
+        is_read = (head[0] == "table" and not any(c[0] in ("insert", "update", "upsert", "delete") for c in self._calls[1:])) \
+            or (head[0] == "rpc" and str(head[1]).startswith("get_"))
+        if not is_read:
+            res = self._replay().execute()
+            clear_db_cache()
+            return res
+        key = repr(self._calls)
+        hit = _DB_CACHE.get(key)
+        if hit and time.time() - hit[0] < DB_CACHE_TTL:
+            return _Res(copy.deepcopy(hit[1]))          # a copy, so callers can't change the cached rows
+        data = self._replay().execute().data
+        _DB_CACHE[key] = (time.time(), data)
+        return _Res(copy.deepcopy(data))
+
+
+class _Res:
+    def __init__(self, data):
+        self.data = data
+
+
+class CachedClient:
+    """Drop-in wrapper for the supabase client: same .table(...) / .rpc(...) calls, cached reads."""
+    def __init__(self, sb):
+        self._sb = sb
+
+    def table(self, name):
+        return _CachedQuery(self._sb, ("table", name, (), {}))
+
+    def rpc(self, fn, params=None):
+        return _CachedQuery(self._sb, ("rpc", fn, (params or {},), {}))
+
+
+def cached_client(sb):
+    return None if sb is None else (sb if isinstance(sb, CachedClient) else CachedClient(sb))
+
+
 def load_active_watchlist(sb, mcfg):
     return (sb.table("watchlist").select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
             .eq("status", "active").execute().data)
@@ -1004,7 +1071,8 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     view = _circuit_num(part[[c for c in show if c in part.columns]].copy())
     pre = {t: int(part[t].sum()) for t in SETUP_TYPES}
     st.caption("Pre-filled from the scan: " + ", ".join(f"{t} {c}" for t, c in pre.items() if c) +
-               ". Edit freely — nothing is sent until you press Save.")
+               ". **Every row starts as Skip** — untick Skip for each stock you want to save, "
+               "so an accidental Save changes nothing.")
     ekey = f"bo_editor_{pick}"
     cfgcols = {
         "Skip": st.column_config.CheckboxColumn("Skip", help="Don't save this stock, whatever is tagged"),
@@ -1044,7 +1112,9 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         try:
             a, t = save_breakouts(sb, part, sd, mcfg)
             live = part[~part["Skip"]]
-            st.session_state["bo_msg"] = (f"{pick} batch: saved {a} tags to the watchlist "
+            st.session_state["bo_msg"] = ((f"{pick} batch: nothing saved — every row was still on Skip. "
+                                           "Untick Skip for the stocks you want to keep.") if bool(part["Skip"].all()) else
+                                          f"{pick} batch: saved {a} tags to the watchlist "
                                           f"({int(live[SETUP_TYPES].any(axis=1).sum())} stocks, "
                                           f"{int(part['Skip'].sum())} skipped); {t} breakouts recorded.")
             st.session_state.pop(ekey, None)
