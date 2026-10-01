@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-01a · market note first, journal"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-01b · breadth as stock counts"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -884,9 +884,10 @@ def save_auto_breadth(sb, mcfg, sd, base_df, bo_min_chg=2.0, bo_min_vol=1.5, str
                 "strong_bo": int((bo & (vol >= strong_min_vol)).sum()),
                 "moderate_bo": int((bo & (vol < strong_min_vol)).sum()),
                 "coiled": int(((d["_rel_tightness_today"] <= max_reltight) & chg.between(-1, 3)).sum()),
-                "pct_above_10ma": round(100 * float((d["_10madist"] > 0).mean()), 1) if n else None,
-                "pct_above_20ma": round(100 * float((d["_20madist"] > 0).mean()), 1) if n else None,
-                "pct_up_today": round(100 * float((chg > 0).mean()), 1) if n else None,
+                "above_10ma": int((d["_10madist"] > 0).sum()),
+                "above_20ma": int((d["_20madist"] > 0).sum()),
+                "up_today": int((chg > 0).sum()),
+                "down_today": int((chg < 0).sum()),
                 "at": datetime.utcnow().isoformat() + "Z"}
         sb.table("market_journal").update({"auto": auto}).eq("id", note["id"]).execute()
     except Exception:
@@ -897,8 +898,8 @@ def _auto_line(auto):
     if not auto:
         return ""
     return (f"Scan breadth: {auto.get('strong_bo', 0)} strong + {auto.get('moderate_bo', 0)} moderate breakouts · "
-            f"{auto.get('coiled', 0)} coiled · {auto.get('pct_above_20ma', '–')}% above 20MA · "
-            f"{auto.get('pct_up_today', '–')}% up today (of {auto.get('scanned', 0)} scanned)")
+            f"{auto.get('coiled', 0)} coiled · {auto.get('above_20ma', '–')} above 20MA · "
+            f"{auto.get('up_today', '–')} up / {auto.get('down_today', '–')} down today (of {auto.get('scanned', 0)} scanned)")
 
 
 def _note_summary(note):
@@ -906,7 +907,7 @@ def _note_summary(note):
     if note.get("kind") == "SKIP":
         return f"**Skipped** — {note.get('body', '')}"
     bits = [f"{k}: {f.get('trend_' + str(i))}" for i, k in enumerate(f.get("indices", [])) if f.get("trend_" + str(i))]
-    for k, lab in [("above20", "% >20DMA"), ("above50", "% >50DMA"), ("adv_dec", "Adv/Dec"), ("hi_lo", "NH/NL")]:
+    for k, lab in [("above20", ">20DMA"), ("above50", ">50DMA"), ("adv_dec", "Adv/Dec"), ("hi_lo", "NH/NL")]:
         if f.get(k) not in (None, ""):
             bits.append(f"{lab} {f[k]}")
     if f.get("themes"):
@@ -930,8 +931,11 @@ def _market_form(st, sb, mcfg, sd, existing=None, key="mkt", extra_known=()):
                                 index=regime_names.index(f["regime"]) if f.get("regime") in REGIMES else None,
                                 help=" · ".join(f"{k}: max {v['max_gtts']} GTTs, {v['risk']}" for k, v in REGIMES.items()))
         b1, b2, b3, b4 = st.columns(4)
-        above20 = b1.number_input("% stocks above 20 DMA", 0.0, 100.0, value=f.get("above20"), step=1.0, key=f"{key}_a20")
-        above50 = b2.number_input("% stocks above 50 DMA", 0.0, 100.0, value=f.get("above50"), step=1.0, key=f"{key}_a50")
+        _iv = lambda x: int(x) if isinstance(x, (int, float)) else None
+        above20 = b1.number_input("Stocks above 20 DMA", min_value=0, value=_iv(f.get("above20")), step=1, key=f"{key}_a20",
+                                  help="Number of stocks, as on your breadth chart")
+        above50 = b2.number_input("Stocks above 50 DMA", min_value=0, value=_iv(f.get("above50")), step=1, key=f"{key}_a50",
+                                  help="Number of stocks, as on your breadth chart")
         adv_dec = b3.text_input("Advances / declines", value=f.get("adv_dec", ""), placeholder="1450 / 980", key=f"{key}_ad")
         hi_lo = b4.text_input("New highs / new lows", value=f.get("hi_lo", ""), placeholder="85 / 12", key=f"{key}_hl")
         themes = st.text_input("Leading themes / sectors", value=f.get("themes", ""), key=f"{key}_th",
