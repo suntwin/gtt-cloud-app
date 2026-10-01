@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-09-30b · Skip by default, faster clicks"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-01a · market note first, journal"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -758,6 +758,320 @@ def _parse_symbols(text):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Journal — market note (the gate) + running notes
+# ════════════════════════════════════════════════════════════════════════════
+# One table, market_journal. kind = MARKET (the daily market note, required before the scanner runs),
+# SKIP (logged "skip today"), NOTE (running notes, any time). Times shown in Sydney time.
+LOCAL_TZ = "Australia/Sydney"
+JOURNAL_MIN_CHARS = 80
+TREND_OPTS = ["Up", "Chop", "Down"]
+REGIMES = {
+    "Aggressive": {"max_gtts": 6, "risk": "full risk", "help": "Indices trending up, breadth strong, breakouts working"},
+    "Normal":     {"max_gtts": 4, "risk": "full risk", "help": "Indices up or flat, breadth OK, mixed follow-through"},
+    "Defensive":  {"max_gtts": 2, "risk": "half risk", "help": "Indices choppy or rolling over, breakouts failing"},
+    "Cash":       {"max_gtts": 0, "risk": "no new trades", "help": "Indices down, breadth weak — tag breakouts only"},
+}
+INDEX_NAMES = {"NSE": ["Nifty 50", "Nifty 500"], "USA": ["S&P 500", "Nasdaq 100"]}
+
+
+def journal_session(mcfg):
+    return session_date(market_now(mcfg), mcfg)
+
+
+def fmt_local(ts):
+    """ISO timestamp from the database → 'Tue 30 Sep 8:10 PM' in Sydney time."""
+    if not ts:
+        return ""
+    try:
+        t = pd.Timestamp(ts)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        if ZoneInfo:
+            t = t.tz_convert(ZoneInfo(LOCAL_TZ))
+        return t.strftime("%a %d %b %I:%M %p").replace(" 0", " ")
+    except Exception:
+        return str(ts)[:16]
+
+
+def note_symbols(text, known=()):
+    """Stocks a note talks about: #ICIL / $ICIL always; a plain CAPS word only if it's a known symbol."""
+    import re
+    known = {str(k).upper() for k in known}
+    out = []
+    for tok in re.findall(r"[#$]?[A-Za-z][A-Za-z0-9&\-]{1,19}", text or ""):
+        if tok[0] in "#$":
+            s = tok[1:].upper()
+        elif tok.isupper() and tok in known:
+            s = tok
+        else:
+            continue
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def _jq(sb, mcfg):
+    return sb.table("market_journal").select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
+
+
+def load_market_note(sb, mcfg, sd):
+    r = _jq(sb, mcfg).eq("session_date", sd.isoformat()).in_("kind", ["MARKET", "SKIP"]).limit(1).execute().data
+    return r[0] if r else None
+
+
+def load_prev_market_note(sb, mcfg, sd):
+    r = (_jq(sb, mcfg).lt("session_date", sd.isoformat()).in_("kind", ["MARKET", "SKIP"])
+         .order("session_date", desc=True).limit(1).execute().data)
+    return r[0] if r else None
+
+
+def load_notes(sb, mcfg, limit=300):
+    return _jq(sb, mcfg).order("created_at", desc=True).limit(limit).execute().data
+
+
+def save_market_note(sb, mcfg, sd, kind, body, fields, symbols=(), existing=None):
+    row = {"kind": kind, "body": body, "fields": fields, "symbols": list(symbols),
+           "updated_at": datetime.utcnow().isoformat() + "Z"}
+    if existing:
+        sb.table("market_journal").update(row).eq("id", existing["id"]).execute()
+    else:
+        sb.table("market_journal").insert({**row, "user_id": mcfg["user_id"], "market": mcfg["market"],
+                                           "session_date": sd.isoformat()}).execute()
+
+
+def add_note(sb, mcfg, text, symbols):
+    sb.table("market_journal").insert({"user_id": mcfg["user_id"], "market": mcfg["market"],
+                                       "session_date": journal_session(mcfg).isoformat(), "kind": "NOTE",
+                                       "body": text.strip(), "symbols": list(symbols), "fields": {}}).execute()
+
+
+def latest_note_by_symbol(sb, mcfg):
+    """{symbol: 'note text · Tue 30 Sep 8:10 PM'} — the newest note that mentions each stock."""
+    out = {}
+    try:
+        rows = load_notes(sb, mcfg)
+    except Exception:
+        return out
+    for r in rows:                                   # newest first
+        for s in (r.get("symbols") or []):
+            if s not in out:
+                body = (r.get("body") or "").replace("\n", " ")
+                out[s] = f"{body[:90]}{'…' if len(body) > 90 else ''} · {fmt_local(r.get('created_at'))}"
+    return out
+
+
+def regime_limits(note):
+    """(regime name, REGIMES entry) from a market note, or (None, None)."""
+    if not note or note.get("kind") != "MARKET":
+        return None, None
+    name = (note.get("fields") or {}).get("regime")
+    return (name, REGIMES.get(name)) if name in REGIMES else (None, None)
+
+
+def save_auto_breadth(sb, mcfg, sd, base_df, bo_min_chg=2.0, bo_min_vol=1.5, strong_min_vol=3.5, max_reltight=0.8):
+    """After a scan: store what the scan itself says about breadth next to the market note."""
+    if sb is None or base_df is None or base_df.empty:
+        return
+    try:
+        note = load_market_note(sb, mcfg, sd)
+        if not note:
+            return
+        d = add_derived(base_df)
+        chg, vol = d["_chg_percentclose"].fillna(0), d["_vol_ratio"].fillna(0)
+        bo = (chg >= bo_min_chg) & (vol >= bo_min_vol)
+        n = int(len(d))
+        auto = {"scanned": n,
+                "strong_bo": int((bo & (vol >= strong_min_vol)).sum()),
+                "moderate_bo": int((bo & (vol < strong_min_vol)).sum()),
+                "coiled": int(((d["_rel_tightness_today"] <= max_reltight) & chg.between(-1, 3)).sum()),
+                "pct_above_10ma": round(100 * float((d["_10madist"] > 0).mean()), 1) if n else None,
+                "pct_above_20ma": round(100 * float((d["_20madist"] > 0).mean()), 1) if n else None,
+                "pct_up_today": round(100 * float((chg > 0).mean()), 1) if n else None,
+                "at": datetime.utcnow().isoformat() + "Z"}
+        sb.table("market_journal").update({"auto": auto}).eq("id", note["id"]).execute()
+    except Exception:
+        pass
+
+
+def _auto_line(auto):
+    if not auto:
+        return ""
+    return (f"Scan breadth: {auto.get('strong_bo', 0)} strong + {auto.get('moderate_bo', 0)} moderate breakouts · "
+            f"{auto.get('coiled', 0)} coiled · {auto.get('pct_above_20ma', '–')}% above 20MA · "
+            f"{auto.get('pct_up_today', '–')}% up today (of {auto.get('scanned', 0)} scanned)")
+
+
+def _note_summary(note):
+    f = note.get("fields") or {}
+    if note.get("kind") == "SKIP":
+        return f"**Skipped** — {note.get('body', '')}"
+    bits = [f"{k}: {f.get('trend_' + str(i))}" for i, k in enumerate(f.get("indices", [])) if f.get("trend_" + str(i))]
+    for k, lab in [("above20", "% >20DMA"), ("above50", "% >50DMA"), ("adv_dec", "Adv/Dec"), ("hi_lo", "NH/NL")]:
+        if f.get(k) not in (None, ""):
+            bits.append(f"{lab} {f[k]}")
+    if f.get("themes"):
+        bits.append(f"Themes: {f['themes']}")
+    return " · ".join(bits)
+
+
+def _market_form(st, sb, mcfg, sd, existing=None, key="mkt", extra_known=()):
+    f = (existing or {}).get("fields") or {}
+    idx = INDEX_NAMES.get(mcfg["market"], ["Index 1", "Index 2"])
+    with st.form(f"{key}_form", border=False):
+        cols = st.columns(len(idx) + 1)
+        trends = []
+        for i, name in enumerate(idx):
+            cur = f.get(f"trend_{i}")
+            trends.append(cols[i].radio(f"{name} trend", TREND_OPTS, horizontal=True, key=f"{key}_t{i}",
+                                        index=TREND_OPTS.index(cur) if cur in TREND_OPTS else None,
+                                        help="Up = above a rising 10 & 20 EMA · Chop = sideways · Down = below them"))
+        regime_names = list(REGIMES)
+        regime = cols[-1].radio("Regime → exposure tonight", regime_names, key=f"{key}_reg",
+                                index=regime_names.index(f["regime"]) if f.get("regime") in REGIMES else None,
+                                help=" · ".join(f"{k}: max {v['max_gtts']} GTTs, {v['risk']}" for k, v in REGIMES.items()))
+        b1, b2, b3, b4 = st.columns(4)
+        above20 = b1.number_input("% stocks above 20 DMA", 0.0, 100.0, value=f.get("above20"), step=1.0, key=f"{key}_a20")
+        above50 = b2.number_input("% stocks above 50 DMA", 0.0, 100.0, value=f.get("above50"), step=1.0, key=f"{key}_a50")
+        adv_dec = b3.text_input("Advances / declines", value=f.get("adv_dec", ""), placeholder="1450 / 980", key=f"{key}_ad")
+        hi_lo = b4.text_input("New highs / new lows", value=f.get("hi_lo", ""), placeholder="85 / 12", key=f"{key}_hl")
+        themes = st.text_input("Leading themes / sectors", value=f.get("themes", ""), key=f"{key}_th",
+                               placeholder="Defence, power, PSU banks")
+        body = st.text_area(f"What the market is doing (at least {JOURNAL_MIN_CHARS} characters)",
+                            value=(existing or {}).get("body", ""), height=140, key=f"{key}_body",
+                            placeholder="Indices, breadth, what's working and failing, what would change your mind. "
+                                        "CAPS or #SYMBOL links a stock, e.g. ICIL waiting for volume.")
+        ok = st.form_submit_button("Save market note" if not existing else "Update market note", type="primary")
+    if ok:
+        missing = [n for n, v in zip(idx, trends) if not v]
+        if missing or not regime:
+            st.error("Pick the trend for " + ", ".join(missing or []) + (" and " if missing and not regime else "") +
+                     ("the regime" if not regime else "") + ".")
+        elif len(body.strip()) < JOURNAL_MIN_CHARS:
+            st.error(f"Write a little more — {len(body.strip())}/{JOURNAL_MIN_CHARS} characters. The point is to think it through.")
+        else:
+            fields = {"indices": idx, "regime": regime, "above20": above20, "above50": above50,
+                      "adv_dec": adv_dec.strip(), "hi_lo": hi_lo.strip(), "themes": themes.strip(),
+                      **{f"trend_{i}": t for i, t in enumerate(trends)}}
+            try:
+                known = {r["symbol"] for r in load_active_watchlist(sb, mcfg)}
+            except Exception:
+                known = set()
+            known |= {str(x).upper() for x in extra_known}
+            save_market_note(sb, mcfg, sd, "MARKET", body.strip(), fields, note_symbols(body, known), existing)
+            st.rerun()
+
+
+def render_market_gate(st, sb, mcfg, extra_known=()):
+    """Market first. Returns True when today's market note (or a logged skip) exists — the scanner unlocks then."""
+    if sb is None:
+        st.error("Database not connected — the market note can't be checked, so the scanner stays open.")
+        return True
+    sd = journal_session(mcfg)
+    try:
+        note = load_market_note(sb, mcfg, sd)
+    except Exception as e:
+        st.error(f"Could not read the journal. Run supabase_journal.sql in Supabase first. ({e})")
+        return True
+    if note:
+        name, lim = regime_limits(note)
+        when = fmt_local(note.get("updated_at") or note.get("created_at"))
+        if note.get("kind") == "SKIP":
+            st.error(f"**Market note skipped for {sd}** ({when}) — reason: {note.get('body', '')}. Scanner unlocked.")
+        else:
+            st.success(f"**Market note done · {mcfg['market']} {sd}** · saved {when} AEST · Regime **{name}** → "
+                       f"max **{lim['max_gtts']}** new GTTs, {lim['risk']}")
+        with st.expander("Today's market note — view / edit"):
+            st.caption(_note_summary(note))
+            if note.get("auto"):
+                st.caption(_auto_line(note["auto"]))
+            st.markdown(note.get("body", ""))
+            if note.get("kind") == "MARKET":
+                _market_form(st, sb, mcfg, sd, existing=note, key="mkt_edit", extra_known=extra_known)
+        return True
+
+    st.warning(f"**Market first** — write the {mcfg['market']} market note for **{sd}** to unlock the scanner.")
+    try:
+        prev = load_prev_market_note(sb, mcfg, sd)
+    except Exception:
+        prev = None
+    if prev:
+        st.caption(f"Last note ({prev.get('session_date')}): {_note_summary(prev)}")
+        if prev.get("auto"):
+            st.caption(_auto_line(prev["auto"]))
+        if prev.get("body"):
+            st.caption("“" + prev["body"][:400] + ("…”" if len(prev["body"]) > 400 else "”"))
+    with st.container(border=True):
+        _market_form(st, sb, mcfg, sd, key="mkt_new", extra_known=extra_known)
+    with st.expander("Can't do it today? Skip (it's logged)"):
+        with st.form("mkt_skip", border=False):
+            why = st.text_input("Why are you skipping?", key="mkt_skip_why")
+            if st.form_submit_button("Skip today and unlock the scanner"):
+                if len(why.strip()) < 5:
+                    st.error("Give a reason.")
+                else:
+                    save_market_note(sb, mcfg, sd, "SKIP", why.strip(), {})
+                    st.rerun()
+    return False
+
+
+def render_quick_note(st, sb, mcfg, extra_known=()):
+    """Notepad: one line, Enter, done. CAPS or #SYMBOL links the note to a stock."""
+    if sb is None:
+        return
+    with st.form("quick_note", clear_on_submit=True, border=False):
+        c1, c2 = st.columns([8, 1])
+        txt = c1.text_input("Quick note", label_visibility="collapsed", key="qn_text",
+                            placeholder="Quick note — e.g. ICIL want to buy, volume not coming in  (CAPS or #SYMBOL links it to the stock)")
+        ok = c2.form_submit_button("Add note", use_container_width=True)
+    if ok and txt.strip():
+        try:
+            known = {r["symbol"] for r in load_active_watchlist(sb, mcfg)} | {str(s).upper() for s in extra_known}
+            syms = note_symbols(txt, known)
+            add_note(sb, mcfg, txt, syms)
+            st.toast("Note saved" + (f" · linked to {', '.join(syms)}" if syms else ""))
+        except Exception as e:
+            st.error(f"Note not saved: {e}")
+
+
+def render_journal_tab(st, sb, mcfg):
+    st.subheader(f"Journal · {mcfg['market']}")
+    if sb is None:
+        st.error("Database not connected."); return
+    c1, c2, c3 = st.columns([3, 2, 2])
+    q = c1.text_input("Search", key="jr_q", placeholder="word or phrase")
+    sym = c2.text_input("Stock", key="jr_sym", placeholder="e.g. ICIL").strip().upper()
+    kinds = c3.multiselect("Show", ["MARKET", "NOTE", "SKIP"], default=["MARKET", "NOTE", "SKIP"], key="jr_k")
+    try:
+        rows = load_notes(sb, mcfg, limit=500)
+    except Exception as e:
+        st.error(f"Could not read the journal. Run supabase_journal.sql in Supabase first. ({e})"); return
+    rows = [r for r in rows if r.get("kind") in kinds
+            and (not q or q.lower() in (r.get("body") or "").lower() or q.lower() in str(r.get("fields") or "").lower())
+            and (not sym or sym in (r.get("symbols") or []) or sym in (r.get("body") or "").upper())]
+    st.caption(f"{len(rows)} entries · newest first · times in Sydney time")
+    badge = {"MARKET": "🧭 Market", "NOTE": "📝 Note", "SKIP": "⏭ Skipped"}
+    last_day = None
+    for r in rows:
+        day = r.get("session_date")
+        if day != last_day:
+            st.markdown(f"##### Session {day}")
+            last_day = day
+        head = f"**{fmt_local(r.get('created_at'))}** · {badge.get(r.get('kind'), r.get('kind'))}"
+        if r.get("symbols"):
+            head += " · " + ", ".join(f"`{s}`" for s in r["symbols"])
+        if r.get("kind") == "MARKET":
+            name, lim = regime_limits(r)
+            head += f" · Regime **{name}**" if name else ""
+        with st.container(border=True):
+            st.markdown(head)
+            if r.get("kind") in ("MARKET", "SKIP"):
+                st.caption(_note_summary(r))
+                if r.get("auto"):
+                    st.caption(_auto_line(r["auto"]))
+            st.markdown(r.get("body") or "")
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Streamlit panels
 # ════════════════════════════════════════════════════════════════════════════
 def render_quick_save(st, sb, selected, base_df, scan_mode, mcfg):
@@ -941,11 +1255,29 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         lab.loc[m & (lab["Label"] == "SCANNED"), "Label"] = "ADDED"
         lab.loc[m, "Keep"] = True
         lab = lab.reset_index(drop=True)
+    # Regime from today's market note caps how many go on tomorrow's list
+    try:
+        rname, rlim = regime_limits(load_market_note(sb, mcfg, journal_session(mcfg)))   # tonight's regime
+    except Exception:
+        rname, rlim = None, None
+    if rlim is not None:
+        cap = rlim["max_gtts"]
+        keep_idx = [i for i in lab.index[lab["Keep"] == True] if lab.at[i, "Label"] != "ADDED"]  # noqa: E712
+        dropped = keep_idx[cap:]
+        if dropped:
+            lab.loc[dropped, "Keep"] = False
+        st.info(f"Regime **{rname}** (today's market note): max **{cap}** new GTTs, {rlim['risk']}."
+                + (f" Pre-ticks capped at {cap} — {len(dropped)} more left unticked, lowest priority first." if dropped else ""))
+    else:
+        st.warning("No regime for this session — write the market note at the top of the page to cap tonight's list.")
+    notes = latest_note_by_symbol(sb, mcfg)
+    if notes:
+        lab["Note"] = lab["Symbol"].map(notes)
     counts = lab["Label"].value_counts()
     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
         c.metric(n, int(counts.get(k, 0)))
 
-    show = ["Keep", "CONT", "Label", "Symbol", "Reason", "Tag", "Rank", "Scan_Count", "_chg_percentclose", "_vol_ratio",
+    show = ["Keep", "CONT", "Label", "Symbol", "Note", "Reason", "Tag", "Rank", "Scan_Count", "_chg_percentclose", "_vol_ratio",
             "Adr", "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
@@ -968,6 +1300,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             "CONT": st.column_config.CheckboxColumn("Save CONT", help="Also save to the watchlist as CONTINUATION "
                                                     "(tight around the breakout candle)"),
             "Label": st.column_config.TextColumn("Situation"),
+            "Note": st.column_config.TextColumn("My note", width="medium", help="Your latest note on this stock"),
             "Tag": st.column_config.TextColumn("Saved as"),
             "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
             "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
@@ -1064,7 +1397,10 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     tagcols = ["Tags"] if multi else list(SETUP_TYPES)
     if multi:
         part["Tags"] = [[t for t in SETUP_TYPES if bool(r[t])] for _, r in part.iterrows()]
-    show = ["Skip"] + tagcols + ["Rating", "Symbol", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
+    notes = latest_note_by_symbol(sb, mcfg)
+    if notes:
+        part["Note"] = part["Symbol"].map(notes)
+    show = ["Skip"] + tagcols + ["Rating", "Symbol", "Note", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
                                  "_vol_ratio", "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist",
                                  "Scan_Count", "Avg_RS", "Sector"]
     show = _with_circuit(show, mcfg)
@@ -1079,6 +1415,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True,
                                                    help="Your grade after the chart check: 3★, 4★, 5★"),
         "Suggested": st.column_config.TextColumn("My suggestion"),
+        "Note": st.column_config.TextColumn("My note", width="medium", help="Your latest note on this stock"),
         "Why": st.column_config.TextColumn("Why", width="large"),
         "In_Watchlist": st.column_config.TextColumn("Already saved as"),
         "On_List": st.column_config.CheckboxColumn("Was on list"),
@@ -1200,6 +1537,9 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
                 v[c] = v["symbol"].map(live[src]) if src in live.columns else np.nan
             v["In scan"] = v["symbol"].isin(live.index)
         v["tags"] = v["tags"].map(lambda t: ", ".join(t) if isinstance(t, list) else "")
+        _notes = latest_note_by_symbol(sb, mcfg)
+        if _notes:
+            v["My note"] = v["symbol"].map(_notes)
         v.insert(0, "Action", "keep")
         v = v.assign(_r=wdf["rating"].fillna(0).values).sort_values(["_r", "symbol"], ascending=[False, True]).drop(columns="_r")
         editable = ["Action", "Rating"] + tagcols
