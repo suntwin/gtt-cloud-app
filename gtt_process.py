@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-02a · reviewed breakouts not asked twice"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-02b · auto clean-up suggestions"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -64,6 +64,7 @@ TOMORROW_DEFAULTS = {
     "min_wktight": 2, "min_chg": -1.0, "max_chg": 3.0, "list_size": 10,
     "bo_min_chg": 2.0, "bo_min_vol": 1.5, "gap_max_adr": 2.0,
     "pullback_band": 2.0, "stale_days": 20,
+    "missing_days": 3, "min_circuit": 10,
 }
 # Post-breakout tagging rules
 BREAKOUT_DEFAULTS = {
@@ -372,6 +373,11 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
             updates.append({"id": wid, "symbol": sym, "action": "seen"})
             continue
         r = d.loc[sym]
+        circ = _num(r.get("_circuit"))
+        if cfg.get("circuit_check") and np.isfinite(circ) and 0 < circ < cfg["min_circuit"]:
+            d.at[sym, "Label"], d.at[sym, "Reason"] = "5_REMOVE", f"Price band cut to {circ:g}% — can lock in circuit, stop may not fill"
+            updates.append({"id": wid, "symbol": sym, "action": "remove", "reason": "circuit"})
+            continue
         last, prev_close, bo_close = _num(r["Last"]), _num(row.get("prev_close")), _num(row.get("trigger_close"))
         radr = _num(r["Adr"], 0)
         d10, d20 = abs(_num(r["_10madist"], 99)), abs(_num(r["_20madist"], 99))
@@ -420,9 +426,19 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
             continue
         row = watch.get(sym)
         age = _age_days(row, today) if row else None
+        seen = str((row or {}).get("last_seen") or "")[:10]
+        gone = None
+        if seen:
+            try:
+                gone = int(np.busday_count(date.fromisoformat(seen), today))
+            except Exception:
+                gone = None
         if row and age is not None and age >= cfg["stale_days"]:
             label, reason = "5_REMOVE", f"Not in scan, {age} days old — suggest remove"
             updates.append({"id": row.get("id"), "symbol": sym, "action": "remove", "reason": "stale"})
+        elif row and gone is not None and gone >= cfg["missing_days"]:
+            label, reason = "5_REMOVE", f"Dropped out of the scan — last seen {seen} ({gone} trading days)"
+            updates.append({"id": row.get("id"), "symbol": sym, "action": "remove", "reason": "dropped out"})
         else:
             label, reason = "CHECK", "Not in today's scan — check chart"
         missing.append({"Symbol": sym, "Label": label, "Reason": reason, "On_List": sym in yesterday_list,
@@ -1193,6 +1209,8 @@ RULE_LABELS = {
     "gap_max_adr": "Skip a listed stock that ran more than N ADRs",
     "pullback_band": "Pullback distance to 10/20 MA (%)",
     "stale_days": "Suggest removing a saved stock after N days",
+    "missing_days": "Suggest removing a saved stock missing from the scan for N trading days",
+    "min_circuit": "NSE: suggest removing a saved stock whose price band falls below N%",
     "strong_min_vol": "Strong batch: min volume (x)",
     "ep_min_chg": "Suggest EP: min % up",
     "ep_min_vol": "Suggest EP: min volume (x)",
@@ -1235,6 +1253,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
                            saved_prefs.get("build_tomorrow"), "bt_cfg"), **shared}
     if shared:
         st.caption("From the sidebar: " + ", ".join(f"{SHARED_LABELS.get(k, k)} {v:g}" for k, v in shared.items()))
+    cfg["circuit_check"] = mcfg.get("market") == "NSE"
     try:
         prev_date, ylist = load_last_list(sb, mcfg, before_date=sd)
         watch = load_active_watchlist(sb, mcfg)
