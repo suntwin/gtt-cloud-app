@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-02b · auto clean-up suggestions"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-02c · Clean-up section, Tomorrow never removes"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -79,7 +79,7 @@ CLEANUP_DEFAULTS = {"max_age_days": 30, "unseen_days": 10}
 
 LIST_LABELS = ["4_RESETUP", "SAVED_WAIT", "ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "5_REMOVE", "CANDIDATE", "CHECK", "SCANNED"]
 LABEL_NAMES = {"4_RESETUP": "Saved & tight", "SAVED_WAIT": "Saved, not tight yet", "ADDED": "Added by you", "1_BUY_SIGNAL": "1 · Buy signal", "2_SAVE": "2 · Save (tag it)", "3_WAIT": "3 · Wait",
-               "5_REMOVE": "5 · Remove", "CANDIDATE": "New candidate",
+               "5_REMOVE": "5 · Weak (review)", "CANDIDATE": "New candidate",
                "CHECK": "Check chart"}
 TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's list
 
@@ -249,7 +249,7 @@ def _c_chg(v):
 SITUATION_COLOURS = {"Saved & tight": _css("#28a745", "white", True), "Saved, not tight yet": _css("#d4edda"),
                      "Added by you": _css("#e2d9f3", "#3d2a73"), "1 · Buy signal": _css("#155724", "white", True),
                      "2 · Save (tag it)": _css("#cfe2ff", "#084298"), "3 · Wait": _css("#fff3cd", "#664d03"),
-                     "5 · Remove": _css("#f8d7da", "#721c24", True), "Check chart": _css("#ffe5d0", "#8a4b08")}
+                     "5 · Weak (review)": _css("#f8d7da", "#721c24", True), "Check chart": _css("#ffe5d0", "#8a4b08")}
 
 
 def _c_circuit(v):
@@ -1344,12 +1344,14 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             "_avgvol_mln": st.column_config.NumberColumn("Avg value", format="%.0f"),
         })
     removes = [u for u in updates if u["action"] == "remove"]
-    ok = []
-    if removes:
-        untagged = {r["symbol"] for r in watch if "UNTAGGED" in tags_of(r)}
-        ok = form.multiselect("Remove these saved breakouts when you save:", [u["symbol"] for u in removes],
-                              default=[u["symbol"] for u in removes if u["symbol"] not in untagged], key="bt_rm",
-                              help="Old UNTAGGED stocks aren't pre-selected — retag or remove them in the Watchlist tab.")
+    ok = []                                   # removing saved stocks happens in Watchlist → Clean-up, never here
+    try:
+        n_clean = len(cleanup_candidates(sb, mcfg, watch, base_df, 1))
+    except Exception:
+        n_clean = 0
+    if n_clean:
+        form.caption(f"🧹 {n_clean} saved stocks are missing from the scan — review them in **Watchlist → Clean-up**. "
+                     "Saving this list never removes anything.")
     submitted = form.form_submit_button(f"Save tomorrow's list  ({sd})", type="primary")
     if st.session_state.get("bt_msg"):
         msg, codes = st.session_state.pop("bt_msg")
@@ -1372,7 +1374,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         c_added = save_symbols_to_watchlist(sb, cont, "CONTINUATION", base_df, sd, mcfg, "ANTICIPATION")[0] if cont else 0
         warn = " More than 15 names — the plan is the best 10 or so." if len(keep) > 15 else ""
         st.session_state["bt_msg"] = (f"Saved {n} names for tomorrow and a snapshot of {len(lab)} stocks. "
-                                      f"Saved {c_added} as CONTINUATION. Removed {r} saved breakouts.{warn}",
+                                      f"Saved {c_added} as CONTINUATION.{warn}",
                                       ",".join(tv_symbol(s_, mcfg) for s_ in keep))
         st.session_state.pop("bt_editor", None)
         st.rerun()
@@ -1492,6 +1494,101 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             st.rerun()
         except Exception as ex:
             st.error(f"Save failed: {ex}")
+
+
+def last_seen_map(sb, mcfg, symbols, base_df=None):
+    """{symbol: 'YYYY-MM-DD'} — the last session each stock was in the scan (today's scan, then daily snapshots)."""
+    symbols = [str(s).upper() for s in symbols]
+    out = {}
+    if base_df is not None and not base_df.empty and "Symbol" in base_df.columns:
+        live = set(base_df["Symbol"].astype(str).str.upper())
+        today = effective_session(base_df, mcfg)[0].isoformat()
+        out.update({s: today for s in symbols if s in live})
+    if sb is not None and symbols:
+        try:
+            rows = (sb.table("daily_snapshots").select("symbol,snap_date,metrics").eq("user_id", mcfg["user_id"])
+                    .eq("market", mcfg["market"]).in_("symbol", symbols).order("snap_date", desc=True)
+                    .limit(5000).execute().data)
+            for r in rows:
+                if not (r.get("metrics") or {}).get("Last"):   # saved as "missing from the scan" that day
+                    continue
+                d = str(r["snap_date"])[:10]
+                if d > out.get(r["symbol"], ""):
+                    out[r["symbol"]] = d
+        except Exception:
+            pass
+    return out
+
+
+def cleanup_candidates(sb, mcfg, watch, base_df=None, min_days=1):
+    """Saved stocks that are missing from the scan. Rule switched on: not in the scan for ≥ min_days trading days."""
+    if not watch:
+        return []
+    ref = effective_session(base_df, mcfg)[0] if base_df is not None and not base_df.empty else journal_session(mcfg)
+    live = set(base_df["Symbol"].astype(str).str.upper()) if base_df is not None and not base_df.empty else None
+    seen = last_seen_map(sb, mcfg, [r["symbol"] for r in watch], base_df)
+    out = []
+    for r in watch:
+        sym = str(r["symbol"]).upper()
+        if live is not None and sym in live:
+            continue
+        ls = max(seen.get(sym, ""), str(r.get("last_seen") or "")[:10])
+        try:
+            gone = int(np.busday_count(date.fromisoformat(ls), ref)) if ls else None
+        except Exception:
+            gone = None
+        if gone is None:
+            if live is None:
+                continue                                # no scan loaded and no history: can't tell
+            reason = "Not in today's scan — not seen since it was saved"
+        elif gone >= min_days:
+            reason = f"Not in the scan for {gone} trading day{'s' if gone != 1 else ''} — last seen {ls}"
+        else:
+            continue
+        out.append({"id": r.get("id"), "Symbol": sym, "Tags": " + ".join(tags_of(r)), "Rating": rating_label(r.get("rating")),
+                    "Saved on": str(r.get("trigger_date") or r.get("added_date") or "")[:10], "Last seen": ls or "—",
+                    "Days missing": gone, "Reason": reason,
+                    "Chart": "https://www.tradingview.com/chart/?symbol=" + tv_symbol(sym, mcfg)})
+    return sorted(out, key=lambda x: -(x["Days missing"] if x["Days missing"] is not None else 999))
+
+
+def render_cleanup(st, sb, base_df, mcfg, watch):
+    with st.container(border=True):
+        st.markdown("**Clean-up** · check each chart by its reason, then Apply")
+        c1, c2 = st.columns([1, 3])
+        nd = int(c1.number_input("Not in the scan for at least (trading days)", 1, 60, 1, key="wl_c_days"))
+        c2.caption("Rule switched on: **not in the scan**. Every row starts as **Keep** — open the chart, switch the "
+                   "broken ones to Remove, then Apply. Removed stocks stay in the history and can be saved again later.")
+        if base_df is None or base_df.empty:
+            st.info("Generate the scan first for an exact 'in today's scan' check — until then only the last-seen dates are used.")
+        try:
+            cands = cleanup_candidates(sb, mcfg, watch, base_df, nd)
+        except Exception as e:
+            st.error(f"Could not build the clean-up list: {e}"); return
+        if not cands:
+            st.caption("Nothing to clean up — every saved stock is in the scan.")
+            return
+        cdf = pd.DataFrame(cands)
+        cdf.insert(0, "Action", "Keep")
+        with st.form("wl_clean_form", border=False):
+            ed = st.data_editor(cdf, hide_index=True, key="wl_clean_ed", height=min(420, 38 + 35 * len(cdf)),
+                                disabled=[c for c in cdf.columns if c != "Action"],
+                                column_config={"id": None,
+                                               "Action": st.column_config.SelectboxColumn("Action", options=["Keep", "Remove"], required=True),
+                                               "Days missing": st.column_config.NumberColumn("Days missing", format="%d"),
+                                               "Reason": st.column_config.TextColumn("Reason", width="large"),
+                                               "Chart": st.column_config.LinkColumn("Chart", display_text="open")})
+            go_ = st.form_submit_button(f"Apply clean-up ({len(cdf)} listed)")
+        if go_:
+            rm = ed[ed["Action"] == "Remove"]
+            for _, r in rm.iterrows():
+                sb.rpc("remove_from_watchlist", {"p_id": int(r["id"]), "p_reason": "dropped out of scan",
+                                                 "p_status": "removed"}).execute()
+            st.session_state["wl_clean_msg"] = f"Removed {len(rm)}: {', '.join(rm['Symbol'])}" if len(rm) else "Nothing removed."
+            st.session_state.pop("wl_clean_ed", None)
+            st.rerun()
+        if st.session_state.get("wl_clean_msg"):
+            st.success(st.session_state.pop("wl_clean_msg"))
 
 
 def render_watchlist_tab(st, sb, base_df, mcfg):
@@ -1665,35 +1762,8 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             except Exception as ex:
                 st.error(f"Save failed: {ex}")
 
-    # ── 4. Clean-up (weekend) ──
-    with st.container(border=True):
-        st.markdown("**Clean-up** · weekend")
-        c1, c2, c3 = st.columns(3)
-        age = c1.number_input("Expire if older than (days)", 1, 365, CLEANUP_DEFAULTS["max_age_days"], key="wl_c_age")
-        unseen = c2.number_input("…or not in a scan for (days)", 1, 365, CLEANUP_DEFAULTS["unseen_days"], key="wl_c_unseen")
-        only = c3.selectbox("Only", ["All"] + SETUP_TYPES + ["UNTAGGED"], key="wl_c_only")
-        prev = []
-        for r in watch:
-            if only != "All" and only not in tags_of(r):
-                continue
-            a = _age_days(r, date.today())
-            ls = r.get("last_seen")
-            un = (date.today() - pd.to_datetime(ls).date()).days if ls else None
-            if r.get("expires_on") and pd.to_datetime(r["expires_on"]).date() < date.today():
-                prev.append((r["symbol"], " + ".join(tags_of(r)), "expired"))
-            elif a is not None and a > age:
-                prev.append((r["symbol"], " + ".join(tags_of(r)), f"stale ({a} days)"))
-            elif un is not None and un > unseen:
-                prev.append((r["symbol"], " + ".join(tags_of(r)), f"unseen ({un} days)"))
-        if prev:
-            st.dataframe(pd.DataFrame(prev, columns=["Symbol", "Tag", "Reason"]), hide_index=True)
-        else:
-            st.caption("Nothing to clean up with these settings.")
-        if st.button(f"Run clean-up ({len(prev)})", key="wl_c_run", disabled=not prev):
-            res = sb.rpc("cleanup_watchlist", {"p_user": mcfg["user_id"], "p_market": mcfg["market"],
-                                               "p_max_age_days": int(age), "p_unseen_days": int(unseen),
-                                               "p_setup_type": None if only == "All" else only}).execute()
-            st.success(f"Expired {len(res.data or [])} entries."); st.rerun()
+    # ── 4. Clean-up: review saved stocks missing from the scan ──
+    render_cleanup(st, sb, base_df, mcfg, watch)
 
     # ── 5. History ──
     with st.container(border=True):
