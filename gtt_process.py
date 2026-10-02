@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-02c · Clean-up section, Tomorrow never removes"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-02d · Avg vol (liquidity) column in Tomorrow's list and Tag breakouts"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -265,10 +265,28 @@ def _c_rating(v):
     return {"5★": _css("#28a745", "white", True), "4★": _css("#8ee68e"), "3★": _css("#d4edda")}.get(str(v), "")
 
 
-def style_table(df):
+LIQ_HELP = ("Average daily volume from the scan (same figure as the scanner's AvgVol). Liquidity: green = top third "
+            "of this table, red = below the new-candidate liquidity floor. Prefer the green ones among equally tight setups.")
+
+
+def _liq_styles(col, floor):
+    v = pd.to_numeric(col, errors="coerce")
+    hi = v[v > 0].quantile(2 / 3) if (v > 0).sum() >= 3 else np.inf
+    def one(x):
+        if pd.isna(x) or x <= 0: return ""
+        if x < floor: return "background-color:#f8d7da;color:#721c24"
+        if x >= hi: return "background-color:#28a745;color:white;font-weight:bold"
+        return ""
+    return [one(x) for x in v]
+
+
+def style_table(df, liq_floor=None):
     """pandas Styler with the scanner's colour bands (works inside st.data_editor)."""
     cols = set(df.columns)
     sty = df.style
+    if "_avgvol_mln" in cols:
+        _fl = float(TOMORROW_DEFAULTS["min_liq"] if liq_floor is None else liq_floor)
+        sty = sty.apply(lambda c: _liq_styles(c, _fl), subset=["_avgvol_mln"])
     for c, f in [("_vol_ratio", _c_vol), ("_rel_wk_dist", _c_relwk), ("_10madist", _c_madist), ("_20madist", _c_madist),
                  ("_rel_tightness_today", _c_tight), ("_rel_tightness_prev", _c_tight), ("_chg_percentclose", _c_chg),
                  ("Rating", _c_rating), ("_circuit", _c_circuit)]:
@@ -277,7 +295,7 @@ def style_table(df):
     if "Label" in cols:
         sty = sty.map(lambda v: SITUATION_COLOURS.get(str(v), ""), subset=["Label"])
     fmt = {c: "{:.1f}" for c in ["_chg_percentclose", "_vol_ratio", "Adr", "_rel_wk_dist", "_10madist", "_20madist"] if c in cols}
-    fmt.update({c: "{:.0f}" for c in ["_circuit"] if c in cols})
+    fmt.update({c: "{:.0f}" for c in ["_circuit", "_avgvol_mln"] if c in cols})
     fmt.update({c: "{:.2f}" for c in ["_rel_tightness_today", "_rel_tightness_prev"] if c in cols})
     return sty.format(fmt, na_rep="")
 
@@ -1312,7 +1330,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         c.metric(n, int(counts.get(k, 0)))
 
     show = ["Keep", "CONT", "Label", "Symbol", "Note", "Reason", "Tag", "Rank", "Scan_Count", "_chg_percentclose", "_vol_ratio",
-            "Adr", "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS", "Sector"]
+            "Adr", "_rel_tightness_today", "_rel_wk_dist", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
         grp = {}
@@ -1327,7 +1345,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
     form = st.form("bt_form", border=False)
     edited = form.data_editor(
-        style_table(view), hide_index=True, height=480, key="bt_editor",
+        style_table(view, cfg.get("min_liq")), hide_index=True, height=480, key="bt_editor",
         disabled=[c for c in view.columns if c not in ("Keep", "CONT")],
         column_config={
             "Keep": st.column_config.CheckboxColumn("Tomorrow", help="On tomorrow's list"),
@@ -1341,7 +1359,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             "_rel_tightness_today": st.column_config.NumberColumn("Rel tight", format="%.2f"),
             "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
             "_circuit": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
-            "_avgvol_mln": st.column_config.NumberColumn("Avg value", format="%.0f"),
+            "_avgvol_mln": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
         })
     removes = [u for u in updates if u["action"] == "remove"]
     ok = []                                   # removing saved stocks happens in Watchlist → Clean-up, never here
@@ -1437,8 +1455,8 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     if notes:
         part["Note"] = part["Symbol"].map(notes)
     show = ["Skip"] + tagcols + ["Rating", "Symbol", "Note", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
-                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_10madist", "_20madist",
-                                 "Scan_Count", "Avg_RS", "Sector"]
+                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_avgvol_mln", "_10madist",
+                                 "_20madist", "Scan_Count", "Avg_RS", "Sector"]
     show = _with_circuit(show, mcfg)
     view = _circuit_num(part[[c for c in show if c in part.columns]].copy())
     pre = {t: int(part[t].sum()) for t in SETUP_TYPES}
@@ -1459,6 +1477,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
         "_rel_tightness_prev": st.column_config.NumberColumn("Rel tight (prev)", format="%.2f"),
         "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
+        "_avgvol_mln": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
         "_10madist": st.column_config.NumberColumn("10MA %", format="%.1f"),
         "_20madist": st.column_config.NumberColumn("20MA %", format="%.1f"),
         "_circuit": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
