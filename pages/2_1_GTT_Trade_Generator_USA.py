@@ -8,6 +8,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataRe
 import os, json, time
 from datetime import datetime
 from gtt_process import MARKETS, tv_symbol, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
+from gtt_process import render_market_gate, render_quick_note, render_journal_tab, save_auto_breadth, journal_session
 
 st.set_page_config(page_title="GTT Trade Generator (USA)", page_icon="⚡", layout="wide")
 
@@ -361,6 +362,11 @@ def main():
     """, unsafe_allow_html=True)
     st.title("GTT Trade Generator (USA)")
 
+    # ── Market first: quick notes any time; the scanner unlocks once today's market note is saved ──
+    _known = st.session_state.gtt_base_df['Symbol'].tolist() if st.session_state.get('gtt_base_df') is not None else []
+    render_quick_note(st, supabase, MARKET_CFG, extra_known=_known)
+    gate_ok = render_market_gate(st, supabase, MARKET_CFG, extra_known=_known)
+
     fa = get_file_age_days(SECTOR_FILE)
     if fa is not None:
         if fa == 0: st.sidebar.success("Sector data loaded today.")
@@ -466,8 +472,9 @@ def main():
     with c2: risk_pct = st.number_input("Max Risk Per Trade (%)", min_value=0.1, value=1.0, step=0.1)
     with c3: nr4_threshold = st.number_input("Max Tightness Range (NR4 %)", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
 
-    manual_fetch = st.button("Generate GTT Trading Plan", type="primary")
-    should_fetch = manual_fetch or refresh_clicked
+    manual_fetch = st.button("Generate GTT Trading Plan", type="primary", disabled=not gate_ok,
+                             help=None if gate_ok else "Write today's market note first (top of the page)")
+    should_fetch = (manual_fetch or refresh_clicked) and gate_ok
 
     if should_fetch:
         with st.spinner("Fetching and merging multi-timeframe scans..."):
@@ -522,16 +529,20 @@ def main():
                 else:
                     st.session_state.weekly_full_df = None; st.warning("Weekly scan unavailable.")
                 st.session_state.gtt_base_df = adf
+                save_auto_breadth(supabase, MARKET_CFG, journal_session(MARKET_CFG), adf, vol_bo_min_chg, vol_bo_min_vol,
+                                  float(saved_prefs.get('breakout_tags', {}).get('strong_min_vol', 3.5)), coil_max_reltight)
             else:
                 st.error("Failed to retrieve base 1M scan data."); st.session_state.gtt_base_df = None
 
-    tab1, tab2, tab3, tab4 = st.tabs(["GTT Scanner", "Market Themes & Leaders", "Watchlist", "Entry Rules"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["GTT Scanner", "Market Themes & Leaders", "Watchlist", "Journal", "Entry Rules"])
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 1: SCANNER (NO SCORING — just computed columns + filters)
     # ════════════════════════════════════════════════════════════════════
     with tab1:
-        if 'gtt_base_df' in st.session_state and st.session_state.gtt_base_df is not None:
+        if not gate_ok:
+            st.info("Market first — write today's market note at the top of the page, then generate the scan.")
+        elif 'gtt_base_df' in st.session_state and st.session_state.gtt_base_df is not None:
             adf = st.session_state.gtt_base_df.copy()
 
             # ── Compute derived columns (no scoring) ──
@@ -883,6 +894,9 @@ def main():
         render_watchlist_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
 
     with tab4:
+        render_journal_tab(st, supabase, MARKET_CFG)
+
+    with tab5:
         render_rules_tab(st, MARKET_CFG)
 
 if __name__ == "__main__":
