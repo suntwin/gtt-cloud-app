@@ -23,8 +23,14 @@ st.set_page_config(page_title="GTT Trade Generator (NSE)", page_icon="⚡", layo
 # ── Supabase Integration ──
 from supabase import create_client, Client
 
-SUPABASE_URL = "https://uroqarbpyrloymijbqaa.supabase.co"
-SUPABASE_KEY = "sb_publishable_bPnWVx9S7zI0_FdK8RCbRg_Gfc2Vqzt"
+def _secret(name):
+    try:
+        return st.secrets[name]
+    except Exception:
+        return ""
+
+SUPABASE_URL = _secret("SUPABASE_URL")   # set in Streamlit Cloud: App settings -> Secrets (locally: .streamlit/secrets.toml)
+SUPABASE_KEY = _secret("SUPABASE_KEY")
 
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
