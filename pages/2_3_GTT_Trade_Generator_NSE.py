@@ -481,6 +481,8 @@ def main():
             df_1m = fetch_gtt_scan(gtt_endpoints["1M"], "1M")
             df_3m = fetch_gtt_scan(gtt_endpoints["3M"], "3M")
             df_6m = fetch_gtt_scan(gtt_endpoints["6M"], "6M")
+            _counts = {k: (0 if d is None else len(d)) for k, d in [("1M", df_1m), ("3M", df_3m), ("6M", df_6m)]}
+            st.session_state.screen_counts = _counts
             if df_1m is not None and not df_1m.empty:
                 d1r = df_1m.rename(columns={'_rs': 'RS_1M'})
                 d3r = df_3m.rename(columns={'_rs': 'RS_3M'}) if df_3m is not None and not df_3m.empty else None
@@ -516,6 +518,8 @@ def main():
                     for c in ['RS_1M','RS_3M','RS_6M','Adr','Ti65','_nr4','dvol','_avgvol_mln','_bo_dollar_vol_mln','_avg_vol_float_ratio']:
                         if c in adf.columns: adf[c] = adf[c].round(2)
                 wdf = fetch_weekly_scan(weekly_endpoint)
+                _counts["Weekly"] = 0 if wdf is None else len(wdf)
+                st.session_state.screen_counts = _counts
                 if wdf is not None and not wdf.empty:
                     wf = wdf.copy()
                     if sector_df is not None:
@@ -597,6 +601,14 @@ def main():
 
             st.session_state.gtt_display_df = ddf
             st.success(f"Loaded {len(ddf)} stocks. Use the checkboxes to filter.")
+            _sc = st.session_state.get('screen_counts') or {}
+            if _sc:
+                st.caption("Rows per MarketInOut screen: " + " · ".join(f"{k} {v:,}" for k, v in _sc.items()))
+                _cap = [k for k, v in _sc.items() if v >= 1000]
+                if _cap:
+                    st.warning(f"**{', '.join(_cap)} screen{'s' if len(_cap) > 1 else ''} hit the 1,000-row API limit** — "
+                               "stocks beyond row 1,000 are missing from the scan, so some saved stocks can show as "
+                               "*Check chart* even though they're fine. Split the screen in MarketInOut (e.g. by price) to fix.")
 
             fdf = filter_dataframe(ddf, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_wktight,
                                    vol_bo_min_adr, vol_bo_max_adr, vol_bo_max_rwd,
