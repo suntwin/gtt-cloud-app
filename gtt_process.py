@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-01b · breadth as stock counts"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-02a · reviewed breakouts not asked twice"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1259,6 +1259,17 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         lab.loc[m & (lab["Label"] == "SCANNED"), "Label"] = "ADDED"
         lab.loc[m, "Keep"] = True
         lab = lab.reset_index(drop=True)
+    # Breakouts already reviewed in Post Breakout today (saved or left on Skip) don't need tagging again
+    try:
+        reviewed = {r["symbol"] for r in _snap_q(sb, mcfg, "BREAKOUT", sd).execute().data}
+    except Exception:
+        reviewed = set()
+    if reviewed:
+        done = (lab["Label"] == "2_SAVE") & lab["Symbol"].isin(reviewed)
+        if done.any():
+            lab.loc[done, "Label"] = "SCANNED"
+            lab.loc[done, "Keep"] = False
+            st.caption(f"{int(done.sum())} breakouts you already reviewed in Post Breakout today (and skipped) are hidden.")
     # Regime from today's market note caps how many go on tomorrow's list
     try:
         rname, rlim = regime_limits(load_market_note(sb, mcfg, journal_session(mcfg)))   # tonight's regime
