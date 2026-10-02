@@ -617,6 +617,26 @@ def main():
 
             st.caption(f"**{len(fdf)} stocks** after filtering.")
 
+            # ── Find ticker: searches everything loaded today, ignoring the filters ──
+            _q = st.text_input("Find ticker", key="ticker_search",
+                               placeholder="e.g. VNCE, or several: ICIL SUNFLAG — searches all loaded stocks, ignoring filters")
+            import re as _re
+            _terms = [t for t in _re.split(r"[,\s]+", (_q or "").upper()) if t]
+            if _terms and 'Symbol' in ddf.columns:
+                _sym = ddf['Symbol'].astype(str).str.upper()
+                _res = ddf[_sym.apply(lambda s: any(t in s for t in _terms))].copy()
+                _res['_exact'] = ~_res['Symbol'].astype(str).str.upper().isin(_terms)   # exact matches first
+                _res = _res.sort_values('_exact', kind='stable').drop(columns='_exact')
+                _hidden = _res.loc[~_res['Symbol'].isin(fdf['Symbol']), 'Symbol'].tolist()
+                _missing = [t for t in _terms if not _sym.str.contains(t, regex=False).any()]
+                _msg = [f"**{len(_res)} match{'es' if len(_res) != 1 else ''}** for {', '.join(_terms)}"]
+                if _hidden:
+                    _msg.append(f"hidden by your filters: {', '.join(_hidden[:10])}{' …' if len(_hidden) > 10 else ''}")
+                if _missing:
+                    _msg.append(f"not in today's scan: {', '.join(_missing)} (didn't pass any MarketInOut screen)")
+                (st.warning if _missing and _res.empty else st.info)(" · ".join(_msg) + ". Clear the box to see the full list.")
+                fdf = _res
+
             mtdh = ['RS_6M','RS_3M','RS_1M','Industry','_bo_dollar_vol_mln','_avg_vol_float_ratio','_period_perf',
                     '_10wmadist','_insideday','_bo_engulfing_cndl','_days_since_bo','_circuit','W_CloseChg_Pct','Timestamp']
             amc = list(fdf.columns)
