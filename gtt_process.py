@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-03b · Avg vol column, Why-not check, Rank column removed"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-03c · Recent BO, now tight label; Avg vol; Why-not check; no Rank"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -65,6 +65,7 @@ TOMORROW_DEFAULTS = {
     "bo_min_chg": 2.0, "bo_min_vol": 1.5, "gap_max_adr": 2.0,
     "pullback_band": 2.0, "stale_days": 20,
     "missing_days": 3, "min_circuit": 10,
+    "recent_bo_days": 5, "recent_bo_max_rwd": 3.0,
 }
 # Post-breakout tagging rules
 BREAKOUT_DEFAULTS = {
@@ -77,9 +78,9 @@ BREAKOUT_DEFAULTS = {
 }
 CLEANUP_DEFAULTS = {"max_age_days": 30, "unseen_days": 10}
 
-LIST_LABELS = ["4_RESETUP", "SAVED_WAIT", "ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "5_REMOVE", "CANDIDATE", "CHECK", "SCANNED"]
+LIST_LABELS = ["4_RESETUP", "SAVED_WAIT", "ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "5_REMOVE", "RECENT_BO", "CANDIDATE", "CHECK", "SCANNED"]
 LABEL_NAMES = {"4_RESETUP": "Saved & tight", "SAVED_WAIT": "Saved, not tight yet", "ADDED": "Added by you", "1_BUY_SIGNAL": "1 · Buy signal", "2_SAVE": "2 · Save (tag it)", "3_WAIT": "3 · Wait",
-               "5_REMOVE": "5 · Weak (review)", "CANDIDATE": "New candidate",
+               "5_REMOVE": "5 · Weak (review)", "RECENT_BO": "Recent BO, now tight", "CANDIDATE": "New candidate",
                "CHECK": "Check chart"}
 TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's list
 
@@ -249,7 +250,8 @@ def _c_chg(v):
 SITUATION_COLOURS = {"Saved & tight": _css("#28a745", "white", True), "Saved, not tight yet": _css("#d4edda"),
                      "Added by you": _css("#e2d9f3", "#3d2a73"), "1 · Buy signal": _css("#155724", "white", True),
                      "2 · Save (tag it)": _css("#cfe2ff", "#084298"), "3 · Wait": _css("#fff3cd", "#664d03"),
-                     "5 · Weak (review)": _css("#f8d7da", "#721c24", True), "Check chart": _css("#ffe5d0", "#8a4b08")}
+                     "5 · Weak (review)": _css("#f8d7da", "#721c24", True), "Check chart": _css("#ffe5d0", "#8a4b08"),
+                     "Recent BO, now tight": _css("#cff4fc", "#055160", True)}
 
 
 def _c_circuit(v):
@@ -434,6 +436,19 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     weekly_ok = (d["_rel_wk_dist"] <= cfg["max_rwd"]) & (d["W_TightCloses_10w"] >= cfg["min_wktight"])
     put(cand & weekly_ok, "CANDIDATE",
         "Scan " + d["Scan_Count"].astype(str) + "/3, rel tight " + d["_rel_tightness_today"].round(2).astype(str))
+    # Safety net: broke out in the last few days (tagged or not) and is getting tight again — a flag after the breakout.
+    # These sit further from the 10w line than fresh coils, so they get their own (wider) limit.
+    dsb = pd.to_numeric(d.get("_days_since_bo"), errors="coerce") if "_days_since_bo" in d.columns else pd.Series(np.nan, index=d.index)
+    rwd_now = pd.to_numeric(d["_rel_wk_dist"], errors="coerce")
+    recent = ((d["Label"] == "SCANNED") & dsb.between(1, cfg["recent_bo_days"]) & (adr >= cfg["min_adr"])
+              & (d["_avgvol_mln"].fillna(0) >= cfg["min_liq"])
+              & (d["_rel_tightness_today"].fillna(99) <= cfg["max_reltight"])
+              & chg.between(cfg["min_chg"], cfg["max_chg"])
+              & (rwd_now <= cfg["recent_bo_max_rwd"]))
+    put(recent, "RECENT_BO",
+        "Broke out " + dsb.fillna(0).astype(int).astype(str) + "d ago, now tight (rel tight "
+        + d["_rel_tightness_today"].round(2).astype(str) + ", " + rwd_now.round(1).astype(str)
+        + " ADR from 10w) — grade the chart; save as CONTINUATION if A/B")
     put(cand & d["Missing_Weekly"], "CHECK", "Passes daily rules, weekly data missing — check chart")
     d.loc[d["On_List"] & (d["Label"] == "SCANNED"), "Reason"] = "Was on list, no longer qualifies"
 
@@ -1227,6 +1242,8 @@ RULE_LABELS = {
     "gap_max_adr": "Skip a listed stock that ran more than N ADRs",
     "pullback_band": "Pullback distance to 10/20 MA (%)",
     "stale_days": "Suggest removing a saved stock after N days",
+    "recent_bo_days": "Recent BO, now tight: broke out within N days",
+    "recent_bo_max_rwd": "Recent BO, now tight: max ADRs from 10w",
     "missing_days": "Suggest removing a saved stock missing from the scan for N trading days",
     "min_circuit": "NSE: suggest removing a saved stock whose price band falls below N%",
     "strong_min_vol": "Strong batch: min volume (x)",
@@ -1384,8 +1401,10 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     with st.expander("Why isn't a stock here?  ·  how stocks get on this list"):
         st.markdown(
             "Rows come from three places: **saved breakouts** (your watchlist — Saved & tight / not tight yet / Wait / Weak), "
-            "**yesterday's list** (Buy signal / Wait / Weak), and **New candidates** — stocks from today's scan that pass "
-            "*every* rule below. Stocks you tick in the scanner and add show as *Added by you*.")
+            "**yesterday's list** (Buy signal / Wait / Weak), **Recent BO, now tight** — broke out in the last "
+            f"{cfg['recent_bo_days']:g} days (tagged or not), tight again and ≤ {cfg['recent_bo_max_rwd']:g} ADR from 10w — "
+            "and **New candidates** — stocks from today's scan that pass *every* rule below. "
+            "Stocks you tick in the scanner and add show as *Added by you*.")
         _why = st.text_input("Ticker", key="why_not_sym", placeholder="e.g. NET")
         if _why.strip():
             _tbl, _msg = explain_candidate(lab, _why, cfg)
