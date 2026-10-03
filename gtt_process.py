@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-02d · Avg vol (liquidity) column in Tomorrow's list and Tag breakouts"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-03a · Avg vol column; Why isn't a stock here? check in Tomorrow's list"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1258,6 +1258,44 @@ def _rules_editor(st, title, defaults, saved, key):
     return cfg
 
 
+def explain_candidate(lab, sym, cfg):
+    """Rule-by-rule check of why a scanned stock is (or isn't) a new candidate on Tomorrow's list."""
+    sym = str(sym).strip().upper()
+    m = lab[lab["Symbol"].astype(str).str.upper() == sym]
+    if m.empty:
+        return None, f"**{sym}** isn't in today's scan at all — it didn't pass any MarketInOut screen (1M/3M/6M), so the list can't see it."
+    r = m.iloc[0]
+    def n(c):
+        try:
+            v = float(r.get(c)); return v if np.isfinite(v) else None
+        except (TypeError, ValueError):
+            return None
+    sc, adr, liq, rt = n("Scan_Count"), n("Adr"), n("_avgvol_mln"), n("_rel_tightness_today")
+    chg, rwd, wt = n("_chg_percentclose"), n("_rel_wk_dist"), n("W_TightCloses_10w")
+    f = lambda v, p=2: "—" if v is None else f"{v:.{p}f}"
+    rows = [
+        ("Screens it is in (1M/3M/6M)", f(sc, 0), f"≥ {cfg['min_scan_count']:g}", sc is not None and sc >= cfg["min_scan_count"]),
+        ("ADR %", f(adr, 1), f"≥ {cfg['min_adr']:g}", adr is not None and adr >= cfg["min_adr"]),
+        ("Avg vol (liquidity)", f(liq, 0), f"≥ {cfg['min_liq']:g}", liq is not None and liq >= cfg["min_liq"]),
+        ("Rel tight (today's 3-day range ÷ ADR)", f(rt), f"≤ {cfg['max_reltight']:g}", rt is not None and rt <= cfg["max_reltight"]),
+        ("Chg % today (not broken out yet)", f(chg, 1), f"{cfg['min_chg']:g} to {cfg['max_chg']:g}",
+         chg is not None and cfg["min_chg"] <= chg <= cfg["max_chg"]),
+        ("ADRs from 10w", f(rwd, 1), f"≤ {cfg['max_rwd']:g}", rwd is not None and rwd <= cfg["max_rwd"]),
+        ("Weekly tight closes", f(wt, 0), f"≥ {cfg['min_wktight']:g}", wt is not None and wt >= cfg["min_wktight"]),
+    ]
+    tbl = pd.DataFrame(rows, columns=["Rule", "Value", "Needs", "Pass"])
+    lbl = str(r.get("Label", ""))
+    if lbl == "CANDIDATE":
+        msg = f"**{sym}** passes every rule — it's a New candidate (rank {f(n('Rank'), 0)})."
+    elif lbl not in ("SCANNED", ""):
+        msg = f"**{sym}** is already in the table as *{LABEL_NAMES.get(lbl, lbl)}*: {r.get('Reason', '')}"
+    else:
+        fails = [x[0] for x in rows if not x[3]]
+        msg = (f"**{sym}** is in the scan but fails: " + "; ".join(fails) +
+               ". If the chart says otherwise, tick it in the scanner table and add it — it then shows here as *Added by you*.")
+    return tbl, msg
+
+
 def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     """Anticipation mode: evening, once."""
     st.markdown("---")
@@ -1343,6 +1381,19 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     view["Label"] = view["Label"].map(lambda x: LABEL_NAMES.get(x, x))
     pre = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
     st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
+    with st.expander("Why isn't a stock here?  ·  how stocks get on this list"):
+        st.markdown(
+            "Rows come from three places: **saved breakouts** (your watchlist — Saved & tight / not tight yet / Wait / Weak), "
+            "**yesterday's list** (Buy signal / Wait / Weak), and **New candidates** — stocks from today's scan that pass "
+            "*every* rule below. Stocks you tick in the scanner and add show as *Added by you*.")
+        _why = st.text_input("Ticker", key="why_not_sym", placeholder="e.g. NET")
+        if _why.strip():
+            _tbl, _msg = explain_candidate(lab, _why, cfg)
+            st.markdown(_msg)
+            if _tbl is not None:
+                st.dataframe(_tbl.style.map(lambda v: "color:#28a745;font-weight:bold" if v is True else
+                                            ("color:#dc3545;font-weight:bold" if v is False else ""), subset=["Pass"]),
+                             hide_index=True, use_container_width=True)
     form = st.form("bt_form", border=False)
     edited = form.data_editor(
         style_table(view, cfg.get("min_liq")), hide_index=True, height=480, key="bt_editor",
