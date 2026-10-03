@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-03c · Recent BO, now tight label; Avg vol; Why-not check; no Rank"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-03d · Recent BO label + diagnostics; Avg vol; Why-not check; no Rank"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1300,7 +1300,14 @@ def explain_candidate(lab, sym, cfg):
         ("ADRs from 10w", f(rwd, 1), f"≤ {cfg['max_rwd']:g}", rwd is not None and rwd <= cfg["max_rwd"]),
         ("Weekly tight closes", f(wt, 0), f"≥ {cfg['min_wktight']:g}", wt is not None and wt >= cfg["min_wktight"]),
     ]
-    tbl = pd.DataFrame(rows, columns=["Rule", "Value", "Needs", "Pass"])
+    dsb = n("_days_since_bo")
+    rec = [
+        ("Recent BO path: days since breakout", f(dsb, 0), f"1 to {cfg['recent_bo_days']:g}",
+         dsb is not None and 1 <= dsb <= cfg["recent_bo_days"]),
+        ("Recent BO path: ADRs from 10w", f(rwd, 1), f"≤ {cfg['recent_bo_max_rwd']:g}",
+         rwd is not None and rwd <= cfg["recent_bo_max_rwd"]),
+    ]
+    tbl = pd.DataFrame(rows + rec, columns=["Rule", "Value", "Needs", "Pass"])
     lbl = str(r.get("Label", ""))
     if lbl == "CANDIDATE":
         msg = f"**{sym}** passes every rule — it's a New candidate (rank {f(n('Rank'), 0)})."
@@ -1308,7 +1315,9 @@ def explain_candidate(lab, sym, cfg):
         msg = f"**{sym}** is already in the table as *{LABEL_NAMES.get(lbl, lbl)}*: {r.get('Reason', '')}"
     else:
         fails = [x[0] for x in rows if not x[3]]
-        msg = (f"**{sym}** is in the scan but fails: " + "; ".join(fails) +
+        rfails = [x[0] for x in rows[1:5] + rec if not x[3]]   # recent-BO path skips scan count, 10w ≤ max and weekly closes
+        msg = (f"**{sym}** is in the scan but fails — as a new candidate: " + "; ".join(fails) +
+               " · as a recent breakout: " + "; ".join(rfails) +
                ". If the chart says otherwise, tick it in the scanner table and add it — it then shows here as *Added by you*.")
     return tbl, msg
 
@@ -1398,6 +1407,13 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     view["Label"] = view["Label"].map(lambda x: LABEL_NAMES.get(x, x))
     pre = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
     st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
+    if "_days_since_bo" in lab.columns:
+        _dsb = pd.to_numeric(lab["_days_since_bo"], errors="coerce")
+        _nrec = int(_dsb.between(1, cfg["recent_bo_days"]).sum())
+        st.caption(f"Recent BO check: {_nrec} stocks in the scan broke out in the last {cfg['recent_bo_days']:g} days; "
+                   f"{int((lab['Label'] == 'RECENT_BO').sum())} are tight again and untagged (saved ones show as Saved & tight).")
+    else:
+        st.caption("Recent BO check: days-since-breakout isn't in this scan, so recent breakouts can't be found.")
     with st.expander("Why isn't a stock here?  ·  how stocks get on this list"):
         st.markdown(
             "Rows come from three places: **saved breakouts** (your watchlist — Saved & tight / not tight yet / Wait / Weak), "
