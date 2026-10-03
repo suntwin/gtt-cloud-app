@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-03a · Avg vol column; Why isn't a stock here? check in Tomorrow's list"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-03b · Avg vol column, Why-not check, Rank column removed"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1367,7 +1367,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
         c.metric(n, int(counts.get(k, 0)))
 
-    show = ["Keep", "CONT", "Label", "Symbol", "Note", "Reason", "Tag", "Rank", "Scan_Count", "_chg_percentclose", "_vol_ratio",
+    show = ["Keep", "CONT", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
             "Adr", "_rel_tightness_today", "_rel_wk_dist", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
