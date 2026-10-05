@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-03d · Recent BO label + diagnostics; Avg vol; Why-not check; no Rank"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-06a · Tomorrow's list sorted by tightness (table, save, TradingView list)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -688,9 +688,26 @@ def load_last_list(sb, mcfg, before_date=None, scanner="ANTICIPATION"):
     if not r.data:
         return None, []
     last = r.data[0]["snap_date"]
-    rows = (sb.table("daily_snapshots").select("symbol").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
+    rows = (sb.table("daily_snapshots").select("symbol,metrics").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
             .eq("scanner", scanner).eq("snap_date", last).eq("selected", True).execute().data)
-    return last, sorted({x["symbol"] for x in rows})
+    return last, _tightest_first(rows)
+
+
+def _tightest_first(rows):
+    """Symbols ordered by relative tightness on the day saved (tightest first); no tightness → last, A–Z."""
+    rt = {}
+    for x in rows:
+        v = _num((x.get("metrics") or {}).get("_rel_tightness_today"), np.nan)
+        rt[x["symbol"]] = v if np.isfinite(v) else np.inf
+    return sorted(rt, key=lambda s: (rt[s], s))
+
+
+def sort_by_tightness(df, col="_rel_tightness_today"):
+    """Tightest first (rel tightness = NR4 range ÷ ADR); rows without it go to the bottom."""
+    if df is None or df.empty or col not in df.columns:
+        return df
+    k = pd.to_numeric(df[col], errors="coerce")
+    return df.assign(_k=k.fillna(np.inf)).sort_values(["_k", "Symbol"], kind="stable").drop(columns="_k")
 
 
 def upsert_snapshots(sb, rows):
@@ -1405,6 +1422,11 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     show = _with_circuit(show, mcfg)
     view = _circuit_num(lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]].copy())
     view["Label"] = view["Label"].map(lambda x: LABEL_NAMES.get(x, x))
+    sort_mode = st.radio("Sort table by", ["Tightness (tightest first)", "Situation"], horizontal=True, key="bt_sort",
+                         help="Tightness = Rel tight (NR4 range ÷ ADR), lowest first. The saved list and its "
+                              "TradingView symbols are always tightest first.")
+    if sort_mode.startswith("Tightness"):
+        view = sort_by_tightness(view).reset_index(drop=True)
     pre = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
     st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
     if "_days_since_bo" in lab.columns:
@@ -1471,7 +1493,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     lab.loc[edited["Symbol"], "CONT"] = edited["CONT"].fillna(False).astype(bool).values
     lab = lab.reset_index(drop=True)
 
-    keep = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
+    keep = sort_by_tightness(lab[lab["Keep"] == True])["Symbol"].tolist()  # noqa: E712
     try:
         n, r = save_tomorrow(sb, lab, updates, sd, mcfg)
         cont = lab[lab["CONT"] == True]["Symbol"].tolist()  # noqa: E712
@@ -1726,7 +1748,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
     if show:
         if show == "TOMORROW":
             syms, ex = tlist, {}
-            st.caption(f"Tomorrow's list saved on {tdate or '—'} — tight names plus re-setups.")
+            st.caption(f"Tomorrow's list saved on {tdate or '—'} — tightest first (rel tightness on the day saved).")
         else:
             part = wdf[wdf["_tags"].map(lambda ts: show in ts)] if not wdf.empty else wdf
             if not part.empty and min_n:
