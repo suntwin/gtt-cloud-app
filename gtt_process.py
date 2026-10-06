@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-06b · Tomorrow's list: copy tickers in table order"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07b · Tomorrow's list: NR4 % next to Rel tight"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1411,7 +1411,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         c.metric(n, int(counts.get(k, 0)))
 
     show = ["Keep", "CONT", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
-            "Adr", "_rel_tightness_today", "_rel_wk_dist", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "Sector"]
+            "Adr", "_rel_tightness_today", "_nr4", "_rel_wk_dist", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
         grp = {}
@@ -1472,6 +1472,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
             "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
             "_rel_tightness_today": st.column_config.NumberColumn("Rel tight", format="%.2f"),
+            "_nr4": st.column_config.NumberColumn("NR4 %", format="%.2f", help="Range of the last 4 days, % (Rel tight = NR4 ÷ ADR)"),
             "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
             "_circuit": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
             "_avgvol_mln": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
