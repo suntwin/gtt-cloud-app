@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07b · Tomorrow's list: NR4 % next to Rel tight"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07c · New candidates: no screen-count rule; ranked by tightness"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -60,7 +60,7 @@ def rating_label(v):
 
 # Anticipation / tomorrow's list rules (fixed for 8 weeks)
 TOMORROW_DEFAULTS = {
-    "min_scan_count": 2, "min_adr": 3.0, "min_liq": 10.0, "max_reltight": 0.8, "max_rwd": 1.5,
+    "min_adr": 3.0, "min_liq": 10.0, "max_reltight": 0.8, "max_rwd": 1.5,
     "min_wktight": 2, "min_chg": -1.0, "max_chg": 3.0, "list_size": 10,
     "bo_min_chg": 2.0, "bo_min_vol": 1.5, "gap_max_adr": 2.0,
     "pullback_band": 2.0, "stale_days": 20,
@@ -429,13 +429,13 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
         updates.append({"id": wid, "symbol": sym, "action": "seen"})
 
     # New tight candidates
-    cand = ((d["Label"] == "SCANNED") & (d["Scan_Count"] >= cfg["min_scan_count"]) & (adr >= cfg["min_adr"])
+    cand = ((d["Label"] == "SCANNED") & (adr >= cfg["min_adr"])
             & (d["_avgvol_mln"].fillna(0) >= cfg["min_liq"])
             & (d["_rel_tightness_today"].fillna(99) <= cfg["max_reltight"])
             & chg.between(cfg["min_chg"], cfg["max_chg"]))
     weekly_ok = (d["_rel_wk_dist"] <= cfg["max_rwd"]) & (d["W_TightCloses_10w"] >= cfg["min_wktight"])
     put(cand & weekly_ok, "CANDIDATE",
-        "Scan " + d["Scan_Count"].astype(str) + "/3, rel tight " + d["_rel_tightness_today"].round(2).astype(str))
+        "Rel tight " + d["_rel_tightness_today"].round(2).astype(str) + ", RS " + d["Avg_RS"].round(0).astype("Int64").astype(str))
     # Safety net: broke out in the last few days (tagged or not) and is getting tight again — a flag after the breakout.
     # These sit further from the 10w line than fresh coils, so they get their own (wider) limit.
     dsb = pd.to_numeric(d.get("_days_since_bo"), errors="coerce") if "_days_since_bo" in d.columns else pd.Series(np.nan, index=d.index)
@@ -482,8 +482,8 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     d["CONT"] = d["CONT"].fillna(False).astype(bool)
     d["Rank"] = np.nan
     cm = d["Label"] == "CANDIDATE"
-    ranked = d[cm].sort_values(["Scan_Count", "_rel_tightness_today", "Avg_RS"],
-                               ascending=[False, True, False], na_position="last")
+    ranked = d[cm].sort_values(["_rel_tightness_today", "Avg_RS"],
+                               ascending=[True, False], na_position="last")
     d.loc[ranked.index, "Rank"] = range(1, len(ranked) + 1)
     d["Keep"] = d["Label"].isin(TOMORROW_LABELS) | (cm & (d["Rank"] <= cfg["list_size"]))
     order = {k: i for i, k in enumerate(LIST_LABELS)}
@@ -1253,7 +1253,6 @@ def _header_time(st, mcfg, base_df=None, sb=None):
 
 
 RULE_LABELS = {
-    "min_scan_count": "New candidates: min scans (of 1M/3M/6M)",
     "min_liq": "New candidates: min avg value (cr)",
     "list_size": "New candidates to pre-tick",
     "gap_max_adr": "Skip a listed stock that ran more than N ADRs",
@@ -1308,7 +1307,6 @@ def explain_candidate(lab, sym, cfg):
     chg, rwd, wt = n("_chg_percentclose"), n("_rel_wk_dist"), n("W_TightCloses_10w")
     f = lambda v, p=2: "—" if v is None else f"{v:.{p}f}"
     rows = [
-        ("Screens it is in (1M/3M/6M)", f(sc, 0), f"≥ {cfg['min_scan_count']:g}", sc is not None and sc >= cfg["min_scan_count"]),
         ("ADR %", f(adr, 1), f"≥ {cfg['min_adr']:g}", adr is not None and adr >= cfg["min_adr"]),
         ("Avg vol (liquidity)", f(liq, 0), f"≥ {cfg['min_liq']:g}", liq is not None and liq >= cfg["min_liq"]),
         ("Rel tight (today's 3-day range ÷ ADR)", f(rt), f"≤ {cfg['max_reltight']:g}", rt is not None and rt <= cfg["max_reltight"]),
@@ -1332,7 +1330,7 @@ def explain_candidate(lab, sym, cfg):
         msg = f"**{sym}** is already in the table as *{LABEL_NAMES.get(lbl, lbl)}*: {r.get('Reason', '')}"
     else:
         fails = [x[0] for x in rows if not x[3]]
-        rfails = [x[0] for x in rows[1:5] + rec if not x[3]]   # recent-BO path skips scan count, 10w ≤ max and weekly closes
+        rfails = [x[0] for x in rows[0:4] + rec if not x[3]]   # recent-BO path skips 10w ≤ max and weekly closes
         msg = (f"**{sym}** is in the scan but fails — as a new candidate: " + "; ".join(fails) +
                " · as a recent breakout: " + "; ".join(rfails) +
                ". If the chart says otherwise, tick it in the scanner table and add it — it then shows here as *Added by you*.")
