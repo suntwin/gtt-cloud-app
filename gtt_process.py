@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-06a · Tomorrow's list sorted by tightness (table, save, TradingView list)"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-06b · Tomorrow's list: copy tickers in table order"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1451,6 +1451,13 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
                 st.dataframe(_tbl.style.map(lambda v: "color:#28a745;font-weight:bold" if v is True else
                                             ("color:#dc3545;font-weight:bold" if v is False else ""), subset=["Pass"]),
                              hide_index=True, use_container_width=True)
+    if len(view):
+        st.markdown(f"**Copy for TradingView** · {len(view)} tickers in the table's order "
+                    f"({'tightest first' if sort_mode.startswith('Tightness') else 'by situation'}) — "
+                    "click the copy icon at the right of the box.")
+        st.code(",".join(tv_symbol(s_, mcfg) for s_ in view["Symbol"]), language=None)
+        st.caption("Clicking a column header re-sorts the table on screen only; the copy box follows the "
+                   "**Sort table by** choice above.")
     form = st.form("bt_form", border=False)
     edited = form.data_editor(
         style_table(view, cfg.get("min_liq")), hide_index=True, height=480, key="bt_editor",
