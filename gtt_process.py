@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07d · ADR tiers P1/P2/P3 in Tomorrow's list"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07e · Tomorrow's list as a sortable grid with ADR-tier filters"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1436,19 +1436,12 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     view = _circuit_num(lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]].copy())
     view["Label"] = view["Label"].map(lambda x: LABEL_NAMES.get(x, x))
     view["Tier"] = adr_tier(view["Adr"], cfg) if "Adr" in view.columns else ""
-    sort_mode = st.radio("Sort table by", ["ADR tier, then tightness", "Tightness (tightest first)", "Situation"],
-                         horizontal=True, key="bt_sort",
-                         help=f"ADR tier: P1 = ADR ≥ {cfg['tier1_adr']:g}, P2 = {cfg['tier2_adr']:g}–{cfg['tier1_adr']:g}, "
-                              f"P3 = below {cfg['tier2_adr']:g} (change in More list rules). Work P1 first; stop once "
-                              "you have your entries. Tightness = Rel tight (NR4 ÷ ADR), lowest first.")
-    if sort_mode.startswith("ADR tier"):
-        view = sort_by_tightness(view)
-        view = view.assign(_t=view["Tier"].replace("", "P9")).sort_values("_t", kind="stable") \
-            .drop(columns="_t").reset_index(drop=True)
-    elif sort_mode.startswith("Tightness"):
-        view = sort_by_tightness(view).reset_index(drop=True)
-    pre = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
-    st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
+    # Ticks are kept per symbol in session state, so filtering and sorting the table never loses them
+    tk = f"bt_ticks_{mcfg.get('market')}_{sd}"
+    ticks = st.session_state.setdefault(tk, {"Keep": {}, "CONT": {}})
+    for c_ in ("Keep", "CONT"):
+        view[c_] = [bool(ticks[c_].get(s_, bool(v_) if pd.notna(v_) else False))
+                    for s_, v_ in zip(view["Symbol"], view[c_])]
     if "_days_since_bo" in lab.columns:
         _dsb = pd.to_numeric(lab["_days_since_bo"], errors="coerce")
         _nrec = int(_dsb.between(1, cfg["recent_bo_days"]).sum())
@@ -1471,39 +1464,40 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
                 st.dataframe(_tbl.style.map(lambda v: "color:#28a745;font-weight:bold" if v is True else
                                             ("color:#dc3545;font-weight:bold" if v is False else ""), subset=["Pass"]),
                              hide_index=True, use_container_width=True)
-    if len(view):
-        st.markdown(f"**Copy for TradingView** · {len(view)} tickers in the table's order "
-                    f"({sort_mode.split(' (')[0].lower()}) — click the copy icon at the right of the box.")
-        st.code(",".join(tv_symbol(s_, mcfg) for s_ in view["Symbol"]), language=None)
-        _tiers = [(t, view.loc[view["Tier"] == t, "Symbol"]) for t in ("P1", "P2", "P3")]
-        _lim = {"P1": f"ADR ≥ {cfg['tier1_adr']:g}", "P2": f"ADR {cfg['tier2_adr']:g}–{cfg['tier1_adr']:g}",
-                "P3": f"ADR < {cfg['tier2_adr']:g}"}
-        for _c, (t, syms) in zip(st.columns(3), _tiers):
-            _c.markdown(f"**{t}** · {_lim[t]} · {len(syms)}")
-            if len(syms):
-                _c.code(",".join(tv_symbol(s_, mcfg) for s_ in syms), language=None)
-        st.caption("Clicking a column header re-sorts the table on screen only; the copy box follows the "
-                   "**Sort table by** choice above.")
-    form = st.form("bt_form", border=False)
-    edited = form.data_editor(
-        style_table(view, cfg.get("min_liq")), hide_index=True, height=480, key="bt_editor",
-        disabled=[c for c in view.columns if c not in ("Keep", "CONT")],
-        column_config={
-            "Keep": st.column_config.CheckboxColumn("Tomorrow", help="On tomorrow's list"),
-            "CONT": st.column_config.CheckboxColumn("Save CONT", help="Also save to the watchlist as CONTINUATION "
-                                                    "(tight around the breakout candle)"),
-            "Label": st.column_config.TextColumn("Situation"),
-            "Tier": st.column_config.TextColumn("Tier", help="ADR tier: P1 high, P2 middle, P3 low"),
-            "Note": st.column_config.TextColumn("My note", width="medium", help="Your latest note on this stock"),
-            "Tag": st.column_config.TextColumn("Saved as"),
-            "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
-            "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
-            "_rel_tightness_today": st.column_config.NumberColumn("Rel tight", format="%.2f"),
-            "_nr4": st.column_config.NumberColumn("NR4 %", format="%.2f", help="Range of the last 4 days, % (Rel tight = NR4 ÷ ADR)"),
-            "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
-            "_circuit": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
-            "_avgvol_mln": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
-        })
+
+    # ADR tier checkboxes: tick one or more to show only those rows (none ticked = all)
+    lim = {"P1": f"ADR ≥ {cfg['tier1_adr']:g}", "P2": f"ADR {cfg['tier2_adr']:g}–{cfg['tier1_adr']:g}",
+           "P3": f"ADR < {cfg['tier2_adr']:g}"}
+    tcols = st.columns([1, 1, 1, 3])
+    pick = [t for c_, t in zip(tcols, ("P1", "P2", "P3"))
+            if c_.checkbox(f"{t} ({int((view['Tier'] == t).sum())})", key=f"bt_tier_{t}", help=lim[t])]
+    tcols[3].caption(f"Show only: P1 {lim['P1']} · P2 {lim['P2']} · P3 {lim['P3']}. None ticked = all. "
+                     "Limits are in More list rules.")
+    if pick:
+        view = view[view["Tier"].isin(pick)]
+    view = sort_by_tightness(view)
+    view = view.assign(_t=view["Tier"].replace("", "P9")).sort_values("_t", kind="stable") \
+        .drop(columns="_t").reset_index(drop=True)
+
+    gkey = "bt_grid_" + "_".join(pick or ["all"])
+    resp = _tomorrow_grid(view, cfg, gkey)
+    out = view
+    if resp is not None and resp.get("data") is not None and len(resp["data"]):
+        out = resp["data"]
+        for _, r_ in out.iterrows():
+            for c_ in ("Keep", "CONT"):
+                ticks[c_][r_["Symbol"]] = _truthy(r_.get(c_))
+    st.caption("Sort, filter and tick in the table — the copy boxes and Save follow it. "
+               "(If you see an Update button under the table, press it first.) Nothing is sent until you press Save.")
+    if len(out):
+        _all = out["Symbol"].dropna().tolist()
+        _tic = [s_ for s_ in _all if ticks["Keep"].get(s_)]
+        with st.container(border=True):
+            st.markdown("**Copy to TradingView** — in the table's order; hover a list and click its copy icon")
+            for _c, (_lab, _xs) in zip(st.columns(2), [("All in the table", _all), ("Ticked for tomorrow", _tic)]):
+                _c.caption(f"{_lab} · {len(_xs)}")
+                if _xs:
+                    _c.code(",".join(tv_symbol(x_, mcfg) for x_ in _xs), language=None)
     removes = [u for u in updates if u["action"] == "remove"]
     ok = []                                   # removing saved stocks happens in Watchlist → Clean-up, never here
     try:
@@ -1511,9 +1505,12 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     except Exception:
         n_clean = 0
     if n_clean:
-        form.caption(f"🧹 {n_clean} saved stocks are missing from the scan — review them in **Watchlist → Clean-up**. "
-                     "Saving this list never removes anything.")
-    submitted = form.form_submit_button(f"Save tomorrow's list  ({sd})", type="primary")
+        st.caption(f"🧹 {n_clean} saved stocks are missing from the scan — review them in **Watchlist → Clean-up**. "
+                   "Saving this list never removes anything.")
+    lab["Keep"] = [bool(ticks["Keep"].get(s_, bool(v_) if pd.notna(v_) else False)) for s_, v_ in zip(lab["Symbol"], lab["Keep"])]
+    lab["CONT"] = [bool(ticks["CONT"].get(s_, bool(v_) if pd.notna(v_) else False)) for s_, v_ in zip(lab["Symbol"], lab["CONT"])]
+    n_tick = int(lab["Keep"].sum())
+    submitted = st.button(f"Save tomorrow's list  ({sd})  ·  {n_tick} ticked", type="primary", key="bt_save")
     if st.session_state.get("bt_msg"):
         msg, codes = st.session_state.pop("bt_msg")
         st.success(msg)
@@ -1523,10 +1520,6 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         return
     for u in removes:
         u["confirmed"] = u["symbol"] in ok
-    lab = lab.set_index("Symbol", drop=False)
-    lab.loc[edited["Symbol"], "Keep"] = edited["Keep"].astype(bool).values
-    lab.loc[edited["Symbol"], "CONT"] = edited["CONT"].fillna(False).astype(bool).values
-    lab = lab.reset_index(drop=True)
 
     keep = sort_by_tightness(lab[lab["Keep"] == True])["Symbol"].tolist()  # noqa: E712
     try:
@@ -1537,10 +1530,91 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         st.session_state["bt_msg"] = (f"Saved {n} names for tomorrow and a snapshot of {len(lab)} stocks. "
                                       f"Saved {c_added} as CONTINUATION.{warn}",
                                       ",".join(tv_symbol(s_, mcfg) for s_ in keep))
-        st.session_state.pop("bt_editor", None)
         st.rerun()
     except Exception as ex:
         st.error(f"Save failed: {ex}")
+
+
+def _truthy(v):
+    return v is True or (isinstance(v, (int, float, np.integer, np.bool_)) and not pd.isna(v) and bool(v)) \
+        or str(v).strip().lower() == "true"
+
+
+def _grid_safe(df):
+    """NaN/inf → None and numpy scalars → Python, so AgGrid can serialise the frame."""
+    df = df.replace([np.inf, -np.inf], np.nan).copy()
+    for c in df.columns:
+        if df[c].dtype == bool:
+            continue
+        if df[c].isna().any():
+            df[c] = df[c].astype(object)
+            df.loc[df[c].isna(), c] = None
+    return df
+
+
+_JS = {
+    "vol": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v)||v<=0)return null;
+        if(v>=3.5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};
+        if(v>=1.5)return{'backgroundColor':'#8ee68e','color':'black'};if(v>=1.0)return{'backgroundColor':'#d4edda','color':'black'};
+        if(v<0.5)return{'backgroundColor':'#f8d7da','color':'#721c24'};return null}""",
+    "relwk": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;
+        if(v<1.0)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v<2.0)return{'backgroundColor':'#8ee68e','color':'black'};
+        if(v<3.0)return{'backgroundColor':'#d4edda','color':'black'};if(v<5.0)return{'backgroundColor':'#fff3cd','color':'#664d03'};
+        return{'backgroundColor':'#f8d7da','color':'#721c24'}}""",
+    "ma": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;const a=Math.abs(v);
+        if(v<-6)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};
+        if(a<2)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(a<4)return{'backgroundColor':'#8ee68e','color':'black'};
+        if(a<6)return{'backgroundColor':'#d4edda','color':'black'};return null}""",
+    "tight": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;
+        if(v<=0.5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v<=0.8)return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};
+        return null}""",
+    "chg": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;
+        if(v>=5)return{'backgroundColor':'#b44cb4','color':'white'};if(v>=2)return{'backgroundColor':'#e6b3e6','color':'black'};
+        if(v>0)return{'backgroundColor':'#ffe6ff','color':'black'};return null}""",
+    "tier": """function(p){const v=p.value;if(v==='P1')return{'backgroundColor':'#155724','color':'white','fontWeight':'bold'};
+        if(v==='P2')return{'backgroundColor':'#8ee68e','color':'black','fontWeight':'bold'};if(v==='P3')return{'backgroundColor':'#e9ecef','color':'black'};return null}""",
+    "label": """function(p){const m={'Saved & tight':['#28a745','white'],'Saved, not tight yet':['#d4edda','black'],
+        'Added by you':['#e2d9f3','#3d2a73'],'1 · Buy signal':['#155724','white'],'3 · Wait':['#fff3cd','#664d03'],
+        '5 · Weak (review)':['#f8d7da','#721c24'],'Check chart':['#ffe5d0','#8a4b08'],'Recent BO, now tight':['#cff4fc','#055160']};
+        const c=m[p.value];return c?{'backgroundColor':c[0],'color':c[1],'fontWeight':'bold'}:null}""",
+}
+
+
+def _tomorrow_grid(view, cfg, key):
+    """Tomorrow's list as an AgGrid (like the scanner table): sort/filter/tick, returned FILTERED_AND_SORTED on Update."""
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
+    df = _grid_safe(view)
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=60, flex=0)
+    gb.configure_grid_options(enableBrowserTooltips=True)
+    tick = dict(editable=True, cellDataType="boolean", cellRenderer="agCheckboxCellRenderer",
+                cellEditor="agCheckboxCellEditor", minWidth=80, maxWidth=95, pinned="left")
+    gb.configure_column("Keep", headerName="Tomorrow", headerTooltip="On tomorrow's list", **tick)
+    gb.configure_column("CONT", headerName="Save CONT", headerTooltip="Also save to the watchlist as CONTINUATION", **tick)
+    gb.configure_column("Symbol", pinned="left", minWidth=95, maxWidth=130)
+    js = {k: JsCode(v) for k, v in _JS.items()}
+    cols = {"Tier": ("Tier", "tier", 60), "Label": ("Situation", "label", 150), "Note": ("My note", None, 160),
+            "Reason": ("Reason", None, 260), "Tag": ("Saved as", None, 150), "Scan_Count": ("Scans", None, 60),
+            "_chg_percentclose": ("Chg %", "chg", 70), "_vol_ratio": ("Vol x", "vol", 65), "Adr": ("ADR", None, 60),
+            "_circuit": ("Circuit %", None, 75), "_rel_tightness_today": ("Rel tight", "tight", 75),
+            "_nr4": ("NR4 %", None, 70), "_rel_wk_dist": ("ADRs from 10w", "relwk", 95), "_avgvol_mln": ("Avg vol", None, 75),
+            "_10madist": ("10MA dist", "ma", 80), "_20madist": ("20MA dist", "ma", 80), "Avg_RS": ("Avg RS", None, 70),
+            "Sector": ("Sector", None, 140)}
+    for c, (name, style, w) in cols.items():
+        if c in df.columns:
+            kw = {"headerName": name, "minWidth": w}
+            if style:
+                kw["cellStyle"] = js[style]
+            if c in ("_chg_percentclose", "_vol_ratio", "Adr", "_rel_tightness_today", "_nr4", "_rel_wk_dist",
+                     "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "_circuit", "Scan_Count"):
+                kw["type"] = ["numericColumn"]
+                kw["filter"] = "agNumberColumnFilter"
+                kw["valueFormatter"] = JsCode("function(p){return (p.value===null||p.value===undefined)?'':"
+                                              "(Math.round(p.value*100)/100).toString()}")
+            gb.configure_column(c, **kw)
+    return AgGrid(df, gridOptions=gb.build(), height=480, width="100%", key=key,
+                  update_mode=GridUpdateMode.MANUAL, data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                  allow_unsafe_jscode=True)
 
 
 def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
