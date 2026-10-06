@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07c · New candidates: no screen-count rule; ranked by tightness"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07d · ADR tiers P1/P2/P3 in Tomorrow's list"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -66,7 +66,19 @@ TOMORROW_DEFAULTS = {
     "pullback_band": 2.0, "stale_days": 20,
     "missing_days": 3, "min_circuit": 10,
     "recent_bo_days": 5, "recent_bo_max_rwd": 3.0,
+    "tier1_adr": 7.0, "tier2_adr": 5.0,     # ADR tiers: P1 ≥ tier1, P2 tier2–tier1, P3 below (NSE defaults below)
 }
+TIER_DEFAULTS = {"USA": {"tier1_adr": 7.0, "tier2_adr": 5.0}, "NSE": {"tier1_adr": 6.0, "tier2_adr": 4.5}}
+
+
+def adr_tier(adr, cfg):
+    """P1 = high ADR, P2 = middle, P3 = low; '' when ADR is missing."""
+    a = pd.to_numeric(adr, errors="coerce")
+    t = pd.Series("P3", index=a.index)
+    t[a >= cfg["tier2_adr"]] = "P2"
+    t[a >= cfg["tier1_adr"]] = "P1"
+    t[a.isna()] = ""
+    return t
 # Post-breakout tagging rules
 BREAKOUT_DEFAULTS = {
     "bo_min_chg": 2.0, "bo_min_vol": 1.5,   # what counts as a breakout
@@ -482,8 +494,9 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     d["CONT"] = d["CONT"].fillna(False).astype(bool)
     d["Rank"] = np.nan
     cm = d["Label"] == "CANDIDATE"
-    ranked = d[cm].sort_values(["_rel_tightness_today", "Avg_RS"],
-                               ascending=[True, False], na_position="last")
+    d["Tier"] = adr_tier(d["Adr"], cfg) if "Adr" in d.columns else ""
+    ranked = d[cm].assign(_t=d.loc[cm, "Tier"].replace("", "P9")).sort_values(
+        ["_t", "_rel_tightness_today", "Avg_RS"], ascending=[True, True, False], na_position="last")
     d.loc[ranked.index, "Rank"] = range(1, len(ranked) + 1)
     d["Keep"] = d["Label"].isin(TOMORROW_LABELS) | (cm & (d["Rank"] <= cfg["list_size"]))
     order = {k: i for i, k in enumerate(LIST_LABELS)}
@@ -1260,6 +1273,7 @@ RULE_LABELS = {
     "stale_days": "Suggest removing a saved stock after N days",
     "recent_bo_days": "Recent BO, now tight: broke out within N days",
     "recent_bo_max_rwd": "Recent BO, now tight: max ADRs from 10w",
+    "tier1_adr": "ADR tier P1: ADR at least", "tier2_adr": "ADR tier P2: ADR at least (below = P3)",
     "missing_days": "Suggest removing a saved stock missing from the scan for N trading days",
     "min_circuit": "NSE: suggest removing a saved stock whose price band falls below N%",
     "strong_min_vol": "Strong batch: min volume (x)",
@@ -1346,6 +1360,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     sd = _header_time(st, mcfg, base_df, sb)
     shared = shared or {}
     own = {k: v for k, v in TOMORROW_DEFAULTS.items() if k not in shared}   # the rest come from the sidebar
+    own.update(TIER_DEFAULTS.get(mcfg.get("market"), {}))
     cfg = {**_rules_editor(st, "More list rules (new candidates, skips, pullbacks, clean-up)", own,
                            saved_prefs.get("build_tomorrow"), "bt_cfg"), **shared}
     if shared:
@@ -1408,7 +1423,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
         c.metric(n, int(counts.get(k, 0)))
 
-    show = ["Keep", "CONT", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
+    show = ["Keep", "CONT", "Tier", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
             "Adr", "_rel_tightness_today", "_nr4", "_rel_wk_dist", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
@@ -1420,10 +1435,17 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     show = _with_circuit(show, mcfg)
     view = _circuit_num(lab[lab["Label"] != "SCANNED"][[c for c in show if c in lab.columns]].copy())
     view["Label"] = view["Label"].map(lambda x: LABEL_NAMES.get(x, x))
-    sort_mode = st.radio("Sort table by", ["Tightness (tightest first)", "Situation"], horizontal=True, key="bt_sort",
-                         help="Tightness = Rel tight (NR4 range ÷ ADR), lowest first. The saved list and its "
-                              "TradingView symbols are always tightest first.")
-    if sort_mode.startswith("Tightness"):
+    view["Tier"] = adr_tier(view["Adr"], cfg) if "Adr" in view.columns else ""
+    sort_mode = st.radio("Sort table by", ["ADR tier, then tightness", "Tightness (tightest first)", "Situation"],
+                         horizontal=True, key="bt_sort",
+                         help=f"ADR tier: P1 = ADR ≥ {cfg['tier1_adr']:g}, P2 = {cfg['tier2_adr']:g}–{cfg['tier1_adr']:g}, "
+                              f"P3 = below {cfg['tier2_adr']:g} (change in More list rules). Work P1 first; stop once "
+                              "you have your entries. Tightness = Rel tight (NR4 ÷ ADR), lowest first.")
+    if sort_mode.startswith("ADR tier"):
+        view = sort_by_tightness(view)
+        view = view.assign(_t=view["Tier"].replace("", "P9")).sort_values("_t", kind="stable") \
+            .drop(columns="_t").reset_index(drop=True)
+    elif sort_mode.startswith("Tightness"):
         view = sort_by_tightness(view).reset_index(drop=True)
     pre = lab[lab["Keep"] == True]["Symbol"].tolist()  # noqa: E712
     st.caption(f"{len(pre)} pre-ticked for tomorrow. Tick/untick freely — nothing is sent until you press Save.")
@@ -1451,9 +1473,15 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
                              hide_index=True, use_container_width=True)
     if len(view):
         st.markdown(f"**Copy for TradingView** · {len(view)} tickers in the table's order "
-                    f"({'tightest first' if sort_mode.startswith('Tightness') else 'by situation'}) — "
-                    "click the copy icon at the right of the box.")
+                    f"({sort_mode.split(' (')[0].lower()}) — click the copy icon at the right of the box.")
         st.code(",".join(tv_symbol(s_, mcfg) for s_ in view["Symbol"]), language=None)
+        _tiers = [(t, view.loc[view["Tier"] == t, "Symbol"]) for t in ("P1", "P2", "P3")]
+        _lim = {"P1": f"ADR ≥ {cfg['tier1_adr']:g}", "P2": f"ADR {cfg['tier2_adr']:g}–{cfg['tier1_adr']:g}",
+                "P3": f"ADR < {cfg['tier2_adr']:g}"}
+        for _c, (t, syms) in zip(st.columns(3), _tiers):
+            _c.markdown(f"**{t}** · {_lim[t]} · {len(syms)}")
+            if len(syms):
+                _c.code(",".join(tv_symbol(s_, mcfg) for s_ in syms), language=None)
         st.caption("Clicking a column header re-sorts the table on screen only; the copy box follows the "
                    "**Sort table by** choice above.")
     form = st.form("bt_form", border=False)
@@ -1465,6 +1493,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
             "CONT": st.column_config.CheckboxColumn("Save CONT", help="Also save to the watchlist as CONTINUATION "
                                                     "(tight around the breakout candle)"),
             "Label": st.column_config.TextColumn("Situation"),
+            "Tier": st.column_config.TextColumn("Tier", help="ADR tier: P1 high, P2 middle, P3 low"),
             "Note": st.column_config.TextColumn("My note", width="medium", help="Your latest note on this stock"),
             "Tag": st.column_config.TextColumn("Saved as"),
             "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
