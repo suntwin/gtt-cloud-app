@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07f · ADRs from 10w next to 10/20MA dist"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07g · ADRs from 10w, 10MA, 20MA dist together"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1424,7 +1424,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         c.metric(n, int(counts.get(k, 0)))
 
     show = ["Keep", "CONT", "Tier", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
-            "Adr", "_rel_tightness_today", "_nr4", "_avgvol_mln", "_10madist", "_20madist", "_rel_wk_dist", "Avg_RS", "Sector"]
+            "Adr", "_rel_tightness_today", "_nr4", "_avgvol_mln", "_rel_wk_dist", "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
         grp = {}
