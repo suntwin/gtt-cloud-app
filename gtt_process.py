@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07h · Market breadth counts in the market note + Breadth heatmap tab"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07i · Write the market note later after a skip"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1200,12 +1200,17 @@ def render_market_gate(st, sb, mcfg, extra_known=()):
         else:
             st.success(f"**Market note done · {mcfg['market']} {sd}** · saved {when} AEST · Regime **{name}** → "
                        f"max **{lim['max_gtts']}** new GTTs, {lim['risk']}")
-        with st.expander("Today's market note — view / edit"):
-            st.caption(_note_summary(note))
-            if note.get("auto"):
-                st.caption(_auto_line(note["auto"]))
-            st.markdown(note.get("body", ""))
-            if note.get("kind") == "MARKET":
+        if note.get("kind") == "SKIP":
+            with st.expander("✍️ Write the market note now (replaces the skip) — trends, regime, breadth counts"):
+                if note.get("auto"):
+                    st.caption(_auto_line(note["auto"]))
+                _market_form(st, sb, mcfg, sd, existing={**note, "fields": {}}, key="mkt_late", extra_known=extra_known)
+        else:
+            with st.expander("Today's market note — view / edit"):
+                st.caption(_note_summary(note))
+                if note.get("auto"):
+                    st.caption(_auto_line(note["auto"]))
+                st.markdown(note.get("body", ""))
                 _market_form(st, sb, mcfg, sd, existing=note, key="mkt_edit", extra_known=extra_known)
         return True
 
