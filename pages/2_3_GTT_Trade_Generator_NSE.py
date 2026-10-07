@@ -8,7 +8,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataRe
 import os, json, time
 from datetime import datetime
 from gtt_process import MARKETS, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
-from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan
+from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan, row_card_js
 
 st.set_page_config(page_title="GTT Trade Generator (NSE)", page_icon="⚡", layout="wide")
 
@@ -658,7 +658,7 @@ def main():
 
             gb = GridOptionsBuilder.from_dataframe(fdf)
             gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
-            gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True)
+            gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True, onCellClicked=row_card_js())
             gb.configure_selection(selection_mode='multiple', use_checkbox=True)
             for col in fdf.columns: gb.configure_column(col, headerTooltip=col)
 

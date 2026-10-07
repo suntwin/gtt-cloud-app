@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-08a · Scan results survive phone reconnects"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-08b · Tap a ticker to see all its values (phone)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1912,13 +1912,50 @@ _JS = {
 }
 
 
+ROW_CARD_JS = r"""
+function(params){
+  if(!params.colDef || params.colDef.field !== 'Symbol' || !params.data) return;
+  const doc = (params.event && params.event.target) ? params.event.target.ownerDocument : document;
+  const old = doc.getElementById('rowcard'); if(old) old.remove();
+  const card = doc.createElement('div'); card.id = 'rowcard';
+  card.style.cssText = 'position:fixed;left:6px;right:6px;top:6px;max-height:94%;overflow:auto;z-index:99999;' +
+    'background:#ffffff;color:#111;border:1px solid #bbb;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.35);' +
+    'font:13px/1.35 -apple-system,Segoe UI,Roboto,sans-serif;padding:10px 12px;';
+  const skip = ['Keep','CONT','Symbol','Sector_Rank','Sector_Total'];
+  let rows = '';
+  params.api.getColumns().forEach(function(c){
+    const cd = c.getColDef(); const f = cd.field;
+    if(!f || skip.indexOf(f) >= 0) return;
+    let v = params.data[f];
+    if(v === null || v === undefined || v === '' || (typeof v === 'number' && isNaN(v))) return;
+    if(typeof v === 'number') v = Math.round(v * 100) / 100;
+    const name = cd.headerName || f;
+    rows += '<tr><td style="padding:3px 10px 3px 0;color:#555;white-space:nowrap">' + name +
+            '</td><td style="padding:3px 0;font-weight:600">' + String(v).replace(/</g,'&lt;') + '</td></tr>';
+  });
+  card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+    '<b style="font-size:15px">' + params.data.Symbol + '</b><span style="font-size:18px;padding:0 6px;cursor:pointer">✕</span></div>' +
+    '<table style="border-collapse:collapse;width:100%">' + rows + '</table>' +
+    '<div style="color:#888;font-size:11px;margin-top:6px">Tap anywhere on this card to close</div>';
+  card.addEventListener('click', function(){ card.remove(); });
+  doc.body.appendChild(card);
+}
+"""
+
+
+def row_card_js():
+    """AgGrid onCellClicked: tapping a Symbol cell opens a card with every visible value in that row (phone-friendly)."""
+    from st_aggrid import JsCode
+    return JsCode(ROW_CARD_JS)
+
+
 def _tomorrow_grid(view, cfg, key):
     """Tomorrow's list as an AgGrid (like the scanner table): sort/filter/tick, returned FILTERED_AND_SORTED on Update."""
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
     df = _grid_safe(view)
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=60, flex=0)
-    gb.configure_grid_options(enableBrowserTooltips=True)
+    gb.configure_grid_options(enableBrowserTooltips=True, onCellClicked=row_card_js())
     tick = dict(editable=True, cellDataType="boolean", cellRenderer="agCheckboxCellRenderer",
                 cellEditor="agCheckboxCellEditor", minWidth=80, maxWidth=95, pinned="left")
     gb.configure_column("Keep", headerName="Tomorrow", headerTooltip="On tomorrow's list", **tick)
