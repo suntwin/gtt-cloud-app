@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07i · Write the market note later after a skip"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07k · Data patterns: 10W Launch Pad filter + trade alert"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -66,6 +66,11 @@ TOMORROW_DEFAULTS = {
     "pullback_band": 2.0, "stale_days": 20,
     "missing_days": 3, "min_circuit": 10,
     "recent_bo_days": 5, "recent_bo_max_rwd": 3.0,
+    # Data pattern "10W Launch Pad" (UNIVCABLES / KSHINTL): on the 10w line, tight, sitting on the 10/20 MA.
+    # MA distances in ADRs, so a small dip below the MAs still counts. Volume is NOT part of the pattern;
+    # it only raises the trade alert in the Reason column.
+    "lp_max_rwd": 1.0, "lp_max_reltight": 0.8, "lp_ma_min_adr": -0.3, "lp_ma_max_adr": 1.0,
+    "lp_max_chg_adr": 1.0, "lp_alert_vol": 0.9,
     "tier1_adr": 7.0, "tier2_adr": 5.0,     # ADR tiers: P1 ≥ tier1, P2 tier2–tier1, P3 below (NSE defaults below)
 }
 TIER_DEFAULTS = {"USA": {"tier1_adr": 7.0, "tier2_adr": 5.0}, "NSE": {"tier1_adr": 6.0, "tier2_adr": 4.5}}
@@ -90,10 +95,10 @@ BREAKOUT_DEFAULTS = {
 }
 CLEANUP_DEFAULTS = {"max_age_days": 30, "unseen_days": 10}
 
-LIST_LABELS = ["4_RESETUP", "SAVED_WAIT", "ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "5_REMOVE", "RECENT_BO", "CANDIDATE", "CHECK", "SCANNED"]
+LIST_LABELS = ["4_RESETUP", "SAVED_WAIT", "ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "5_REMOVE", "RECENT_BO", "PATTERN", "CANDIDATE", "CHECK", "SCANNED"]
 LABEL_NAMES = {"4_RESETUP": "Saved & tight", "SAVED_WAIT": "Saved, not tight yet", "ADDED": "Added by you", "1_BUY_SIGNAL": "1 · Buy signal", "2_SAVE": "2 · Save (tag it)", "3_WAIT": "3 · Wait",
                "5_REMOVE": "5 · Weak (review)", "RECENT_BO": "Recent BO, now tight", "CANDIDATE": "New candidate",
-               "CHECK": "Check chart"}
+               "PATTERN": "Pattern match", "CHECK": "Check chart"}
 TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's list
 
 SNAPSHOT_METRICS = ["Last", "_chg_percentclose", "_vol_ratio", "Adr", "_nr4", "_nr4_previous",
@@ -263,7 +268,7 @@ SITUATION_COLOURS = {"Saved & tight": _css("#28a745", "white", True), "Saved, no
                      "Added by you": _css("#e2d9f3", "#3d2a73"), "1 · Buy signal": _css("#155724", "white", True),
                      "2 · Save (tag it)": _css("#cfe2ff", "#084298"), "3 · Wait": _css("#fff3cd", "#664d03"),
                      "5 · Weak (review)": _css("#f8d7da", "#721c24", True), "Check chart": _css("#ffe5d0", "#8a4b08"),
-                     "Recent BO, now tight": _css("#cff4fc", "#055160", True)}
+                     "Recent BO, now tight": _css("#cff4fc", "#055160", True), "Pattern match": _css("#ffd8a8", "#7a3e00", True)}
 
 
 def _c_circuit(v):
@@ -461,6 +466,22 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
         "Broke out " + dsb.fillna(0).astype(int).astype(str) + "d ago, now tight (rel tight "
         + d["_rel_tightness_today"].round(2).astype(str) + ", " + rwd_now.round(1).astype(str)
         + " ADR from 10w) — grade the chart; save as CONTINUATION if A/B")
+    # Data patterns: tag every row; scanned names that match but aren't on the list for another reason get a row
+    pat = {k: p["mask"](d, cfg) for k, p in DATA_PATTERNS.items()}
+    names = pd.Series([[] for _ in range(len(d))], index=d.index)
+    for k, m in pat.items():
+        for i in d.index[m]:
+            names[i] = names[i] + [DATA_PATTERNS[k]["name"]]
+    d["Patterns"] = names.map(lambda xs: ", ".join(xs))
+    any_pat = d["Patterns"] != ""
+    put(any_pat & (adr >= cfg["min_adr"]) & (d["_avgvol_mln"].fillna(0) >= cfg["min_liq"]) & ~d["Missing_Weekly"], "PATTERN",
+        d["Patterns"] + ": " + d["_rel_wk_dist"].round(2).astype(str) + " ADR from 10w, rel tight "
+        + d["_rel_tightness_today"].round(2).astype(str) + ", 10/20MA "
+        + (d["_10madist"] / adr.replace(0, np.nan)).round(1).astype(str) + "/"
+        + (d["_20madist"] / adr.replace(0, np.nan)).round(1).astype(str) + " ADR")
+    alert = any_pat & (vol >= cfg["lp_alert_vol"]) & (chg > 0)
+    d.loc[alert, "Reason"] = ("⚡ TRADE ALERT · " + d.loc[alert, "Patterns"] + " + volume " + v1[alert] + "x — "
+                              + d.loc[alert, "Reason"].fillna("").astype(str))
     put(cand & d["Missing_Weekly"], "CHECK", "Passes daily rules, weekly data missing — check chart")
     d.loc[d["On_List"] & (d["Label"] == "SCANNED"), "Reason"] = "Was on list, no longer qualifies"
 
@@ -505,6 +526,32 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
     d = d.sort_values(["_o", "Rating_n", "_rt", "Rank"], ascending=[True, False, True, True],
                       na_position="last").drop(columns=["_o", "_rt"]).reset_index(drop=True)
     return d, updates
+
+
+# ── Data patterns: named, rule-based shapes in the scan columns. Each has a mask (no volume) and is shown
+#    as a filter checkbox next to P1/P2/P3. Add new ones to DATA_PATTERNS.
+def _pnum(d, c):
+    return pd.to_numeric(d[c], errors="coerce") if c in d.columns else pd.Series(np.nan, index=d.index)
+
+
+def launch_pad_mask(d, cfg):
+    """10W Launch Pad: ≤ lp_max_rwd ADR from the 10w line, rel tight ≤ lp_max_reltight, 10MA and 20MA dist each
+    between lp_ma_min_adr and lp_ma_max_adr ADRs, day's move −0.5 to lp_max_chg_adr ADR (not already broken out)."""
+    adr = _pnum(d, "Adr").replace(0, np.nan)
+    m10, m20 = _pnum(d, "_10madist") / adr, _pnum(d, "_20madist") / adr
+    lo, hi = cfg["lp_ma_min_adr"], cfg["lp_ma_max_adr"]
+    return ((_pnum(d, "_rel_wk_dist") <= cfg["lp_max_rwd"]) & (_pnum(d, "_rel_tightness_today") <= cfg["lp_max_reltight"])
+            & m10.between(lo, hi) & m20.between(lo, hi)
+            & (_pnum(d, "_chg_percentclose") / adr).between(-0.5, cfg["lp_max_chg_adr"])).fillna(False)
+
+
+DATA_PATTERNS = {
+    "LP10W": {"name": "10W Launch Pad", "mask": launch_pad_mask,
+              "help": lambda c: (f"On the 10-week line (≤ {c['lp_max_rwd']:g} ADR), tight (rel tight ≤ {c['lp_max_reltight']:g}), "
+                                 f"sitting on the 10/20 MA ({c['lp_ma_min_adr']:g} to +{c['lp_ma_max_adr']:g} ADR), "
+                                 f"not broken out yet (day's move ≤ {c['lp_max_chg_adr']:g} ADR). Volume isn't required — "
+                                 f"when it comes in (≥ {c['lp_alert_vol']:g}x on an up day) the Reason shows a ⚡ trade alert.")},
+}
 
 
 def suggest_tags(r, cfg, saved_as=None):
@@ -1480,6 +1527,11 @@ RULE_LABELS = {
     "stale_days": "Suggest removing a saved stock after N days",
     "recent_bo_days": "Recent BO, now tight: broke out within N days",
     "recent_bo_max_rwd": "Recent BO, now tight: max ADRs from 10w",
+    "lp_max_rwd": "10W Launch Pad: max ADRs from 10w", "lp_max_reltight": "10W Launch Pad: max rel tight",
+    "lp_ma_min_adr": "10W Launch Pad: 10/20MA dist at least (ADRs, negative = below)",
+    "lp_ma_max_adr": "10W Launch Pad: 10/20MA dist at most (ADRs)",
+    "lp_max_chg_adr": "10W Launch Pad: max day's move (ADRs) — above this it has broken out",
+    "lp_alert_vol": "10W Launch Pad: trade alert when vol x ≥ (up day)",
     "tier1_adr": "ADR tier P1: ADR at least", "tier2_adr": "ADR tier P2: ADR at least (below = P3)",
     "missing_days": "Suggest removing a saved stock missing from the scan for N trading days",
     "min_circuit": "NSE: suggest removing a saved stock whose price band falls below N%",
@@ -1630,7 +1682,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
         c.metric(n, int(counts.get(k, 0)))
 
-    show = ["Keep", "CONT", "Tier", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
+    show = ["Keep", "CONT", "Tier", "Patterns", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
             "Adr", "_rel_tightness_today", "_nr4", "_avgvol_mln", "_rel_wk_dist", "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
@@ -1675,18 +1727,24 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     # ADR tier checkboxes: tick one or more to show only those rows (none ticked = all)
     lim = {"P1": f"ADR ≥ {cfg['tier1_adr']:g}", "P2": f"ADR {cfg['tier2_adr']:g}–{cfg['tier1_adr']:g}",
            "P3": f"ADR < {cfg['tier2_adr']:g}"}
-    tcols = st.columns([1, 1, 1, 3])
+    _pv = view["Patterns"].fillna("").astype(str) if "Patterns" in view.columns else pd.Series("", index=view.index)
+    tcols = st.columns([1, 1, 1] + [1.6] * len(DATA_PATTERNS) + [2])
     pick = [t for c_, t in zip(tcols, ("P1", "P2", "P3"))
             if c_.checkbox(f"{t} ({int((view['Tier'] == t).sum())})", key=f"bt_tier_{t}", help=lim[t])]
-    tcols[3].caption(f"Show only: P1 {lim['P1']} · P2 {lim['P2']} · P3 {lim['P3']}. None ticked = all. "
-                     "Limits are in More list rules.")
+    pats = [p["name"] for c_, (k, p) in zip(tcols[3:], DATA_PATTERNS.items())
+            if c_.checkbox(f"{p['name']} ({int(_pv.str.contains(p['name'], regex=False).sum())})",
+                           key=f"bt_pat_{k}", help=p["help"](cfg))]
+    tcols[-1].caption(f"Tiers: P1 {lim['P1']} · P2 {lim['P2']} · P3 {lim['P3']}. Patterns narrow any tier. "
+                      "None ticked = all. Limits are in More list rules.")
     if pick:
         view = view[view["Tier"].isin(pick)]
+    for pn in pats:
+        view = view[_pv.reindex(view.index).fillna("").str.contains(pn, regex=False)]
     view = sort_by_tightness(view)
     view = view.assign(_t=view["Tier"].replace("", "P9")).sort_values("_t", kind="stable") \
         .drop(columns="_t").reset_index(drop=True)
 
-    gkey = "bt_grid_" + "_".join(pick or ["all"])
+    gkey = "bt_grid_" + "_".join(pick or ["all"]) + "".join("_" + p.replace(" ", "") for p in pats)
     resp = _tomorrow_grid(view, cfg, gkey)
     out = view
     if resp is not None and resp.get("data") is not None and len(resp["data"]):
@@ -1778,11 +1836,13 @@ _JS = {
     "chg": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;
         if(v>=5)return{'backgroundColor':'#b44cb4','color':'white'};if(v>=2)return{'backgroundColor':'#e6b3e6','color':'black'};
         if(v>0)return{'backgroundColor':'#ffe6ff','color':'black'};return null}""",
+    "pat": """function(p){return p.value?{'backgroundColor':'#ffd8a8','color':'#7a3e00','fontWeight':'bold'}:null}""",
+    "reason": """function(p){return (p.value&&String(p.value).startsWith('⚡'))?{'backgroundColor':'#fd7e14','color':'white','fontWeight':'bold'}:null}""",
     "tier": """function(p){const v=p.value;if(v==='P1')return{'backgroundColor':'#155724','color':'white','fontWeight':'bold'};
         if(v==='P2')return{'backgroundColor':'#8ee68e','color':'black','fontWeight':'bold'};if(v==='P3')return{'backgroundColor':'#e9ecef','color':'black'};return null}""",
     "label": """function(p){const m={'Saved & tight':['#28a745','white'],'Saved, not tight yet':['#d4edda','black'],
         'Added by you':['#e2d9f3','#3d2a73'],'1 · Buy signal':['#155724','white'],'3 · Wait':['#fff3cd','#664d03'],
-        '5 · Weak (review)':['#f8d7da','#721c24'],'Check chart':['#ffe5d0','#8a4b08'],'Recent BO, now tight':['#cff4fc','#055160']};
+        '5 · Weak (review)':['#f8d7da','#721c24'],'Check chart':['#ffe5d0','#8a4b08'],'Recent BO, now tight':['#cff4fc','#055160'],'Pattern match':['#ffd8a8','#7a3e00']};
         const c=m[p.value];return c?{'backgroundColor':c[0],'color':c[1],'fontWeight':'bold'}:null}""",
 }
 
@@ -1800,8 +1860,8 @@ def _tomorrow_grid(view, cfg, key):
     gb.configure_column("CONT", headerName="Save CONT", headerTooltip="Also save to the watchlist as CONTINUATION", **tick)
     gb.configure_column("Symbol", pinned="left", minWidth=95, maxWidth=130)
     js = {k: JsCode(v) for k, v in _JS.items()}
-    cols = {"Tier": ("Tier", "tier", 60), "Label": ("Situation", "label", 150), "Note": ("My note", None, 160),
-            "Reason": ("Reason", None, 260), "Tag": ("Saved as", None, 150), "Scan_Count": ("Scans", None, 60),
+    cols = {"Tier": ("Tier", "tier", 60), "Patterns": ("Pattern", "pat", 130), "Label": ("Situation", "label", 150), "Note": ("My note", None, 160),
+            "Reason": ("Reason", "reason", 300), "Tag": ("Saved as", None, 150), "Scan_Count": ("Scans", None, 60),
             "_chg_percentclose": ("Chg %", "chg", 70), "_vol_ratio": ("Vol x", "vol", 65), "Adr": ("ADR", None, 60),
             "_circuit": ("Circuit %", None, 75), "_rel_tightness_today": ("Rel tight", "tight", 75),
             "_nr4": ("NR4 %", None, 70), "_rel_wk_dist": ("ADRs from 10w", "relwk", 95), "_avgvol_mln": ("Avg vol", None, 75),
