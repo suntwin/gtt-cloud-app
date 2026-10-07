@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-08b · Tap a ticker to see all its values (phone)"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-08c · Compact ticker card"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1918,9 +1918,13 @@ function(params){
   const doc = (params.event && params.event.target) ? params.event.target.ownerDocument : document;
   const old = doc.getElementById('rowcard'); if(old) old.remove();
   const card = doc.createElement('div'); card.id = 'rowcard';
-  card.style.cssText = 'position:fixed;left:6px;right:6px;top:6px;max-height:94%;overflow:auto;z-index:99999;' +
+  const win = doc.defaultView || window;
+  const ev = params.event || {};
+  const x = Math.max(4, Math.min((ev.clientX || 8) + 8, win.innerWidth - 270));
+  card.style.cssText = 'position:fixed;left:' + x + 'px;top:4px;width:max-content;max-width:min(260px,96vw);' +
+    'max-height:96%;overflow:auto;z-index:99999;' +
     'background:#ffffff;color:#111;border:1px solid #bbb;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.35);' +
-    'font:13px/1.35 -apple-system,Segoe UI,Roboto,sans-serif;padding:10px 12px;';
+    'font:12px/1.25 -apple-system,Segoe UI,Roboto,sans-serif;padding:6px 8px;';
   const skip = ['Keep','CONT','Symbol','Sector_Rank','Sector_Total'];
   let rows = '';
   params.api.getColumns().forEach(function(c){
@@ -1930,13 +1934,12 @@ function(params){
     if(v === null || v === undefined || v === '' || (typeof v === 'number' && isNaN(v))) return;
     if(typeof v === 'number') v = Math.round(v * 100) / 100;
     const name = cd.headerName || f;
-    rows += '<tr><td style="padding:3px 10px 3px 0;color:#555;white-space:nowrap">' + name +
-            '</td><td style="padding:3px 0;font-weight:600">' + String(v).replace(/</g,'&lt;') + '</td></tr>';
+    rows += '<tr><td style="padding:1px 8px 1px 0;color:#666;white-space:nowrap">' + name +
+            '</td><td style="padding:1px 0;font-weight:600">' + String(v).replace(/</g,'&lt;') + '</td></tr>';
   });
-  card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
-    '<b style="font-size:15px">' + params.data.Symbol + '</b><span style="font-size:18px;padding:0 6px;cursor:pointer">✕</span></div>' +
-    '<table style="border-collapse:collapse;width:100%">' + rows + '</table>' +
-    '<div style="color:#888;font-size:11px;margin-top:6px">Tap anywhere on this card to close</div>';
+  card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;gap:12px">' +
+    '<b style="font-size:13px">' + params.data.Symbol + '</b><span style="font-size:14px;cursor:pointer">✕</span></div>' +
+    '<table style="border-collapse:collapse">' + rows + '</table>';
   card.addEventListener('click', function(){ card.remove(); });
   doc.body.appendChild(card);
 }
