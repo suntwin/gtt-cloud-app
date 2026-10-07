@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07k · Data patterns: 10W Launch Pad filter + trade alert"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07l · Data patterns: + 10W Breakout Shelf"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -71,6 +71,10 @@ TOMORROW_DEFAULTS = {
     # it only raises the trade alert in the Reason column.
     "lp_max_rwd": 1.0, "lp_max_reltight": 0.8, "lp_ma_min_adr": -0.3, "lp_ma_max_adr": 1.0,
     "lp_max_chg_adr": 1.0, "lp_alert_vol": 0.9,
+    # Data pattern "10W Breakout Shelf": already broken out of the weekly base — price ABOVE the 10w line by
+    # bs_min_rwd–bs_max_rwd ADRs — and now resting tight on the 10/20 MA. Same volume alert (lp_alert_vol).
+    "bs_min_rwd": 1.0, "bs_max_rwd": 3.0, "bs_max_reltight": 0.8, "bs_ma_min_adr": -0.3, "bs_ma_max_adr": 1.0,
+    "bs_max_chg_adr": 1.0,
     "tier1_adr": 7.0, "tier2_adr": 5.0,     # ADR tiers: P1 ≥ tier1, P2 tier2–tier1, P3 below (NSE defaults below)
 }
 TIER_DEFAULTS = {"USA": {"tier1_adr": 7.0, "tier2_adr": 5.0}, "NSE": {"tier1_adr": 6.0, "tier2_adr": 4.5}}
@@ -545,12 +549,30 @@ def launch_pad_mask(d, cfg):
             & (_pnum(d, "_chg_percentclose") / adr).between(-0.5, cfg["lp_max_chg_adr"])).fillna(False)
 
 
+def breakout_shelf_mask(d, cfg):
+    """10W Breakout Shelf: price above the 10w line (signed) by bs_min_rwd–bs_max_rwd ADRs, rel tight ≤ bs_max_reltight,
+    10MA and 20MA dist each between bs_ma_min_adr and bs_ma_max_adr ADRs, day's move −0.5 to bs_max_chg_adr ADR."""
+    adr = _pnum(d, "Adr").replace(0, np.nan)
+    m10, m20 = _pnum(d, "_10madist") / adr, _pnum(d, "_20madist") / adr
+    above = _pnum(d, "W_Dist10wMA") > 0
+    lo, hi = cfg["bs_ma_min_adr"], cfg["bs_ma_max_adr"]
+    return (above & _pnum(d, "_rel_wk_dist").between(cfg["bs_min_rwd"], cfg["bs_max_rwd"])
+            & (_pnum(d, "_rel_tightness_today") <= cfg["bs_max_reltight"])
+            & m10.between(lo, hi) & m20.between(lo, hi)
+            & (_pnum(d, "_chg_percentclose") / adr).between(-0.5, cfg["bs_max_chg_adr"])).fillna(False)
+
+
 DATA_PATTERNS = {
     "LP10W": {"name": "10W Launch Pad", "mask": launch_pad_mask,
               "help": lambda c: (f"On the 10-week line (≤ {c['lp_max_rwd']:g} ADR), tight (rel tight ≤ {c['lp_max_reltight']:g}), "
                                  f"sitting on the 10/20 MA ({c['lp_ma_min_adr']:g} to +{c['lp_ma_max_adr']:g} ADR), "
                                  f"not broken out yet (day's move ≤ {c['lp_max_chg_adr']:g} ADR). Volume isn't required — "
                                  f"when it comes in (≥ {c['lp_alert_vol']:g}x on an up day) the Reason shows a ⚡ trade alert.")},
+    "BS10W": {"name": "10W Breakout Shelf", "mask": breakout_shelf_mask,
+              "help": lambda c: (f"Already broken out of the weekly base: price above the 10-week line by "
+                                 f"{c['bs_min_rwd']:g}–{c['bs_max_rwd']:g} ADR, now resting tight (rel tight ≤ {c['bs_max_reltight']:g}) "
+                                 f"on the 10/20 MA ({c['bs_ma_min_adr']:g} to +{c['bs_ma_max_adr']:g} ADR), not moved yet today "
+                                 f"(≤ {c['bs_max_chg_adr']:g} ADR). ⚡ trade alert when volume ≥ {c['lp_alert_vol']:g}x on an up day.")},
 }
 
 
@@ -1531,7 +1553,12 @@ RULE_LABELS = {
     "lp_ma_min_adr": "10W Launch Pad: 10/20MA dist at least (ADRs, negative = below)",
     "lp_ma_max_adr": "10W Launch Pad: 10/20MA dist at most (ADRs)",
     "lp_max_chg_adr": "10W Launch Pad: max day's move (ADRs) — above this it has broken out",
-    "lp_alert_vol": "10W Launch Pad: trade alert when vol x ≥ (up day)",
+    "lp_alert_vol": "All patterns: ⚡ trade alert when vol x ≥ (up day)",
+    "bs_min_rwd": "10W Breakout Shelf: min ADRs above 10w", "bs_max_rwd": "10W Breakout Shelf: max ADRs above 10w",
+    "bs_max_reltight": "10W Breakout Shelf: max rel tight",
+    "bs_ma_min_adr": "10W Breakout Shelf: 10/20MA dist at least (ADRs, negative = below)",
+    "bs_ma_max_adr": "10W Breakout Shelf: 10/20MA dist at most (ADRs)",
+    "bs_max_chg_adr": "10W Breakout Shelf: max day's move (ADRs)",
     "tier1_adr": "ADR tier P1: ADR at least", "tier2_adr": "ADR tier P2: ADR at least (below = P3)",
     "missing_days": "Suggest removing a saved stock missing from the scan for N trading days",
     "min_circuit": "NSE: suggest removing a saved stock whose price band falls below N%",
