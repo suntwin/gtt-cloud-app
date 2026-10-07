@@ -5,3 +5,5 @@ requests
 streamlit-aggrid
 SQLAlchemy
 supabase
+openpyxl
+xlrd

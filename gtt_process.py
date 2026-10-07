@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07g · ADRs from 10w, 10MA, 20MA dist together"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-07h · Market breadth counts in the market note + Breadth heatmap tab"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -853,6 +853,129 @@ REGIMES = {
 INDEX_NAMES = {"NSE": ["Nifty 50", "Nifty 500"], "USA": ["S&P 500", "Nasdaq 100"]}
 
 
+# ── Market breadth (stock counts, one row per session in market_breadth) ──
+BREADTH_COLS = [("up45", "Up 4.5% today"), ("down45", "Down 4.5% today"),
+                ("up20", "Up 20% in 5 days"), ("down20", "Down 20% in 5 days"),
+                ("above20", "Above 20 DMA"), ("below20", "Below 20 DMA"),
+                ("above50", "Above 50 DMA"), ("below50", "Below 50 DMA")]
+BREADTH_BULL = {"up45", "up20", "above20", "above50"}     # high = green; the others high = red
+BREADTH_KEYS = [k for k, _ in BREADTH_COLS]
+
+
+def load_breadth(sb, mcfg):
+    """All breadth rows for this market, newest first, as a DataFrame (empty if none)."""
+    rows, start = [], 0
+    while True:
+        r = (sb.table("market_breadth").select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
+             .order("session_date", desc=True).range(start, start + 999).execute().data)
+        rows += r
+        if len(r) < 1000:
+            break
+        start += 1000
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame(columns=["session_date"] + BREADTH_KEYS)
+    df["session_date"] = pd.to_datetime(df["session_date"]).dt.date
+    return df
+
+
+def load_breadth_day(sb, mcfg, sd):
+    r = (sb.table("market_breadth").select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
+         .eq("session_date", sd.isoformat()).limit(1).execute().data)
+    return r[0] if r else None
+
+
+def upsert_breadth(sb, mcfg, rows, source="manual"):
+    """rows: [{'session_date': date, 'up45': int, ...}] — one per day; replaces that day's counts."""
+    out = []
+    for r in rows:
+        row = {"user_id": mcfg["user_id"], "market": mcfg["market"], "source": source,
+               "session_date": pd.Timestamp(r["session_date"]).date().isoformat(),
+               "updated_at": datetime.utcnow().isoformat() + "Z"}
+        for k in BREADTH_KEYS:
+            v = r.get(k)
+            row[k] = int(v) if v is not None and not pd.isna(v) else None
+        out.append(row)
+    for i in range(0, len(out), 500):
+        sb.table("market_breadth").upsert(out[i:i + 500], on_conflict="user_id,market,session_date").execute()
+    return len(out)
+
+
+def _breadth_col_key(name):
+    """Map a spreadsheet header (e.g. 'Stocks up 4.5 % in last session', 'Stocks Below 20 DMA(LeADING)') to a key."""
+    s = " ".join(str(name).lower().replace("%", " % ").split())
+    if "date" in s:
+        return "session_date"
+    down = any(w in s for w in ("down", "below", "under"))
+    if "4.5" in s:
+        return "down45" if down else "up45"
+    if "dma" in s or "sma" in s or "ma" in s.split():
+        if "50" in s:
+            return "below50" if down else "above50"
+        if "20" in s:
+            return "below20" if down else "above20"
+    if "20" in s and "%" in s:
+        return "down20" if down else "up20"
+    return None
+
+
+def parse_breadth_file(f):
+    """CSV / XLSX / XLS with a date column + the 8 counts → (DataFrame, list of unmatched headers)."""
+    name = getattr(f, "name", "").lower()
+    if name.endswith(".csv"):
+        raw = pd.read_csv(f)
+    else:
+        raw = pd.read_excel(f)
+    raw = raw.dropna(how="all")
+    if "session_date" not in [_breadth_col_key(c) for c in raw.columns] and len(raw.columns):
+        raw = raw.rename(columns={raw.columns[0]: "Date"})          # first column holds the dates
+    mapping, unmatched = {}, []
+    for c in raw.columns:
+        k = _breadth_col_key(c)
+        if k and k not in mapping.values():
+            mapping[c] = k
+        else:
+            unmatched.append(str(c))
+    df = raw.rename(columns=mapping)[list(mapping.values())]
+    df["session_date"] = pd.to_datetime(df["session_date"], dayfirst=True, errors="coerce").dt.date
+    df = df.dropna(subset=["session_date"])
+    for k in BREADTH_KEYS:
+        df[k] = pd.to_numeric(df[k], errors="coerce").round() if k in df.columns else np.nan
+    df = df.drop_duplicates("session_date", keep="first").sort_values("session_date", ascending=False)
+    return df[["session_date"] + BREADTH_KEYS].reset_index(drop=True), unmatched
+
+
+def _rgb_mix(c1, c2, t):
+    return tuple(round(a + (b - a) * t) for a, b in zip(c1, c2))
+
+
+def _heat(t):
+    """0 = red, 0.5 = yellow, 1 = green (Excel-style 3-colour scale)."""
+    red, yel, grn = (248, 105, 107), (255, 235, 132), (99, 190, 123)
+    r, g, b = _rgb_mix(red, yel, t / 0.5) if t < 0.5 else _rgb_mix(yel, grn, (t - 0.5) / 0.5)
+    return f"background-color: rgb({r},{g},{b}); color: black"
+
+
+def breadth_heatmap(df):
+    """Styler: each column coloured on its own min–max over the rows shown; 'up/above' high = green, 'down/below' high = red."""
+    show = df.rename(columns=dict(BREADTH_COLS))
+    sty = show.style.format({lab: "{:.0f}" for _, lab in BREADTH_COLS}, na_rep="")
+    for k, lab in BREADTH_COLS:
+        v = pd.to_numeric(df[k], errors="coerce")
+        lo, hi = v.min(), v.max()
+        def col_style(col, lo=lo, hi=hi, bull=k in BREADTH_BULL):
+            out = []
+            for x in pd.to_numeric(col, errors="coerce"):
+                if pd.isna(x) or not np.isfinite(hi - lo):
+                    out.append("")
+                    continue
+                t = 0.5 if hi == lo else (x - lo) / (hi - lo)
+                out.append(_heat(t if bull else 1 - t))
+            return out
+        sty = sty.apply(col_style, subset=[lab])
+    return sty
+
+
 def journal_session(mcfg):
     return session_date(market_now(mcfg), mcfg)
 
@@ -986,9 +1109,15 @@ def _note_summary(note):
     if note.get("kind") == "SKIP":
         return f"**Skipped** — {note.get('body', '')}"
     bits = [f"{k}: {f.get('trend_' + str(i))}" for i, k in enumerate(f.get("indices", [])) if f.get("trend_" + str(i))]
-    for k, lab in [("above20", ">20DMA"), ("above50", ">50DMA"), ("adv_dec", "Adv/Dec"), ("hi_lo", "NH/NL")]:
-        if f.get(k) not in (None, ""):
-            bits.append(f"{lab} {f[k]}")
+    b = f.get("breadth") or {}
+    if any(b.get(k) is not None for k in BREADTH_KEYS):
+        g = lambda k: "–" if b.get(k) is None else f"{b[k]:g}"
+        bits.append(f"±4.5%: {g('up45')}/{g('down45')} · ±20% 5d: {g('up20')}/{g('down20')} · "
+                    f"20DMA: {g('above20')}/{g('below20')} · 50DMA: {g('above50')}/{g('below50')}")
+    else:
+        for k, lab in [("above20", ">20DMA"), ("above50", ">50DMA"), ("adv_dec", "Adv/Dec"), ("hi_lo", "NH/NL")]:
+            if f.get(k) not in (None, ""):
+                bits.append(f"{lab} {f[k]}")
     if f.get("themes"):
         bits.append(f"Themes: {f['themes']}")
     return " · ".join(bits)
@@ -1009,14 +1138,18 @@ def _market_form(st, sb, mcfg, sd, existing=None, key="mkt", extra_known=()):
         regime = cols[-1].radio("Regime → exposure tonight", regime_names, key=f"{key}_reg",
                                 index=regime_names.index(f["regime"]) if f.get("regime") in REGIMES else None,
                                 help=" · ".join(f"{k}: max {v['max_gtts']} GTTs, {v['risk']}" for k, v in REGIMES.items()))
-        b1, b2, b3, b4 = st.columns(4)
-        _iv = lambda x: int(x) if isinstance(x, (int, float)) else None
-        above20 = b1.number_input("Stocks above 20 DMA", min_value=0, value=_iv(f.get("above20")), step=1, key=f"{key}_a20",
-                                  help="Number of stocks, as on your breadth chart")
-        above50 = b2.number_input("Stocks above 50 DMA", min_value=0, value=_iv(f.get("above50")), step=1, key=f"{key}_a50",
-                                  help="Number of stocks, as on your breadth chart")
-        adv_dec = b3.text_input("Advances / declines", value=f.get("adv_dec", ""), placeholder="1450 / 980", key=f"{key}_ad")
-        hi_lo = b4.text_input("New highs / new lows", value=f.get("hi_lo", ""), placeholder="85 / 12", key=f"{key}_hl")
+        st.markdown("**Market breadth — stock counts** (saved to the Breadth tab)")
+        _iv = lambda x: int(x) if isinstance(x, (int, float)) and not pd.isna(x) else None
+        try:
+            _bd = load_breadth_day(sb, mcfg, sd) or {}
+        except Exception:
+            _bd = {}
+        _prev = {"above20": f.get("above20"), "above50": f.get("above50"), **(f.get("breadth") or {}),
+                 **{k: _bd.get(k) for k in BREADTH_KEYS if _bd.get(k) is not None}}
+        breadth = {}
+        for row in (BREADTH_COLS[:4], BREADTH_COLS[4:]):
+            for c_, (k, lab) in zip(st.columns(4), row):
+                breadth[k] = c_.number_input(lab, min_value=0, value=_iv(_prev.get(k)), step=1, key=f"{key}_b_{k}")
         themes = st.text_input("Leading themes / sectors", value=f.get("themes", ""), key=f"{key}_th",
                                placeholder="Defence, power, PSU banks")
         body = st.text_area(f"What the market is doing (at least {JOURNAL_MIN_CHARS} characters)",
@@ -1032,9 +1165,13 @@ def _market_form(st, sb, mcfg, sd, existing=None, key="mkt", extra_known=()):
         elif len(body.strip()) < JOURNAL_MIN_CHARS:
             st.error(f"Write a little more — {len(body.strip())}/{JOURNAL_MIN_CHARS} characters. The point is to think it through.")
         else:
-            fields = {"indices": idx, "regime": regime, "above20": above20, "above50": above50,
-                      "adv_dec": adv_dec.strip(), "hi_lo": hi_lo.strip(), "themes": themes.strip(),
+            fields = {"indices": idx, "regime": regime, "breadth": breadth, "themes": themes.strip(),
                       **{f"trend_{i}": t for i, t in enumerate(trends)}}
+            if any(v is not None for v in breadth.values()):
+                try:
+                    upsert_breadth(sb, mcfg, [{"session_date": sd, **breadth}])
+                except Exception as e:
+                    st.warning(f"Breadth not saved to the Breadth tab — run supabase_breadth.sql in Supabase. ({e})")
             try:
                 known = {r["symbol"] for r in load_active_watchlist(sb, mcfg)}
             except Exception:
@@ -1114,6 +1251,71 @@ def render_quick_note(st, sb, mcfg, extra_known=()):
             st.toast("Note saved" + (f" · linked to {', '.join(syms)}" if syms else ""))
         except Exception as e:
             st.error(f"Note not saved: {e}")
+
+
+def render_breadth_tab(st, sb, mcfg):
+    st.subheader(f"Market breadth · {mcfg['market']}")
+    if sb is None:
+        st.error("Database not connected."); return
+    try:
+        df = load_breadth(sb, mcfg)
+    except Exception as e:
+        st.error(f"Could not read market_breadth. Run supabase_breadth.sql in the Supabase SQL Editor first. ({e})")
+        return
+    if df.empty:
+        st.info("No breadth recorded yet. Enter today's counts in the market note, add a day below, or upload your history.")
+    else:
+        c1, c2 = st.columns([2, 5])
+        n = c1.selectbox("Show", [20, 40, 60, 120, 250, "All"], index=2, key="br_n",
+                         format_func=lambda x: f"Last {x} sessions" if x != "All" else "All")
+        view = (df if n == "All" else df.head(int(n)))[["session_date"] + BREADTH_KEYS].copy()
+        c2.caption(f"{len(df)} sessions recorded · {df['session_date'].min()} → {df['session_date'].max()} · "
+                   "each column is coloured on its own range for the rows shown: green = strong breadth, red = weak "
+                   "(for the down / below columns a high count is red).")
+        view = view.rename(columns={"session_date": "Date"}).set_index("Date")
+        st.dataframe(breadth_heatmap(view), use_container_width=True, height=min(38 * len(view) + 40, 900))
+        st.download_button("Download breadth history (CSV)", view.rename(columns=dict(BREADTH_COLS)).to_csv().encode(),
+                           file_name=f"market_breadth_{mcfg['market']}.csv", mime="text/csv")
+
+    with st.expander("Add or correct a day"):
+        with st.form("br_day", border=False):
+            d = st.date_input("Session date", value=journal_session(mcfg), key="br_day_date")
+            vals = {}
+            for row in (BREADTH_COLS[:4], BREADTH_COLS[4:]):
+                for c_, (k, lab) in zip(st.columns(4), row):
+                    vals[k] = c_.number_input(lab, min_value=0, value=None, step=1, key=f"br_day_{k}")
+            if st.form_submit_button("Save this day"):
+                if all(v is None for v in vals.values()):
+                    st.error("Enter at least one count.")
+                else:
+                    upsert_breadth(sb, mcfg, [{"session_date": d, **vals}])
+                    st.success(f"Saved breadth for {d}."); st.rerun()
+
+    with st.expander("Upload history (Excel or CSV)"):
+        st.caption("One row per day: a date column plus the eight counts. Headers like your Excel sheet work "
+                   "(e.g. 'Stocks up 4.5 % in last session', 'Stocks Below 20 DMA'). Dates are read day-first (5/05/2026).")
+        up = st.file_uploader("Breadth file", type=["xls", "xlsx", "csv"], key="br_upload")
+        if up is not None:
+            try:
+                new, unmatched = parse_breadth_file(up)
+            except Exception as e:
+                st.error(f"Could not read the file: {e}"); return
+            missing = [lab for k, lab in BREADTH_COLS if new[k].isna().all()]
+            st.markdown(f"**{len(new)} days found** · {new['session_date'].min()} → {new['session_date'].max()}")
+            if missing:
+                st.warning("No column found for: " + ", ".join(missing))
+            if unmatched:
+                st.caption("Ignored columns: " + ", ".join(unmatched))
+            st.dataframe(new.head(10).rename(columns={"session_date": "Date", **dict(BREADTH_COLS)}),
+                         hide_index=True, use_container_width=True)
+            have = set(df["session_date"]) if not df.empty else set()
+            overlap = int(new["session_date"].isin(have).sum())
+            over = st.checkbox(f"Overwrite the {overlap} days already recorded", value=False, key="br_over",
+                               disabled=overlap == 0)
+            todo = new if over else new[~new["session_date"].isin(have)]
+            if st.button(f"Upload {len(todo)} days", type="primary", disabled=len(todo) == 0, key="br_go"):
+                n_ = upsert_breadth(sb, mcfg, todo.to_dict("records"), source="upload")
+                st.success(f"Uploaded {n_} days."); st.rerun()
 
 
 def render_journal_tab(st, sb, mcfg):

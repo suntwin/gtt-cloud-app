@@ -8,7 +8,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataRe
 import os, json, time
 from datetime import datetime
 from gtt_process import MARKETS, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
-from gtt_process import render_market_gate, render_quick_note, render_journal_tab, save_auto_breadth, journal_session
+from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session
 
 st.set_page_config(page_title="GTT Trade Generator (NSE)", page_icon="⚡", layout="wide")
 
@@ -538,7 +538,7 @@ def main():
             else:
                 st.error("Failed to retrieve base 1M scan data."); st.session_state.gtt_base_df = None
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["GTT Scanner", "Market Themes & Leaders", "Watchlist", "Journal", "Entry Rules"])
+    tab1, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 1: SCANNER (NO SCORING — just computed columns + filters)
@@ -927,6 +927,9 @@ def main():
 
     with tab4:
         render_journal_tab(st, supabase, MARKET_CFG)
+
+    with tab6:
+        render_breadth_tab(st, supabase, MARKET_CFG)
 
     with tab5:
         render_rules_tab(st, MARKET_CFG)
