@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-07l · Data patterns: + 10W Breakout Shelf"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-08a · Scan results survive phone reconnects"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1045,6 +1045,43 @@ def breadth_heatmap(df):
     return sty
 
 
+# ── Keep the last scan (and unsaved ticks) on the server, so a phone that drops its connection and comes
+#    back in a new browser session gets the same results instead of an empty page. Lives in memory until the
+#    app restarts (a reboot, a push, or Streamlit Cloud putting the app to sleep).
+try:
+    import streamlit as _st
+
+    @_st.cache_resource
+    def _app_store():
+        return {}
+except Exception:                      # not running under Streamlit (tests)
+    _APP_STORE = {}
+
+    def _app_store():
+        return _APP_STORE
+
+SCAN_KEYS = ("gtt_base_df", "weekly_full_df", "screen_counts")
+
+
+def remember_scan(st, mcfg):
+    """Call right after a successful scan."""
+    _app_store()[f"scan_{mcfg['market']}"] = {
+        "session": str(journal_session(mcfg)), "at": datetime.utcnow().isoformat() + "Z",
+        "data": {k: st.session_state.get(k) for k in SCAN_KEYS}}
+
+
+def restore_scan(st, mcfg):
+    """Call at the top of the page. If this browser session has no scan but the server has today's, bring it back."""
+    if st.session_state.get("gtt_base_df") is not None:
+        return
+    saved = _app_store().get(f"scan_{mcfg['market']}")
+    if not saved or saved["session"] != str(journal_session(mcfg)):
+        return
+    for k, v in saved["data"].items():
+        st.session_state[k] = v
+    st.caption(f"↻ Restored the scan from {fmt_local(saved['at'])} (Sydney time) — press Refresh Now for fresh prices.")
+
+
 def journal_session(mcfg):
     return session_date(market_now(mcfg), mcfg)
 
@@ -1724,7 +1761,8 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     view["Tier"] = adr_tier(view["Adr"], cfg) if "Adr" in view.columns else ""
     # Ticks are kept per symbol in session state, so filtering and sorting the table never loses them
     tk = f"bt_ticks_{mcfg.get('market')}_{sd}"
-    ticks = st.session_state.setdefault(tk, {"Keep": {}, "CONT": {}})
+    ticks = _app_store().setdefault(tk, {"Keep": {}, "CONT": {}})   # survives a reconnect, like the scan
+    st.session_state[tk] = ticks
     for c_ in ("Keep", "CONT"):
         view[c_] = [bool(ticks[c_].get(s_, bool(v_) if pd.notna(v_) else False))
                     for s_, v_ in zip(view["Symbol"], view[c_])]

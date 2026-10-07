@@ -8,7 +8,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataRe
 import os, json, time
 from datetime import datetime
 from gtt_process import MARKETS, tv_symbol, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
-from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session
+from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan
 
 st.set_page_config(page_title="GTT Trade Generator (USA)", page_icon="⚡", layout="wide")
 
@@ -362,6 +362,7 @@ def main():
     """, unsafe_allow_html=True)
     st.title("GTT Trade Generator (USA)")
 
+    restore_scan(st, MARKET_CFG)     # phone came back in a new session → bring back today's scan
     # ── Market first: quick notes any time; the scanner unlocks once today's market note is saved ──
     _known = st.session_state.gtt_base_df['Symbol'].tolist() if st.session_state.get('gtt_base_df') is not None else []
     render_quick_note(st, supabase, MARKET_CFG, extra_known=_known)
@@ -533,6 +534,7 @@ def main():
                 else:
                     st.session_state.weekly_full_df = None; st.warning("Weekly scan unavailable.")
                 st.session_state.gtt_base_df = adf
+                remember_scan(st, MARKET_CFG)
                 save_auto_breadth(supabase, MARKET_CFG, journal_session(MARKET_CFG), adf, vol_bo_min_chg, vol_bo_min_vol,
                                   float(saved_prefs.get('breakout_tags', {}).get('strong_min_vol', 3.5)), coil_max_reltight)
             else:
