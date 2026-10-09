@@ -857,7 +857,6 @@ def main():
     # TAB 2: MARKET THEMES & LEADERS
     # ════════════════════════════════════════════════════════════════════
     with tab2:
-        render_sector_leadership(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
         if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
             sdf = st.session_state.gtt_scored_df.copy()
             if 'Sector' in sdf.columns and '_vol_ratio' in sdf.columns:
