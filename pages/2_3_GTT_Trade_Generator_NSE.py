@@ -8,7 +8,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataRe
 import os, json, time
 from datetime import datetime
 from gtt_process import MARKETS, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
-from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan, row_card_js
+from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan, row_card_js, render_sector_leadership
 
 st.set_page_config(page_title="GTT Trade Generator (NSE)", page_icon="⚡", layout="wide")
 
@@ -857,6 +857,7 @@ def main():
     # TAB 2: MARKET THEMES & LEADERS
     # ════════════════════════════════════════════════════════════════════
     with tab2:
+        render_sector_leadership(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
         if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
             sdf = st.session_state.gtt_scored_df.copy()
             if 'Sector' in sdf.columns and '_vol_ratio' in sdf.columns:

@@ -35,7 +35,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-08c · Compact ticker card"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-09a · Sector leadership from your breakout history"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -108,7 +108,7 @@ TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's lis
 SNAPSHOT_METRICS = ["Last", "_chg_percentclose", "_vol_ratio", "Adr", "_nr4", "_nr4_previous",
                     "_rel_tightness_today", "_rel_tightness_prev", "_rel_wk_dist", "W_Dist10wMA",
                     "W_TightCloses_10w", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS",
-                    "RS_1M", "RS_3M", "RS_6M", "Sector", "Suggested", "rating"]
+                    "RS_1M", "RS_3M", "RS_6M", "Sector", "Industry", "Suggested", "rating"]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1362,6 +1362,115 @@ def render_quick_note(st, sb, mcfg, extra_known=()):
             st.toast("Note saved" + (f" · linked to {', '.join(syms)}" if syms else ""))
         except Exception as e:
             st.error(f"Note not saved: {e}")
+
+
+# ── Sector / industry leadership from the breakout snapshots saved every evening (Post Breakout) ──
+def load_breakout_history(sb, mcfg, days=45):
+    since = (date.today() - timedelta(days=days)).isoformat()
+    rows, start = [], 0
+    while True:
+        r = (sb.table("daily_snapshots").select("snap_date,symbol,metrics").eq("user_id", mcfg["user_id"])
+             .eq("market", mcfg["market"]).eq("scanner", "BREAKOUT").gte("snap_date", since)
+             .order("snap_date", desc=True).range(start, start + 999).execute().data)
+        rows += r
+        if len(r) < 1000:
+            break
+        start += 1000
+    out = []
+    for r in rows:
+        m = r.get("metrics") or {}
+        last, chg = _num(m.get("Last")), _num(m.get("_chg_percentclose"), 0)
+        out.append({"date": str(r["snap_date"])[:10], "Symbol": r["symbol"],
+                    "Sector": m.get("Sector") or "Unknown", "Industry": m.get("Industry"),
+                    "bo_close": last, "prev_close": last / (1 + chg / 100) if np.isfinite(last) else np.nan,
+                    "chg": chg, "vol": _num(m.get("_vol_ratio"))})
+    return pd.DataFrame(out)
+
+
+def sector_leadership(hist, base_df, group="Sector"):
+    """One row per group: breakouts in the last 5/10/20 sessions, per 100 stocks in today's scan, trend, holding rate."""
+    if hist is None or hist.empty or group not in hist.columns:
+        return pd.DataFrame(), {}
+    h = hist[hist[group].notna() & (hist[group] != "Unknown")].copy()
+    if h.empty:
+        return pd.DataFrame(), {}
+    sessions = sorted(hist["date"].unique(), reverse=True)
+    s5, s10, s20 = set(sessions[:5]), set(sessions[:10]), set(sessions[:20])
+    h = h[h["date"].isin(s20)]
+    live = {}
+    if base_df is not None and not base_df.empty and "Symbol" in base_df.columns:
+        b = base_df.drop_duplicates("Symbol")
+        live = dict(zip(b["Symbol"].astype(str).str.upper(), pd.to_numeric(b.get("Last"), errors="coerce")))
+        size = b[group].value_counts() if group in b.columns else pd.Series(dtype=float)
+    else:
+        size = pd.Series(dtype=float)
+    first = h.sort_values("date").drop_duplicates("Symbol", keep="last")      # each stock's most recent breakout
+    first["now"] = first["Symbol"].map(live)
+    first["since"] = (first["now"] / first["bo_close"] - 1) * 100
+    first["holding"] = first["now"] >= first["prev_close"]
+    rows, names = [], {}
+    for g, grp in h.groupby(group):
+        n5, n10, n20 = (grp["date"].isin(x).sum() for x in (s5, s10, s20))
+        prev = (n20 - n5) / 3 if len(sessions) >= 10 else np.nan               # avg per 5 sessions before this week
+        trend = "↑" if np.isfinite(prev) and n5 > 1.25 * max(prev, 0.5) else ("↓" if np.isfinite(prev) and n5 < 0.75 * prev else "→")
+        f = first[first[group] == g]
+        known = f["now"].notna()
+        hold = round(100 * f.loc[known, "holding"].mean()) if known.any() else np.nan
+        sz = size.get(g, np.nan)
+        rows.append({group: g, "Last 5": int(n5), "Last 10": int(n10), "Last 20": int(n20),
+                     "Trend": trend, "Per 100 in scan": round(100 * n20 / sz, 1) if sz and np.isfinite(sz) else np.nan,
+                     "Holding %": hold, "Stocks": int(f["Symbol"].nunique())})
+        names[g] = f.sort_values("since", ascending=False, na_position="last")[["Symbol", "date", "chg", "vol", "since"]]
+    t = pd.DataFrame(rows).sort_values(["Last 10", "Holding %", "Last 20"], ascending=[False, False, False],
+                                       na_position="last").reset_index(drop=True)
+    return t, names
+
+
+def render_sector_leadership(st, sb, base_df, mcfg):
+    st.subheader("Sector leadership · from your breakout history")
+    if sb is None:
+        st.info("Database not connected."); return
+    try:
+        hist = load_breakout_history(sb, mcfg)
+    except Exception as e:
+        st.error(f"Could not read breakout history ({e})."); return
+    if hist.empty:
+        st.info("No breakout history yet — it builds up each evening you save Post Breakout."); return
+    n_sess = hist["date"].nunique()
+    has_ind = hist["Industry"].notna().any()
+    group = st.radio("Group by", ["Sector", "Industry"] if has_ind else ["Sector"], horizontal=True, key="sl_group",
+                     help=None if has_ind else "Industry is saved from now on; it appears here once there's some history.")
+    t, names = sector_leadership(hist, base_df, group)
+    if t.empty:
+        st.info(f"No {group.lower()} data in the saved breakouts yet."); return
+    st.caption(f"{len(hist)} breakouts over {n_sess} sessions (newest {hist['date'].max()}). "
+               "Trend = this week's breakouts vs the 3 weeks before. Holding % = breakouts still above their pre-breakout close "
+               "(needs today's scan). Per 100 = breakouts per 100 stocks of that group in today's scan. "
+               "Focus on the top 2–3 with ↑ and a good holding rate.")
+    def _c(col, good):
+        def f(v):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return ""
+            return "background-color:#28a745;color:white;font-weight:bold" if v >= good[0] else (
+                "background-color:#d4edda;color:black" if v >= good[1] else "")
+        return f
+    sty = (t.style.format({"Per 100 in scan": "{:.1f}", "Holding %": "{:.0f}"}, na_rep="")
+           .map(_c("Last 10", (5, 3)), subset=["Last 10"]).map(_c("Holding %", (70, 55)), subset=["Holding %"])
+           .map(lambda v: "color:#28a745;font-weight:bold" if v == "↑" else ("color:#dc3545;font-weight:bold" if v == "↓" else ""),
+                subset=["Trend"]))
+    st.dataframe(sty, hide_index=True, use_container_width=True, height=min(36 * len(t) + 40, 520))
+    for g in t.head(5)[group]:
+        lst = names.get(g)
+        if lst is None or lst.empty:
+            continue
+        with st.expander(f"{g} — {len(lst)} breakouts in the last 20 sessions"):
+            v = lst.rename(columns={"date": "Broke out", "chg": "BO day %", "vol": "BO vol x", "since": "% since BO"})
+            st.dataframe(v.style.format({"BO day %": "{:.1f}", "BO vol x": "{:.1f}", "% since BO": "{:+.1f}"}, na_rep=""),
+                         hide_index=True, use_container_width=True)
+            st.code(",".join(tv_symbol(x, mcfg) for x in lst["Symbol"]), language=None)
+    st.markdown("---")
 
 
 def render_breadth_tab(st, sb, mcfg):
