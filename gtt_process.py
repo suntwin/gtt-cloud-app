@@ -23,6 +23,8 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
+import market_calendar as mcal   # NSE / USA exchange holidays, early closes, last completed session
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # Market settings — NSE page uses MARKETS["NSE"], USA page uses MARKETS["USA"]
@@ -35,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-09b · Sector & industry in Saved breakouts"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-11a · Market calendar: holiday-aware market note + holiday banner"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -119,19 +121,22 @@ def market_now(mcfg):
 
 
 def session_date(now, mcfg):
-    """Date of the latest session: before the open, or on weekends, step back to the last weekday."""
+    """Date of the latest session: before the open, or on weekends / exchange holidays, step back to the last trading day."""
     d = now.date()
     oh, om = mcfg["open"]
     if now.hour * 60 + now.minute < oh * 60 + om:
         d -= timedelta(days=1)
-    while d.weekday() >= 5:
+    while not mcal.is_trading_day(mcfg["market"], d):
         d -= timedelta(days=1)
     return d
 
 
 def market_is_open(now, mcfg):
     m = now.hour * 60 + now.minute
-    return now.weekday() < 5 and mcfg["open"][0] * 60 + mcfg["open"][1] <= m < mcfg["close"][0] * 60 + mcfg["close"][1]
+    if not mcal.is_trading_day(mcfg["market"], now.date()):
+        return False
+    c = mcal.close_time(mcfg["market"], now.date())      # early closes (e.g. US day after Thanksgiving)
+    return mcfg["open"][0] * 60 + mcfg["open"][1] <= m < c.hour * 60 + c.minute
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1084,7 +1089,20 @@ def restore_scan(st, mcfg):
 
 
 def journal_session(mcfg):
-    return session_date(market_now(mcfg), mcfg)
+    """Session the market note belongs to: the LAST COMPLETED one. Rolls over at close + 30 min (not the open)
+    and skips weekends and exchange holidays, so the same day is never asked for twice."""
+    return mcal.last_completed_session(mcfg["market"], market_now(mcfg))
+
+
+def render_holiday_banner(st, mcfg, days=30):
+    """Upcoming holidays / early closes / special sessions for this market (nothing shown when none)."""
+    try:
+        lines = mcal.holiday_banner_lines(mcfg["market"], days=days)
+    except Exception:
+        return
+    if lines:
+        st.info(f"📅 **Upcoming {mcfg['market']} market days off** (next {days} days)\n\n"
+                + "\n".join(f"- {l}" for l in lines))
 
 
 def fmt_local(ts):
@@ -1276,6 +1294,13 @@ def _market_form(st, sb, mcfg, sd, existing=None, key="mkt", extra_known=()):
                       **{f"trend_{i}": t for i, t in enumerate(trends)}}
             if any(v is not None for v in breadth.values()):
                 try:
+                    _pb = load_breadth_day(sb, mcfg, mcal.previous_trading_day(mcfg["market"], sd))
+                    if mcal.is_duplicate_breadth(_pb, breadth):
+                        st.warning("These breadth counts are identical to the previous session's — the screener may "
+                                   "not have updated yet (or it was a holiday). Saved anyway; re-check later.")
+                except Exception:
+                    pass
+                try:
                     upsert_breadth(sb, mcfg, [{"session_date": sd, **breadth}])
                 except Exception as e:
                     st.warning(f"Breadth not saved to the Breadth tab — run supabase_breadth.sql in Supabase. ({e})")
@@ -1290,6 +1315,7 @@ def _market_form(st, sb, mcfg, sd, existing=None, key="mkt", extra_known=()):
 
 def render_market_gate(st, sb, mcfg, extra_known=()):
     """Market first. Returns True when today's market note (or a logged skip) exists — the scanner unlocks then."""
+    render_holiday_banner(st, mcfg)
     if sb is None:
         st.error("Database not connected — the market note can't be checked, so the scanner stays open.")
         return True
