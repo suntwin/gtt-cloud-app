@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-11a · Market calendar: holiday-aware market note + holiday banner"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12a · Entry rules: 1-min ORH + GTT orders"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2641,6 +2641,25 @@ def render_rules_tab(st, mcfg):
 - **No breakeven stop before that partial sale.** Normal day-2 pullbacks would shake me out.
 - **No new ideas during the session.** If it wasn't on tomorrow's list and it isn't an EP, I save it for later.
 - **After the fill, close the 1-minute chart.** Stop and alerts are set; the daily chart does the rest.
+- **Fully deployed → TradingView closed.** Alerts sit at the stops and the 10/20 MA; one look in the last 30 minutes.
+""")
+
+    st.markdown("""
+#### How I place the orders: 1-min ORH or GTT
+Decided **the night before**, from tomorrow's list. Nothing is added during the session.
+
+| | **1-min ORH** (active) | **GTT** (backstop) |
+| --- | --- | --- |
+| **Which names** | My **top 2–3** from tomorrow's list | **All the rest** of tomorrow's list |
+| **When** | First **15–30 minutes** only | Placed the night before, works all day |
+| **Trigger** | Break of the 1-minute opening-range high, **only if that high clears (or sits at) the setup pivot** with **strong early volume** | Pivot **+ 1 tick** |
+| **Limit** | — | The lower of **pivot + 0.5 ADR** and **stop + 1 ADR** |
+| **Stop** | Low of the day, **≤ 1 ADR** from entry | From the daily chart, **≤ 1 ADR** from entry |
+
+- The 1-min ORH gives the **lowest risk**, so it gets the best names. After the first 30 minutes the ORH window is closed — the GTTs do the work and I close TradingView.
+- An ORH that breaks **under the pivot** doesn't count: wait for the pivot (the GTT is already there).
+- **One re-entry**, only in the **first 60 minutes**, if a stopped name reclaims its ORH: stop = the session low so far, **half risk**, and no more than **1.5R lost per name per day**.
+- Total new entries stay within the **regime cap** from the market note (Aggressive 6 · Normal 4 · Defensive 2 at half risk · Cash 0).
 """)
 
     st.markdown("""
@@ -2649,17 +2668,18 @@ def render_rules_tab(st, mcfg):
 2. Price is **above the trigger**: the higher of the level (range / day-1 / tight-day / wick high) and the opening-range high.
 3. **Volume is on pace** for well above normal, for the time of day.
 4. **Stop = low of the day, within ~1 ADR** of my entry. Wider → I'm late: skip, or starter size.
-5. **Size from the stop:** shares = (account × 1%) ÷ (entry − stop), within my max position %.
-6. **No more than 2–3 new trades today**, and not 3 in the same sector.
-7. **Market isn't weak** (index above its 10/20 MA).
+5. **Not extended on the weekly:** Rel Wk Dist **≤ 2** buy · **2–3** only an A setup, half size · **> 3** no new buy.
+6. **Size from the stop:** shares = (account × 1%) ÷ (entry − stop). Size comes from a **tight stop, not more risk**. Cap any position at **20–25% of the account** and **≤ 1% of its average daily value traded**.
+7. **Within the regime cap**, no more than **2 per sector**, and total open risk ≤ **3–4× one trade's risk**.
+8. **Market isn't weak** (index above its 10/20 MA).
 """)
 
     st.markdown("""
 #### The entries
 | Entry | When | Trigger | Stop |
 | --- | --- | --- | --- |
-| **Day-1 breakout** | Tight range on my list breaks out | Higher of the range's highest high and the 1/5-min opening-range high | Low of the day |
-| **Day-2 follow-through** | I missed day 1, and day 1 **closed strong** | Day-2 opening-range high, and above day 1's high if it opened below it | Day 2's low |
+| **Day-1 breakout** | Tight range on my list breaks out | Top 2–3: 1-min ORH at or above the pivot (first 15–30 min). Rest: GTT at pivot + tick | Low of the day (≤ 1 ADR) |
+| **Day-2 continuation** (half risk) | I missed day 1. Day 1 closed in its **upper half** (wick ≤ ⅓ of the range) on **2x+ volume**, from a real base, Rel Wk Dist ≤ 2–3, and day 2 **opens above day 1's midpoint** | GTT at **day-1 high + tick**, limit **+ 0.5 ADR** | Day 1's midpoint, capped at **1 ADR** |
 | **Day-3+ continuation** | Day 2 (or several days) went **tight** after the breakout — also flags and high tight flags | Break of the **latest tight day's high** | Low of the day, or the tight day's low |
 | **After a wick day** | Big volume but a long upper wick | Break of the tight days under the wick, or of the wick high — **not** the day-2 opening-range high | Low of the day |
 | **Pullback** | Saved breakout pulls back to the 10/20 MA and holds | Reclaim of the bounce day's high | Low of the day |
@@ -2673,6 +2693,8 @@ def render_rules_tab(st, mcfg):
 - Not on the list and not an EP → **save it**, buy its next setup.
 - Stop more than ~1 ADR away, or gapped more than 1 ADR → **late**.
 - Broke the level on thin volume.
+- **A late-day ORH** (e.g. the 60-minute high) breaking **under the pivot on light volume** — KSH 7 Oct 2026. That's not an entry.
+- An ORH after the first 30 minutes on a name that wasn't one of my top 2–3.
 - Day 1 closed weak, back near or inside the range → failed breakout.
 - Adding to a loser, or **more than 1% risk because I really like it** or missed it before.
 """)
