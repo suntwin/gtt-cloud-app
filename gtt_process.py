@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12p · Leadership order + failed breakouts flagged"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12q · Weak stocks lose stale ticks"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2021,6 +2021,13 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     tk = f"bt_ticks_{mcfg.get('market')}_{sd}"
     ticks = _app_store().setdefault(tk, {"Keep": {}, "CONT": {}})   # survives a reconnect, like the scan
     st.session_state[tk] = ticks
+    # A stock that has turned "5 · Weak" since it was ticked loses that old tick once (you can tick it again)
+    cleared = ticks.setdefault("_weak_cleared", set())
+    for s_ in view.loc[view["Label"] == LABEL_NAMES["5_REMOVE"], "Symbol"]:
+        if s_ not in cleared:
+            ticks["Keep"].pop(s_, None)
+            ticks["CONT"].pop(s_, None)
+            cleared.add(s_)
     for c_ in ("Keep", "CONT"):
         view[c_] = [bool(ticks[c_].get(s_, bool(v_) if pd.notna(v_) else False))
                     for s_, v_ in zip(view["Symbol"], view[c_])]
