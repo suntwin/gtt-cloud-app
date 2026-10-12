@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12i · Breakouts in a sector: today's NR4 (anticipation)"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12j · Breakouts in a sector: Saved? column + saved-only filter"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1396,7 +1396,7 @@ def load_breakout_history(sb, mcfg, days=45):
     since = (date.today() - timedelta(days=days)).isoformat()
     rows, start = [], 0
     while True:
-        r = (sb.table("daily_snapshots").select("snap_date,symbol,metrics").eq("user_id", mcfg["user_id"])
+        r = (sb.table("daily_snapshots").select("snap_date,symbol,list,selected,metrics").eq("user_id", mcfg["user_id"])
              .eq("market", mcfg["market"]).eq("scanner", "BREAKOUT").gte("snap_date", since)
              .order("snap_date", desc=True).range(start, start + 999).execute().data)
         rows += r
@@ -1410,7 +1410,8 @@ def load_breakout_history(sb, mcfg, days=45):
         out.append({"date": str(r["snap_date"])[:10], "Symbol": r["symbol"],
                     "Sector": m.get("Sector") or "Unknown", "Industry": m.get("Industry"),
                     "bo_close": last, "prev_close": last / (1 + chg / 100) if np.isfinite(last) else np.nan,
-                    "chg": chg, "vol": _num(m.get("_vol_ratio"))})
+                    "chg": chg, "vol": _num(m.get("_vol_ratio")),
+                    "selected": bool(r.get("selected")), "list": r.get("list")})
     return pd.DataFrame(out)
 
 
@@ -1453,7 +1454,7 @@ def sector_leadership(hist, base_df, group="Sector"):
     return t, names
 
 
-def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True):
+def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, saved_syms=None):
     if heading:
         st.subheader("Sector leadership · from your breakout history")
     if hist is None:
@@ -1506,8 +1507,25 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True):
                "Adr": "ADR", "_rel_tightness_today": "Rel tight", "_nr4": "NR4 %",
                "_rel_wk_dist": "ADRs from 10w", "_10madist": "10MA %", "_20madist": "20MA %"}
 
+    _ever_saved = set()
+    if "selected" in hist.columns:
+        _ever_saved = set(hist.loc[hist["selected"].fillna(False).astype(bool), "Symbol"].astype(str).str.upper())
+
+    def _status(sym):
+        sym = str(sym).upper()
+        if saved_syms is not None and sym in saved_syms:
+            return "✓ Saved"
+        if sym in _ever_saved:
+            return "Removed" if saved_syms is not None else "✓ Saved"
+        return "Skipped"
+
     def _names(g, lst):
         v = lst.copy()
+        v.insert(1, "Saved?", v["Symbol"].map(_status))
+        if st.checkbox("Only my saved breakouts", key=f"sl_only_saved_{g}"):
+            v = v[v["Saved?"] == "✓ Saved"]
+            if v.empty:
+                st.info("None of this group's recent breakouts are on your watchlist."); return
         if _live is not None:
             key = v["Symbol"].astype(str).str.upper()
             for c in _LIVE_COLS:
@@ -1521,6 +1539,8 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True):
             sty = sty.map(f, subset=[c])
         sty = sty.map(lambda x: "" if pd.isna(x) else ("color:#28a745;font-weight:bold" if x > 0 else "color:#dc3545;font-weight:bold"),
                       subset=["since"])
+        sty = sty.map(lambda x: {"✓ Saved": "color:#28a745;font-weight:bold", "Removed": "color:#9aa7ba"}.get(x, "color:#9aa7ba;font-style:italic"),
+                      subset=["Saved?"])
         # one format for every column (a second .format() call wipes the first one's formats)
         _dp = {"chg": "%.1f", "vol": "%.1f", "since": "%+.1f", "_chg_percentclose": "%.1f", "_vol_ratio": "%.1f",
                "_avgvol_mln": "%.0f", "dvol": "%.0f", "Adr": "%.1f", "Ti65": "%.1f", "_rel_tightness_today": "%.2f",
@@ -1530,11 +1550,14 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True):
               for c in v.columns if c in _dp}
         cc["Symbol"] = st.column_config.TextColumn("Symbol", width="small")
         cc["date"] = st.column_config.TextColumn("Broke out", width="small")
+        cc["Saved?"] = st.column_config.TextColumn("Saved?", width="small",
+                                                   help="✓ Saved = on your watchlist · Skipped = recorded in the batch but left on Skip · "
+                                                        "Removed = saved once, removed since")
         st.dataframe(sty, hide_index=True, use_container_width=False, column_config=cc)
         st.code(",".join(tv_symbol(x, mcfg) for x in lst["Symbol"]), language=None)
     if not heading:      # shown inside an expander already — no nested expanders
         g = st.selectbox(f"Breakouts in a {group.lower()}", list(t[group]), key="sl_pick_wl")
-        st.caption("**Anticipation view** — stocks that already broke out, tightest **today** first, to spot the next leg "
+        st.caption("**Anticipation view** — every breakout recorded in your evening batches (saved or skipped), tightest **today** first, to spot the next leg "
                    "before it goes. NR4 % = today's 4-day range · Rel tight = today's NR4 ÷ ADR (≤ 0.8 coiled) · "
                    "ADRs from 10w ≤2 buy, 2–3 half size, >3 no new buy · % since BO green = holding above the breakout close.")
         if g in names and not names[g].empty:
@@ -2442,8 +2465,9 @@ def _render_saved_themes(st, v, wdf, hist, base_df, mcfg):
                               key=f"wl_theme_pick_{group}")
         st.session_state["wl_theme_key"] = f"{group}:{'|'.join(sorted(pick))}"
         if hist is not None and not hist.empty:
-            with st.expander("Leadership over time · every breakout you've saved in the evenings (last 20 sessions)"):
-                render_sector_leadership(st, None, base_df, mcfg, hist=hist, heading=False)
+            with st.expander("Leadership over time · every breakout recorded in your evening batches, saved or skipped (last 20 sessions)"):
+                _mine = set(wdf["symbol"].astype(str).str.upper()) if wdf is not None and not wdf.empty and "symbol" in wdf.columns else set()
+                render_sector_leadership(st, None, base_df, mcfg, hist=hist, heading=False, saved_syms=_mine)
     return v[g.isin(pick)] if pick else v
 
 
