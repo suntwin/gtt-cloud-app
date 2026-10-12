@@ -882,9 +882,17 @@ def main():
 
                     st.subheader("Top Setups by Sector")
                     st.caption("Every scanned stock in each hot sector (not only the ones with volume today), "
-                               "tightest first — a coil is usually quiet. Rel tight = today's NR4 ÷ ADR.")
+                               "tightest first — a coil is usually quiet. Rel tight = today's NR4 ÷ ADR. "
+                               "Saved = already in your Saved breakouts (with its tags).")
+                    try:
+                        from gtt_process import load_active_watchlist, tags_of
+                        _wl = {str(r["symbol"]).upper(): "✓ " + (" + ".join(tags_of(r)) or "saved")
+                               for r in (load_active_watchlist(supabase, MARKET_CFG) if supabase is not None else [])}
+                    except Exception:
+                        _wl = {}
                     for sec in ss.head(10)['Sector'].tolist():
                         ss2 = sdf[sdf['Sector']==sec].copy()
+                        ss2['Saved'] = ss2['Symbol'].astype(str).str.upper().map(_wl).fillna('')
                         if '_nr4' in ss2.columns and 'Adr' in ss2.columns:
                             ss2['_rel_tightness'] = (ss2['_nr4'] / ss2['Adr'].replace(0, np.nan)).round(2)
                         if 'W_Dist10wMA' in ss2.columns and 'Adr' in ss2.columns:
@@ -892,7 +900,7 @@ def main():
                         n_vol = int((ss2['_vol_ratio'].fillna(0) >= 1.0).sum())
                         ss2 = ss2.sort_values('_rel_tightness' if '_rel_tightness' in ss2.columns else '_vol_ratio',
                                               ascending='_rel_tightness' in ss2.columns, na_position='last').head(15)
-                        dc = [c for c in ['Symbol','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr','Ti65','_rel_tightness','_nr4_previous','_rel_wk_dist','_10madist','_20madist','Industry'] if c in ss2.columns]
+                        dc = [c for c in ['Symbol','Saved','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr','Ti65','_nr4','_rel_tightness','_rel_wk_dist','_10madist','_20madist','Industry'] if c in ss2.columns]
                         sd = ss2[dc].copy()
                         with st.expander(f"{sec} — tightest {len(ss2)} of {int((sdf['Sector']==sec).sum())} scanned · {n_vol} with volume today"):
                             gb = GridOptionsBuilder.from_dataframe(sd); gb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
@@ -913,10 +921,12 @@ def main():
                             if '_20madist' in sd.columns: gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
                             if '_10madist' in sd.columns: gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
                             if 'W_Dist10wMA' in sd.columns: gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
-                            hs2={'_chg_percentclose':'Chg %','_avgvol_mln':'Avg vol','dvol':'Day vol','Adr':'ADR','_nr4_previous':'NR4 % (prev)','_10madist':'10MA dist','_20madist':'20MA dist','_rel_wk_dist':'ADRs from 10w','_vol_ratio':'Vol x'}
+                            hs2={'_chg_percentclose':'Chg %','_avgvol_mln':'Avg vol','dvol':'Day vol','Adr':'ADR','_nr4':'NR4 %','_nr4_previous':'NR4 % (prev)','_10madist':'10MA dist','_20madist':'20MA dist','_rel_wk_dist':'ADRs from 10w','_vol_ratio':'Vol x'}
                             for rc,sn in hs2.items():
                                 if rc in sd.columns: gb.configure_column(rc, headerName=sn)
                             if 'Symbol' in sd.columns: gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')
+                            if 'Saved' in sd.columns: gb.configure_column('Saved', pinned='left', minWidth=110, maxWidth=200, headerTooltip='Already in your Saved breakouts (tags)',
+                                cellStyle=JsCode("function(p){return p.value?{'color':'#28a745','fontWeight':'bold'}:null}"))
                             if 'Sector_Rank' in sd.columns: gb.configure_column('Sector_Rank', hide=True)
                             if 'Sector_Total' in sd.columns: gb.configure_column('Sector_Total', hide=True)
                             if 'Sector_Percentile' in sd.columns: gb.configure_column('Sector_Percentile', minWidth=100, maxWidth=120)
