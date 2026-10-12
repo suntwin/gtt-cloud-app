@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12k · Top Setups by Sector: Saved column, today's NR4"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12l · Circuit % in every decision view (NSE)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1500,11 +1500,12 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
         _live = add_derived(base_df).drop_duplicates("Symbol")
         _live["Symbol"] = _live["Symbol"].astype(str).str.upper()
         _live = _live.set_index("Symbol")
-    _LIVE_COLS = ["_chg_percentclose", "_vol_ratio", "_avgvol_mln", "dvol", "Adr", "Ti65", "_nr4",
+    _LIVE_COLS = ["_chg_percentclose", "_vol_ratio", "_avgvol_mln", "dvol", "Adr"] + \
+                 (["_circuit"] if mcfg.get("market") == "NSE" else []) + ["Ti65", "_nr4",
                   "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist"]
     _LABELS = {"date": "Broke out", "chg": "BO day %", "vol": "BO vol x", "since": "% since BO",
                "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_avgvol_mln": "Avg vol", "dvol": "Day vol",
-               "Adr": "ADR", "_rel_tightness_today": "Rel tight", "_nr4": "NR4 %",
+               "Adr": "ADR", "_circuit": "Circuit %", "_rel_tightness_today": "Rel tight", "_nr4": "NR4 %",
                "_rel_wk_dist": "ADRs from 10w", "_10madist": "10MA %", "_20madist": "20MA %"}
 
     _ever_saved = set()
@@ -1530,7 +1531,7 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
             key = v["Symbol"].astype(str).str.upper()
             for c in _LIVE_COLS:
                 if c in _live.columns:
-                    v[c] = key.map(_live[c]).values
+                    v[c] = pd.to_numeric(key.map(_live[c]), errors="coerce").values
             v = v.sort_values("_rel_tightness_today", na_position="last") if "_rel_tightness_today" in v.columns else v
         else:
             st.caption("Generate the scan to see today's tightness, volume and MA distances here.")
@@ -1543,7 +1544,7 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
                       subset=["Saved?"])
         # one format for every column (a second .format() call wipes the first one's formats)
         _dp = {"chg": "%.1f", "vol": "%.1f", "since": "%+.1f", "_chg_percentclose": "%.1f", "_vol_ratio": "%.1f",
-               "_avgvol_mln": "%.0f", "dvol": "%.0f", "Adr": "%.1f", "Ti65": "%.1f", "_rel_tightness_today": "%.2f",
+               "_avgvol_mln": "%.0f", "dvol": "%.0f", "Adr": "%.1f", "_circuit": "%.0f", "Ti65": "%.1f", "_rel_tightness_today": "%.2f",
                "_nr4": "%.2f", "_rel_wk_dist": "%.1f", "_10madist": "%.1f", "_20madist": "%.1f"}
         sty = sty.format({c: (lambda f: (lambda x: "" if pd.isna(x) else f % x))(f) for c, f in _dp.items() if c in v.columns})
         cc = {c: st.column_config.NumberColumn(_LABELS.get(c, c), format=_dp[c], width="small")
@@ -2544,10 +2545,11 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             lambda s: (date.today() - pd.to_datetime(s).date()).days if s else None)
         if live is not None:
             for c, src in [("Last", "Last"), ("Chg %", "_chg_percentclose"), ("Vol x", "_vol_ratio"),
-                           ("Avg vol", "_avgvol_mln"), ("Day vol", "dvol"), ("ADR", "Adr"), ("Ti65", "Ti65"),
+                           ("Avg vol", "_avgvol_mln"), ("Day vol", "dvol"), ("ADR", "Adr")] + \
+                          ([("Circuit %", "_circuit")] if mcfg.get("market") == "NSE" else []) + [("Ti65", "Ti65"),
                            ("NR4 %", "_nr4"), ("Rel tight", "_rel_tightness_today"),
                            ("ADRs from 10w", "_rel_wk_dist"), ("10MA %", "_10madist"), ("20MA %", "_20madist")]:
-                v[c] = v["symbol"].map(live[src]) if src in live.columns else np.nan
+                v[c] = pd.to_numeric(v["symbol"].map(live[src]), errors="coerce") if src in live.columns else np.nan
             v["In scan"] = v["symbol"].isin(live.index)
         v["tags"] = v["tags"].map(lambda t: ", ".join(t) if isinstance(t, list) else "")
         # Sector / Industry: today's scan first, then what was saved with the breakout, then the evening snapshots
@@ -2581,6 +2583,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             "Day vol": st.column_config.NumberColumn("Day vol", format="%.0f", help="Today's volume, same units as Avg vol"),
             "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
             "Rel tight": st.column_config.NumberColumn("Rel tight", format="%.2f", help="Today's NR4 ÷ ADR — lower is tighter"),
+            "Circuit %": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
             "NR4 %": st.column_config.NumberColumn("NR4 %", format="%.2f", help="Today's 4-day range %"),
             "ADRs from 10w": st.column_config.NumberColumn("ADRs from 10w", format="%.1f",
                                                            help="Distance from the 10-week line in ADRs: ≤2 buy · 2–3 half size · >3 no new buy"),
@@ -2591,7 +2594,8 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more", extra=("UNTAGGED",) if has_untagged else ())
         st.caption("One row per stock. Change tags, rating or Action, then press Apply — nothing is sent until then.")
         with st.form("wl_form", border=False):
-            ed = st.data_editor(v, hide_index=True, height=420, key=f"wl_editor_{st.session_state.get('wl_theme_key', '')}",
+            _vdata = v.style.map(_c_circuit, subset=["Circuit %"]) if "Circuit %" in v.columns else v
+            ed = st.data_editor(_vdata, hide_index=True, height=420, key=f"wl_editor_{st.session_state.get('wl_theme_key', '')}",
                                 disabled=[c for c in v.columns if c not in editable], column_config=cfgcols)
             applied = st.form_submit_button("Apply changes")
 

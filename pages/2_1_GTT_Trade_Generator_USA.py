@@ -900,7 +900,7 @@ def main():
                         n_vol = int((ss2['_vol_ratio'].fillna(0) >= 1.0).sum())
                         ss2 = ss2.sort_values('_rel_tightness' if '_rel_tightness' in ss2.columns else '_vol_ratio',
                                               ascending='_rel_tightness' in ss2.columns, na_position='last').head(15)
-                        dc = [c for c in ['Symbol','Saved','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr','Ti65','_nr4','_rel_tightness','_rel_wk_dist','_10madist','_20madist','Industry'] if c in ss2.columns]
+                        dc = [c for c in ['Symbol','Saved','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr'] + (['_circuit'] if MARKET_CFG.get('market') == 'NSE' else []) + ['Ti65','_nr4','_rel_tightness','_rel_wk_dist','_10madist','_20madist','Industry'] if c in ss2.columns]
                         sd = ss2[dc].copy()
                         with st.expander(f"{sec} — tightest {len(ss2)} of {int((sdf['Sector']==sec).sum())} scanned · {n_vol} with volume today"):
                             gb = GridOptionsBuilder.from_dataframe(sd); gb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
@@ -925,6 +925,10 @@ def main():
                             for rc,sn in hs2.items():
                                 if rc in sd.columns: gb.configure_column(rc, headerName=sn)
                             if 'Symbol' in sd.columns: gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')
+                            if '_circuit' in sd.columns:
+                                sd['_circuit'] = pd.to_numeric(sd['_circuit'], errors='coerce')
+                                gb.configure_column('_circuit', headerName='Circuit %', minWidth=70, maxWidth=90, headerTooltip='NSE price band: 20 free · 10 caution · ≤5 can lock in circuit',
+                                    cellStyle=JsCode("function(p){const v=p.value;if(v===null||v===undefined||isNaN(v)||v<=0)return null;if(v<=5)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};if(v<=10)return{'backgroundColor':'#fff3cd','color':'#664d03'};return null}"))
                             if 'Saved' in sd.columns: gb.configure_column('Saved', pinned='left', minWidth=110, maxWidth=200, headerTooltip='Already in your Saved breakouts (tags)',
                                 cellStyle=JsCode("function(p){return p.value?{'color':'#28a745','fontWeight':'bold'}:null}"))
                             if 'Sector_Rank' in sd.columns: gb.configure_column('Sector_Rank', hide=True)
