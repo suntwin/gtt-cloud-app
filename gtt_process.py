@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12d · Top Setups by Sector: tightest first, decision columns"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12e · Saved breakouts: decision columns from today's scan"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2483,7 +2483,9 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             lambda s: (date.today() - pd.to_datetime(s).date()).days if s else None)
         if live is not None:
             for c, src in [("Last", "Last"), ("Chg %", "_chg_percentclose"), ("Vol x", "_vol_ratio"),
-                           ("10MA %", "_10madist"), ("20MA %", "_20madist")]:
+                           ("Avg vol", "_avgvol_mln"), ("Day vol", "dvol"), ("ADR", "Adr"), ("Ti65", "Ti65"),
+                           ("Rel tight", "_rel_tightness_today"), ("NR4 % (prev)", "_nr4_previous"),
+                           ("ADRs from 10w", "_rel_wk_dist"), ("10MA %", "_10madist"), ("20MA %", "_20madist")]:
                 v[c] = v["symbol"].map(live[src]) if src in live.columns else np.nan
             v["In scan"] = v["symbol"].isin(live.index)
         v["tags"] = v["tags"].map(lambda t: ", ".join(t) if isinstance(t, list) else "")
@@ -2512,6 +2514,17 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             "trigger_date": "Breakout day", "trigger_close": "BO close", "prev_close": "Fail level",
             "vol_ratio": st.column_config.NumberColumn("BO vol x", format="%.1f"),
             "tags": "Notes",
+            "Chg %": st.column_config.NumberColumn("Chg %", format="%.1f"),
+            "Vol x": st.column_config.NumberColumn("Vol x", format="%.1f"),
+            "Avg vol": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
+            "Day vol": st.column_config.NumberColumn("Day vol", format="%.0f", help="Today's volume, same units as Avg vol"),
+            "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
+            "Rel tight": st.column_config.NumberColumn("Rel tight", format="%.2f", help="Today's NR4 ÷ ADR — lower is tighter"),
+            "NR4 % (prev)": st.column_config.NumberColumn("NR4 % (prev)", format="%.2f"),
+            "ADRs from 10w": st.column_config.NumberColumn("ADRs from 10w", format="%.1f",
+                                                           help="Distance from the 10-week line in ADRs: ≤2 buy · 2–3 half size · >3 no new buy"),
+            "10MA %": st.column_config.NumberColumn("10MA %", format="%.1f"),
+            "20MA %": st.column_config.NumberColumn("20MA %", format="%.1f"),
         }
         if multi:
             cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more", extra=("UNTAGGED",) if has_untagged else ())
