@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12h · Leadership tables: compact columns"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12i · Breakouts in a sector: today's NR4 (anticipation)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1499,11 +1499,11 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True):
         _live = add_derived(base_df).drop_duplicates("Symbol")
         _live["Symbol"] = _live["Symbol"].astype(str).str.upper()
         _live = _live.set_index("Symbol")
-    _LIVE_COLS = ["_chg_percentclose", "_vol_ratio", "_avgvol_mln", "dvol", "Adr", "Ti65", "_rel_tightness_today",
-                  "_nr4_previous", "_rel_wk_dist", "_10madist", "_20madist"]
+    _LIVE_COLS = ["_chg_percentclose", "_vol_ratio", "_avgvol_mln", "dvol", "Adr", "Ti65", "_nr4",
+                  "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist"]
     _LABELS = {"date": "Broke out", "chg": "BO day %", "vol": "BO vol x", "since": "% since BO",
                "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_avgvol_mln": "Avg vol", "dvol": "Day vol",
-               "Adr": "ADR", "_rel_tightness_today": "Rel tight", "_nr4_previous": "NR4 % (prev)",
+               "Adr": "ADR", "_rel_tightness_today": "Rel tight", "_nr4": "NR4 %",
                "_rel_wk_dist": "ADRs from 10w", "_10madist": "10MA %", "_20madist": "20MA %"}
 
     def _names(g, lst):
@@ -1524,19 +1524,19 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True):
         # one format for every column (a second .format() call wipes the first one's formats)
         _dp = {"chg": "%.1f", "vol": "%.1f", "since": "%+.1f", "_chg_percentclose": "%.1f", "_vol_ratio": "%.1f",
                "_avgvol_mln": "%.0f", "dvol": "%.0f", "Adr": "%.1f", "Ti65": "%.1f", "_rel_tightness_today": "%.2f",
-               "_nr4_previous": "%.2f", "_rel_wk_dist": "%.1f", "_10madist": "%.1f", "_20madist": "%.1f"}
+               "_nr4": "%.2f", "_rel_wk_dist": "%.1f", "_10madist": "%.1f", "_20madist": "%.1f"}
         sty = sty.format({c: (lambda f: (lambda x: "" if pd.isna(x) else f % x))(f) for c, f in _dp.items() if c in v.columns})
         cc = {c: st.column_config.NumberColumn(_LABELS.get(c, c), format=_dp[c], width="small")
               for c in v.columns if c in _dp}
         cc["Symbol"] = st.column_config.TextColumn("Symbol", width="small")
         cc["date"] = st.column_config.TextColumn("Broke out", width="small")
         st.dataframe(sty, hide_index=True, use_container_width=False, column_config=cc)
-        if _live is not None:
-            st.caption("Tightest first. Rel tight = today's NR4 ÷ ADR · ADRs from 10w ≤2 buy, 2–3 half size, >3 no new buy · "
-                       "% since BO green = holding above the breakout close.")
         st.code(",".join(tv_symbol(x, mcfg) for x in lst["Symbol"]), language=None)
     if not heading:      # shown inside an expander already — no nested expanders
         g = st.selectbox(f"Breakouts in a {group.lower()}", list(t[group]), key="sl_pick_wl")
+        st.caption("**Anticipation view** — stocks that already broke out, tightest **today** first, to spot the next leg "
+                   "before it goes. NR4 % = today's 4-day range · Rel tight = today's NR4 ÷ ADR (≤ 0.8 coiled) · "
+                   "ADRs from 10w ≤2 buy, 2–3 half size, >3 no new buy · % since BO green = holding above the breakout close.")
         if g in names and not names[g].empty:
             _names(g, names[g])
         return
@@ -2521,7 +2521,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         if live is not None:
             for c, src in [("Last", "Last"), ("Chg %", "_chg_percentclose"), ("Vol x", "_vol_ratio"),
                            ("Avg vol", "_avgvol_mln"), ("Day vol", "dvol"), ("ADR", "Adr"), ("Ti65", "Ti65"),
-                           ("Rel tight", "_rel_tightness_today"), ("NR4 % (prev)", "_nr4_previous"),
+                           ("NR4 %", "_nr4"), ("Rel tight", "_rel_tightness_today"),
                            ("ADRs from 10w", "_rel_wk_dist"), ("10MA %", "_10madist"), ("20MA %", "_20madist")]:
                 v[c] = v["symbol"].map(live[src]) if src in live.columns else np.nan
             v["In scan"] = v["symbol"].isin(live.index)
@@ -2557,7 +2557,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             "Day vol": st.column_config.NumberColumn("Day vol", format="%.0f", help="Today's volume, same units as Avg vol"),
             "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
             "Rel tight": st.column_config.NumberColumn("Rel tight", format="%.2f", help="Today's NR4 ÷ ADR — lower is tighter"),
-            "NR4 % (prev)": st.column_config.NumberColumn("NR4 % (prev)", format="%.2f"),
+            "NR4 %": st.column_config.NumberColumn("NR4 %", format="%.2f", help="Today's 4-day range %"),
             "ADRs from 10w": st.column_config.NumberColumn("ADRs from 10w", format="%.1f",
                                                            help="Distance from the 10-week line in ADRs: ≤2 buy · 2–3 half size · >3 no new buy"),
             "10MA %": st.column_config.NumberColumn("10MA %", format="%.1f"),
