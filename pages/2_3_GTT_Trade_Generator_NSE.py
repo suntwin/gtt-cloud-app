@@ -731,7 +731,7 @@ def main():
             # ── _rel_tightness Heatmap ──
             th = JsCode("""function(p){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}""")
             if '_rel_tightness' in fdf.columns:
-                gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight', cellStyle=th, comparator=abs_comparator)
+                gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel tight', cellStyle=th, comparator=abs_comparator)
 
             # ── Chg% Heatmap ──
             if '_chg_percentclose' in fdf.columns:
@@ -881,11 +881,20 @@ def main():
                     AgGrid(ss, gridOptions=sgb.build(), height=400, width='100%', update_mode=GridUpdateMode.NO_UPDATE, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
 
                     st.subheader("Top Setups by Sector")
+                    st.caption("Every scanned stock in each hot sector (not only the ones with volume today), "
+                               "tightest first — a coil is usually quiet. Rel tight = today's NR4 ÷ ADR.")
                     for sec in ss.head(10)['Sector'].tolist():
-                        ss2 = top_stocks[top_stocks['Sector']==sec].sort_values('_vol_ratio', ascending=False, na_position='last').head(15)
-                        dc = [c for c in ['Symbol','Last','_chg_percentclose','_vol_ratio','W_Dist10wMA','_rel_wk_dist','W_TightCloses_10w','_rel_tightness','Adr','Ti65','_nr4','_nr4_previous','dvol','_avgvol_mln','_20madist','_10madist','Avg_RS','RS_6M','RS_3M','RS_1M','Sector','Industry','Sector_Rank','Sector_Total','Sector_Percentile'] if c in ss2.columns]
+                        ss2 = sdf[sdf['Sector']==sec].copy()
+                        if '_nr4' in ss2.columns and 'Adr' in ss2.columns:
+                            ss2['_rel_tightness'] = (ss2['_nr4'] / ss2['Adr'].replace(0, np.nan)).round(2)
+                        if 'W_Dist10wMA' in ss2.columns and 'Adr' in ss2.columns:
+                            ss2['_rel_wk_dist'] = (ss2['W_Dist10wMA'].abs() / ss2['Adr'].replace(0, np.nan)).round(2)
+                        n_vol = int((ss2['_vol_ratio'].fillna(0) >= 1.0).sum())
+                        ss2 = ss2.sort_values('_rel_tightness' if '_rel_tightness' in ss2.columns else '_vol_ratio',
+                                              ascending='_rel_tightness' in ss2.columns, na_position='last').head(15)
+                        dc = [c for c in ['Symbol','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr','Ti65','_rel_tightness','_nr4_previous','_rel_wk_dist','_10madist','_20madist','Industry'] if c in ss2.columns]
                         sd = ss2[dc].copy()
-                        with st.expander(f"{sec} ({len(ss2)} stocks)"):
+                        with st.expander(f"{sec} — tightest {len(ss2)} of {int((sdf['Sector']==sec).sum())} scanned · {n_vol} with volume today"):
                             gb = GridOptionsBuilder.from_dataframe(sd); gb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
                             gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True)
                             for c in sd.columns: gb.configure_column(c, headerTooltip=c)
@@ -893,8 +902,8 @@ def main():
                             if 'dvol' in sd.columns and '_avgvol_mln' in sd.columns:
                                 gb.configure_column('dvol', minWidth=60, maxWidth=85, cellStyle=vol_jscode if 'dvol' in fdf.columns else None)
                                 gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, cellStyle=vol_jscode if '_avgvol_mln' in fdf.columns else None)
-                            if '_rel_tightness' in sd.columns: gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel Tight', cellStyle=th, comparator=abs_comparator)
-                            if '_rel_wk_dist' in sd.columns: gb.configure_column('_rel_wk_dist', minWidth=70, maxWidth=90, headerName='Rel Wk Dist', cellStyle=rel_wk_dist_jscode, comparator=abs_comparator)
+                            if '_rel_tightness' in sd.columns: gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel tight', cellStyle=th, comparator=abs_comparator)
+                            if '_rel_wk_dist' in sd.columns: gb.configure_column('_rel_wk_dist', minWidth=70, maxWidth=100, headerName='ADRs from 10w', cellStyle=rel_wk_dist_jscode, comparator=abs_comparator)
                             if '_chg_percentclose' in sd.columns:
                                 vc2=sd[sd['_chg_percentclose']>0]['_chg_percentclose']; cmn=float(vc2.min()) if not vc2.empty else 0; cmx=float(vc2.max()) if not vc2.empty else 10
                                 gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110, cellStyle=JsCode(f"""function(p){{const v=p.value;if(!v||v<=0)return null;const m={cmn},x={cmx};if(x===m)return{{'backgroundColor':'#ffe6ff','color':'black'}};const r=Math.min((v-m)/(x-m),1.0);const a=Math.round(255-115*r),b=Math.round(220-220*r),c=Math.round(255-115*r);return{{'backgroundColor':'rgb('+a+','+b+','+c+')','color':r>0.5?'white':'black','fontWeight':r>=0.8?'bold':'normal'}}}}"""), filter='agNumberColumnFilter', filterParams={'filterOptions':['greaterThan','lessThan','equals','inRange'],'defaultOption':'greaterThan','defaultValues':[0]})
@@ -904,7 +913,7 @@ def main():
                             if '_20madist' in sd.columns: gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
                             if '_10madist' in sd.columns: gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
                             if 'W_Dist10wMA' in sd.columns: gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
-                            hs2={'_chg_percentclose':'Chg %','_avgvol_mln':'AvgVol','_nr4_previous':'NR4Prev','_10madist':'10MADist','_20madist':'20MADist','W_Dist10wMA':'Wk 10wMA%','_rel_wk_dist':'RelWkDist','_vol_ratio':'VolRatio'}
+                            hs2={'_chg_percentclose':'Chg %','_avgvol_mln':'Avg vol','dvol':'Day vol','Adr':'ADR','_nr4_previous':'NR4 % (prev)','_10madist':'10MA dist','_20madist':'20MA dist','_rel_wk_dist':'ADRs from 10w','_vol_ratio':'Vol x'}
                             for rc,sn in hs2.items():
                                 if rc in sd.columns: gb.configure_column(rc, headerName=sn)
                             if 'Symbol' in sd.columns: gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')
