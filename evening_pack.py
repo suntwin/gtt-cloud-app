@@ -285,7 +285,7 @@ def build_pack(sb, mcfg, base_df, tomorrow=None):
                               "_manual": True})
             if extra:
                 lst = pd.concat([lst, pd.DataFrame(extra)], ignore_index=True)
-            manual = set(lst.loc[lst["_manual"].eq(True), "Symbol"]) if "_manual" in lst.columns else set()
+            manual = set(lst.loc[lst["_manual"].eq(True).fillna(False).astype(bool), "Symbol"]) if "_manual" in lst.columns else set()
 
             def status(sym):
                 s = str(sym).upper()
@@ -581,8 +581,9 @@ def to_xlsx(meta, sections, mcfg):
                         c.font = Font(bold=b, color=fgc) if fgc else Font(bold=b)
             for j, k in enumerate(keys, start=1):
                 lab, fmt, maxc = COLS.get(k, (k, None, 30))
-                w = max(len(lab), 6) + 2 if fmt else min(max(len(lab), int(df[k].astype(str).str.len().quantile(0.9)) if len(df) else 8) + 2,
-                                                        90 if k == "Value" else 45)
+                lens = [len(fmt_cell(k, x)) for x in df[k].tolist()]
+                q = int(np.percentile(lens, 90)) if lens else 8
+                w = max(len(lab), 6) + 2 if fmt else min(max(len(lab), q) + 2, 90 if k == "Value" else 45)
                 widths[j] = max(widths.get(j, 0), w)
         for j, w in widths.items():
             ws.column_dimensions[get_column_letter(j)].width = w
@@ -612,7 +613,10 @@ def render_pack_button(st, sb, mcfg, base_df):
                                              "xlsx": to_xlsx(meta, sections, mcfg),
                                              "summary": [(t, len(b)) for t, b in sections]}
                 except Exception as e:
+                    import traceback
                     st.error(f"Could not build the evening pack ({e}).")
+                    with st.expander("Details (send this to Claude)"):
+                        st.code(traceback.format_exc()[-3000:], language=None)
         pack = st.session_state.get(key)
         if pack:
             m, sd = pack["meta"]["market"], pack["meta"]["session"]
