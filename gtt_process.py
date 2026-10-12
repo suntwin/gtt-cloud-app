@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12b · Day vol next to Avg vol, Scans column dropped"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12c · NR4 (prev) in breakout tagging"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2193,7 +2193,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     if notes:
         part["Note"] = part["Symbol"].map(notes)
     show = ["Skip"] + tagcols + ["Rating", "Symbol", "Note", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
-                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_rel_wk_dist", "dvol", "_avgvol_mln",
+                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_nr4_previous", "_rel_wk_dist", "dvol", "_avgvol_mln",
                                  "_10madist", "_20madist", "Avg_RS", "Sector"]
     show = _with_circuit(show, mcfg)
     view = _circuit_num(part[[c for c in show if c in part.columns]].copy())
@@ -2214,6 +2214,8 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
         "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
         "_rel_tightness_prev": st.column_config.NumberColumn("Rel tight (prev)", format="%.2f"),
+        "_nr4_previous": st.column_config.NumberColumn("NR4 % (prev)", format="%.2f",
+                                                      help="Yesterday's 4-day range %, before the breakout day"),
         "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
         "dvol": st.column_config.NumberColumn("Day vol", format="%.0f", help="Today's volume, same units as Avg vol"),
         "_avgvol_mln": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
