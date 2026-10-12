@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12q · Weak stocks lose stale ticks"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12r · Off-high columns (1M / 6M / 52W)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -81,6 +81,35 @@ TOMORROW_DEFAULTS = {
 }
 TIER_DEFAULTS = {"USA": {"tier1_adr": 7.0, "tier2_adr": 5.0}, "NSE": {"tier1_adr": 6.0, "tier2_adr": 4.5}}
 
+# ── Distance from highs (MarketInOut off_high_21 / off_high_126 / off_high_252, % from the N-day high) ──
+OFF_HIGH_COLS = ["off_high_21", "off_high_126", "off_high_252"]
+OFF_HIGH_LABELS = {"off_high_21": "Off 1M hi %", "off_high_126": "Off 6M hi %", "off_high_252": "Off 52W hi %"}
+OFF_HIGH_HELP = {"off_high_21": "% from the 21-day high — the pivot proxy. Colour = distance in ADRs: dark green ≤ 0.5 ADR, green ≤ 1, light ≤ 2",
+                 "off_high_126": "% from the 6-month high",
+                 "off_high_252": "% from the 52-week high — leader check: dark green ≤ 5%, green ≤ 15%, light ≤ 25%, red > 40%"}
+
+
+def assign_scan_columns(df, base_cols):
+    """Name the columns of a MarketInOut GTT screen (it comes without a header).
+    base_cols = the fixed leading fields. New layout: base + 3 off-high fields (any order — mapped by size,
+    because the distance from a longer window's high is always >= a shorter one's). Old layout: base + _insideday."""
+    n, nb = len(df.columns), len(base_cols)
+    if n >= nb + 3:
+        tmp = [f"_oh{i}" for i in range(3)]
+        df.columns = list(base_cols) + tmp + [f"Extra_{i}" for i in range(nb + 3, n)]
+        med = df[tmp].apply(pd.to_numeric, errors="coerce").abs().median()
+        order = sorted(tmp, key=lambda c: (med[c] if pd.notna(med[c]) else np.inf, tmp.index(c)))
+        df = df.rename(columns=dict(zip(order, OFF_HIGH_COLS)))
+        for c in OFF_HIGH_COLS:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    elif n == nb + 1:
+        df.columns = list(base_cols) + ["_insideday"]
+    elif n < nb:
+        df.columns = list(base_cols)[:n]
+    else:
+        df.columns = list(base_cols) + [f"Extra_{i}" for i in range(nb, n)]
+    return df
+
 
 def adr_tier(adr, cfg):
     """P1 = high ADR, P2 = middle, P3 = low; '' when ADR is missing."""
@@ -110,7 +139,8 @@ TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's lis
 SNAPSHOT_METRICS = ["Last", "_chg_percentclose", "_vol_ratio", "Adr", "_nr4", "_nr4_previous",
                     "_rel_tightness_today", "_rel_tightness_prev", "_rel_wk_dist", "W_Dist10wMA",
                     "W_TightCloses_10w", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS",
-                    "RS_1M", "RS_3M", "RS_6M", "Sector", "Industry", "Suggested", "rating"]
+                    "RS_1M", "RS_3M", "RS_6M", "Sector", "Industry", "Suggested", "rating",
+                    "off_high_21", "off_high_126", "off_high_252"]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -209,6 +239,11 @@ def add_derived(df):
     d["_rel_tightness_today"] = (d["_nr4"] / adr).round(2)
     d["_rel_tightness_prev"] = (d["_nr4_previous"] / adr).round(2)
     d["_rel_wk_dist"] = (d["W_Dist10wMA"].abs() / adr).round(2)      # NaN stays NaN
+    for c in OFF_HIGH_COLS:
+        if c in d.columns:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+    if "off_high_21" in d.columns:
+        d["_off21_adr"] = (d["off_high_21"].abs() / adr).round(2)
     if "dvol" in d.columns and "_avgvol_mln" in d.columns:
         d["_vol_ratio"] = (d["dvol"] / d["_avgvol_mln"].replace(0, np.nan)).round(2)
     elif "_vol_ratio" not in d.columns:
@@ -273,6 +308,28 @@ def _c_chg(v):
     return _css("#ffe6ff")
 
 
+def _c_off21_adr(v):
+    """Distance from the 1-month high in ADRs (pivot proximity)."""
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    if v <= 0.5: return _css("#28a745", "white", True)
+    if v <= 1.0: return _css("#8ee68e")
+    if v <= 2.0: return _css("#d4edda")
+    return ""
+
+
+def _c_offhigh_long(v):
+    """Distance from the 6-month / 52-week high in % (leader check: no overhead supply)."""
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    a = abs(v)
+    if a <= 5: return _css("#28a745", "white", True)
+    if a <= 15: return _css("#8ee68e")
+    if a <= 25: return _css("#d4edda")
+    if a > 40: return _css("#f8d7da", "#721c24")
+    return ""
+
+
 SITUATION_COLOURS = {"Saved & tight": _css("#28a745", "white", True), "Saved, not tight yet": _css("#d4edda"),
                      "Added by you": _css("#e2d9f3", "#3d2a73"), "1 · Buy signal": _css("#155724", "white", True),
                      "2 · Save (tag it)": _css("#cfe2ff", "#084298"), "3 · Wait": _css("#fff3cd", "#664d03"),
@@ -322,7 +379,14 @@ def style_table(df, liq_floor=None):
             sty = sty.map(f, subset=[c])
     if "Label" in cols:
         sty = sty.map(lambda v: SITUATION_COLOURS.get(str(v), ""), subset=["Label"])
-    fmt = {c: "{:.1f}" for c in ["_chg_percentclose", "_vol_ratio", "Adr", "_rel_wk_dist", "_10madist", "_20madist"] if c in cols}
+    if "off_high_21" in cols:
+        _adr = pd.to_numeric(df["Adr"], errors="coerce") if "Adr" in cols else pd.Series(np.nan, index=df.index)
+        sty = sty.apply(lambda col: [_c_off21_adr(abs(_num(x)) / a if a and np.isfinite(a) else np.nan)
+                                     for x, a in zip(col, _adr)], subset=["off_high_21"])
+    for c in ("off_high_126", "off_high_252"):
+        if c in cols:
+            sty = sty.map(_c_offhigh_long, subset=[c])
+    fmt = {c: "{:.1f}" for c in ["_chg_percentclose", "_vol_ratio", "Adr", "_rel_wk_dist", "_10madist", "_20madist"] + OFF_HIGH_COLS if c in cols}
     fmt.update({c: "{:.0f}" for c in ["_circuit", "_avgvol_mln", "dvol"] if c in cols})
     fmt.update({c: "{:.2f}" for c in ["_rel_tightness_today", "_rel_tightness_prev"] if c in cols})
     return sty.format(fmt, na_rep="")
@@ -1514,11 +1578,12 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
         _live = _live.set_index("Symbol")
     _LIVE_COLS = ["_chg_percentclose", "_vol_ratio", "_avgvol_mln", "dvol", "Adr"] + \
                  (["_circuit"] if mcfg.get("market") == "NSE" else []) + ["Ti65", "_nr4",
-                  "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist"]
+                  "_rel_tightness_today", "_rel_wk_dist", "off_high_21", "off_high_252", "_10madist", "_20madist"]
     _LABELS = {"date": "Broke out", "chg": "BO day %", "vol": "BO vol x", "since": "% since BO",
                "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_avgvol_mln": "Avg vol", "dvol": "Day vol",
                "Adr": "ADR", "_circuit": "Circuit %", "_rel_tightness_today": "Rel tight", "_nr4": "NR4 %",
-               "_rel_wk_dist": "ADRs from 10w", "_10madist": "10MA %", "_20madist": "20MA %"}
+               "_rel_wk_dist": "ADRs from 10w", "_10madist": "10MA %", "_20madist": "20MA %",
+               "off_high_21": "Off 1M hi %", "off_high_252": "Off 52W hi %"}
 
     _ever_saved = set()
     if "selected" in hist.columns:
@@ -1587,7 +1652,8 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
         # one format for every column (a second .format() call wipes the first one's formats)
         _dp = {"chg": "%.1f", "vol": "%.1f", "since": "%+.1f", "_chg_percentclose": "%.1f", "_vol_ratio": "%.1f",
                "_avgvol_mln": "%.0f", "dvol": "%.0f", "Adr": "%.1f", "_circuit": "%.0f", "Ti65": "%.1f", "_rel_tightness_today": "%.2f",
-               "_nr4": "%.2f", "_rel_wk_dist": "%.1f", "_10madist": "%.1f", "_20madist": "%.1f"}
+               "_nr4": "%.2f", "_rel_wk_dist": "%.1f", "_10madist": "%.1f", "_20madist": "%.1f",
+               "off_high_21": "%.1f", "off_high_252": "%.1f"}
         sty = sty.format({c: (lambda f: (lambda x: "" if pd.isna(x) else f % x))(f) for c, f in _dp.items() if c in v.columns})
         cc = {c: st.column_config.NumberColumn(_LABELS.get(c, c), format=_dp[c], width="small")
               for c in v.columns if c in _dp}
@@ -2005,7 +2071,8 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         c.metric(n, int(counts.get(k, 0)))
 
     show = ["Keep", "CONT", "Tier", "Patterns", "Label", "Symbol", "Note", "Reason", "Tag", "_chg_percentclose", "_vol_ratio",
-            "Adr", "_rel_tightness_today", "_nr4", "dvol", "_avgvol_mln", "_rel_wk_dist", "_10madist", "_20madist", "Avg_RS", "Sector"]
+            "Adr", "_rel_tightness_today", "_nr4", "dvol", "_avgvol_mln", "_rel_wk_dist", "off_high_21", "off_high_252",
+            "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
         grp = {}
@@ -2167,6 +2234,12 @@ _JS = {
     "chg": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;
         if(v>=5)return{'backgroundColor':'#b44cb4','color':'white'};if(v>=2)return{'backgroundColor':'#e6b3e6','color':'black'};
         if(v>0)return{'backgroundColor':'#ffe6ff','color':'black'};return null}""",
+    "off21": """function(p){const v=p.value;const a=p.data?Number(p.data.Adr):NaN;if(v===null||v===undefined||isNaN(v)||!a)return null;
+        const d=Math.abs(v)/a;if(d<=0.5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};
+        if(d<=1)return{'backgroundColor':'#8ee68e','color':'black'};if(d<=2)return{'backgroundColor':'#d4edda','color':'black'};return null}""",
+    "offlong": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;const a=Math.abs(v);
+        if(a<=5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(a<=15)return{'backgroundColor':'#8ee68e','color':'black'};
+        if(a<=25)return{'backgroundColor':'#d4edda','color':'black'};if(a>40)return{'backgroundColor':'#f8d7da','color':'#721c24'};return null}""",
     "pat": """function(p){return p.value?{'backgroundColor':'#ffd8a8','color':'#7a3e00','fontWeight':'bold'}:null}""",
     "reason": """function(p){return (p.value&&String(p.value).startsWith('⚡'))?{'backgroundColor':'#fd7e14','color':'white','fontWeight':'bold'}:null}""",
     "tier": """function(p){const v=p.value;if(v==='P1')return{'backgroundColor':'#155724','color':'white','fontWeight':'bold'};
@@ -2237,6 +2310,7 @@ def _tomorrow_grid(view, cfg, key):
             "_circuit": ("Circuit %", None, 75), "_rel_tightness_today": ("Rel tight", "tight", 75),
             "_nr4": ("NR4 %", None, 70), "_rel_wk_dist": ("ADRs from 10w", "relwk", 95), "_avgvol_mln": ("Avg vol", None, 75),
             "_10madist": ("10MA dist", "ma", 80), "_20madist": ("20MA dist", "ma", 80), "Avg_RS": ("Avg RS", None, 70),
+            "off_high_21": ("Off 1M hi %", "off21", 85), "off_high_252": ("Off 52W hi %", "offlong", 90),
             "Sector": ("Sector", None, 140)}
     for c, (name, style, w) in cols.items():
         if c in df.columns:
@@ -2244,7 +2318,7 @@ def _tomorrow_grid(view, cfg, key):
             if style:
                 kw["cellStyle"] = js[style]
             if c in ("_chg_percentclose", "_vol_ratio", "Adr", "_rel_tightness_today", "_nr4", "_rel_wk_dist",
-                     "dvol", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "_circuit"):
+                     "dvol", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "_circuit", "off_high_21", "off_high_252"):
                 kw["type"] = ["numericColumn"]
                 kw["filter"] = "agNumberColumnFilter"
                 kw["valueFormatter"] = JsCode("function(p){return (p.value===null||p.value===undefined)?'':"
@@ -2310,8 +2384,8 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     if notes:
         part["Note"] = part["Symbol"].map(notes)
     show = ["Skip"] + tagcols + ["Rating", "Symbol", "Note", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
-                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_nr4_previous", "_rel_wk_dist", "dvol", "_avgvol_mln",
-                                 "_10madist", "_20madist", "Avg_RS", "Sector"]
+                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_nr4_previous", "_rel_wk_dist", "off_high_252", "dvol",
+                                 "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "Sector"]
     show = _with_circuit(show, mcfg)
     view = _circuit_num(part[[c for c in show if c in part.columns]].copy())
     pre = {t: int(part[t].sum()) for t in SETUP_TYPES}
@@ -2336,6 +2410,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
         "dvol": st.column_config.NumberColumn("Day vol", format="%.0f", help="Today's volume, same units as Avg vol"),
         "_avgvol_mln": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
+        "off_high_252": st.column_config.NumberColumn("Off 52W hi %", format="%.1f", help=OFF_HIGH_HELP["off_high_252"]),
         "_10madist": st.column_config.NumberColumn("10MA %", format="%.1f"),
         "_20madist": st.column_config.NumberColumn("20MA %", format="%.1f"),
         "_circuit": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
@@ -2611,7 +2686,8 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
                            ("Avg vol", "_avgvol_mln"), ("Day vol", "dvol"), ("ADR", "Adr")] + \
                           ([("Circuit %", "_circuit")] if mcfg.get("market") == "NSE" else []) + [("Ti65", "Ti65"),
                            ("NR4 %", "_nr4"), ("Rel tight", "_rel_tightness_today"),
-                           ("ADRs from 10w", "_rel_wk_dist"), ("10MA %", "_10madist"), ("20MA %", "_20madist")]:
+                           ("ADRs from 10w", "_rel_wk_dist"), ("Off 1M hi %", "off_high_21"), ("Off 52W hi %", "off_high_252"),
+                           ("10MA %", "_10madist"), ("20MA %", "_20madist")]:
                 v[c] = pd.to_numeric(v["symbol"].map(live[src]), errors="coerce") if src in live.columns else np.nan
             v["In scan"] = v["symbol"].isin(live.index)
         v["tags"] = v["tags"].map(lambda t: ", ".join(t) if isinstance(t, list) else "")
@@ -2647,6 +2723,8 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
             "Rel tight": st.column_config.NumberColumn("Rel tight", format="%.2f", help="Today's NR4 ÷ ADR — lower is tighter"),
             "Circuit %": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
+            "Off 1M hi %": st.column_config.NumberColumn("Off 1M hi %", format="%.1f", help=OFF_HIGH_HELP["off_high_21"]),
+            "Off 52W hi %": st.column_config.NumberColumn("Off 52W hi %", format="%.1f", help=OFF_HIGH_HELP["off_high_252"]),
             "NR4 %": st.column_config.NumberColumn("NR4 %", format="%.2f", help="Today's 4-day range %"),
             "ADRs from 10w": st.column_config.NumberColumn("ADRs from 10w", format="%.1f",
                                                            help="Distance from the 10-week line in ADRs: ≤2 buy · 2–3 half size · >3 no new buy"),
@@ -2657,7 +2735,15 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more", extra=("UNTAGGED",) if has_untagged else ())
         st.caption("One row per stock. Change tags, rating or Action, then press Apply — nothing is sent until then.")
         with st.form("wl_form", border=False):
-            _vdata = v.style.map(_c_circuit, subset=["Circuit %"]) if "Circuit %" in v.columns else v
+            _vdata = v.style
+            if "Circuit %" in v.columns:
+                _vdata = _vdata.map(_c_circuit, subset=["Circuit %"])
+            if "Off 1M hi %" in v.columns and "ADR" in v.columns:
+                _a = pd.to_numeric(v["ADR"], errors="coerce")
+                _vdata = _vdata.apply(lambda col: [_c_off21_adr(abs(_num(x)) / a if a and np.isfinite(a) else np.nan)
+                                                   for x, a in zip(col, _a)], subset=["Off 1M hi %"])
+            if "Off 52W hi %" in v.columns:
+                _vdata = _vdata.map(_c_offhigh_long, subset=["Off 52W hi %"])
             ed = st.data_editor(_vdata, hide_index=True, height=420, key=f"wl_editor_{st.session_state.get('wl_theme_key', '')}",
                                 disabled=[c for c in v.columns if c not in editable], column_config=cfgcols)
             applied = st.form_submit_button("Apply changes")

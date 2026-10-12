@@ -8,6 +8,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataRe
 import os, json, time
 from datetime import datetime
 from gtt_process import MARKETS, tv_symbol, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
+from gtt_process import assign_scan_columns, _JS as _GTT_JS
 from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan, row_card_js, render_sector_leadership
 
 st.set_page_config(page_title="GTT Trade Generator (USA)", page_icon="⚡", layout="wide")
@@ -47,9 +48,11 @@ gtt_columns = [
     'Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln', '_bo_engulfing_cndl',
     '_circuit', '_days_since_bo', '_bo_dollar_vol_mln', '_rvol_to_float', 'Adr', 'Ti65',
     '_avg_vol_float_ratio', '_20madist', '_10wmadist', '_10madist',
-    '_nr4', '_nr4_previous', '_rs', '_period_perf', '_insideday'
-]
+    '_nr4', '_nr4_previous', '_rs', '_period_perf'
+]   # then off_high_21 / off_high_252 / off_high_126 (named by assign_scan_columns; old screens: _insideday)
 
+OFF21_JS = JsCode(_GTT_JS["off21"])       # distance from the 1-month high, coloured in ADRs
+OFFLONG_JS = JsCode(_GTT_JS["offlong"])   # distance from the 6-month / 52-week high, in %
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 SECTOR_FILE = os.path.join(PROJECT_DIR, "TradingView", "Symbols_USA.csv")
@@ -133,14 +136,11 @@ def fetch_gtt_scan(url, name):
         r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
         if r.status_code == 200 and r.text.strip():
             df = pd.read_csv(StringIO(r.text), sep='|', header=None)
-            if len(df.columns) < len(gtt_columns):
-                df.columns = gtt_columns[:len(df.columns)]
-            else:
-                df.columns = gtt_columns + [f'Extra_{i}' for i in range(len(gtt_columns), len(df.columns))]
+            df = assign_scan_columns(df, gtt_columns)
             df['Symbol'] = df['Symbol'].str.upper()
-            for c in ['Last','_days_since_bo','_nr4','_rs','Adr','Ti65','dvol','_avgvol_mln','_bo_dollar_vol_mln','_bo_engulfing_cndl','_avg_vol_float_ratio','_insideday']:
+            for c in ['Last','_days_since_bo','_nr4','_rs','Adr','Ti65','dvol','_avgvol_mln','_bo_dollar_vol_mln','_bo_engulfing_cndl','_avg_vol_float_ratio']:
                 if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-            for c in ['_20madist','_10wmadist','_10madist','_nr4_previous']:
+            for c in ['_20madist','_10wmadist','_10madist','_nr4_previous', 'off_high_21', 'off_high_126', 'off_high_252']:
                 if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
             return df
         return None
@@ -567,12 +567,12 @@ def main():
             columns_to_show = [
                 '_vol_ratio', '_chg_percentclose', 'W_Dist10wMA', '_rel_wk_dist',
                 'W_TightCloses_10w', 'W_PctOf10wkHigh', 'W_InsideBars', 'W_CloseChg_Pct',
-                '_nr4_previous', '_rel_tightness',
+                '_nr4_previous', '_rel_tightness', 'off_high_21', 'off_high_252',
                 'dvol', '_avgvol_mln', '_20madist', '_10madist',
                 'Symbol', 'Sector', 'Industry', 'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
                 'Adr', 'Ti65', '_nr4', 'Last',
                 '_bo_engulfing_cndl', '_days_since_bo', '_bo_dollar_vol_mln', '_circuit',
-                '_avg_vol_float_ratio', '_period_perf', '_10wmadist', '_insideday', 'Timestamp',
+                '_avg_vol_float_ratio', '_period_perf', '_10wmadist', 'off_high_126', 'Timestamp',
             ]
             if 'Sector_Rank' in adf.columns: columns_to_show.insert(columns_to_show.index('Symbol')+1, 'Sector_Rank')
             if 'Sector_Total' in adf.columns: columns_to_show.insert(columns_to_show.index('Sector_Rank')+1, 'Sector_Total')
@@ -640,12 +640,12 @@ def main():
                 fdf = _res
 
             mtdh = ['RS_6M','RS_3M','RS_1M','Industry','_bo_dollar_vol_mln','_avg_vol_float_ratio','_period_perf',
-                    '_10wmadist','_insideday','_bo_engulfing_cndl','_days_since_bo','_circuit','W_CloseChg_Pct','Timestamp']
+                    '_10wmadist','off_high_126','_bo_engulfing_cndl','_days_since_bo','_circuit','W_CloseChg_Pct','Timestamp']
             amc = list(fdf.columns)
             with st.expander("Choose visible columns (saved as your default)"):
                 # Force key columns to always be visible (fixes old saved prefs)
                 _forced_visible = ['_vol_ratio', '_rel_wk_dist', '_rel_tightness', '_chg_percentclose', 'W_Dist10wMA',
-                                   'W_TightCloses_10w', 'Adr', 'Symbol']
+                                   'W_TightCloses_10w', 'Adr', 'Symbol', 'off_high_21', 'off_high_252']
                 _saved = get_persisted_columns('us_main_table_v2', amc, mtdh)
                 _default = list(set(_saved + [c for c in _forced_visible if c in amc]))
                 smc = st.multiselect("Columns to show", amc, default=_default, key="main_col_sel")
@@ -772,11 +772,13 @@ def main():
             hs = {'_chg_percentclose':'Chg %','_avgvol_mln':'AvgVolcr','_bo_dollar_vol_mln':'BO$Volcr','_avg_vol_float_ratio':'VolFloatR',
                   '_bo_engulfing_cndl':'BOEngulf','_days_since_bo':'DaysSinceBO','Sector_Percentile':'SectPctile',
                   '_nr4_previous':'NR4Prev','_period_perf':'PeriodPerf','_10wmadist':'10wMADist','_10madist':'10MADist',
-                  '_20madist':'20MADist','_insideday':'InsideDay','W_Dist10wMA':'Wk 10wMA %','_rel_wk_dist':'Rel Wk Dist',
+                  '_20madist':'20MADist','off_high_21':'Off 1M hi %','off_high_126':'Off 6M hi %','off_high_252':'Off 52W hi %','W_Dist10wMA':'Wk 10wMA %','_rel_wk_dist':'Rel Wk Dist',
                   'W_PctOf10wkHigh':'Wk % of 10wHi','W_CloseChg_Pct':'Wk CloseChg%','W_TightCloses':'Wk TightCl/5',
                   'W_InsideBars':'Wk InsideB/8','_vol_ratio':'Vol Ratio','_rel_tightness':'Rel Tight'}
             for rc, sn in hs.items():
                 if rc in fdf.columns: gb.configure_column(rc, headerName=sn)
+            for _oc, _js in (('off_high_21', OFF21_JS), ('off_high_126', OFFLONG_JS), ('off_high_252', OFFLONG_JS)):
+                if _oc in fdf.columns: gb.configure_column(_oc, cellStyle=_js, minWidth=80, maxWidth=100)
 
             # ── Symbol renderer ──
             sr = JsCode("""function(p){const s=p.value;const r=p.data.Sector_Rank;const t=p.data.Sector_Total;if(r&&t&&r>0)return s+' ('+r+'/'+t+')';return s}""")
@@ -900,7 +902,7 @@ def main():
                         n_vol = int((ss2['_vol_ratio'].fillna(0) >= 1.0).sum())
                         ss2 = ss2.sort_values('_rel_tightness' if '_rel_tightness' in ss2.columns else '_vol_ratio',
                                               ascending='_rel_tightness' in ss2.columns, na_position='last').head(15)
-                        dc = [c for c in ['Symbol','Saved','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr'] + (['_circuit'] if MARKET_CFG.get('market') == 'NSE' else []) + ['Ti65','_nr4','_rel_tightness','_rel_wk_dist','_10madist','_20madist','Industry'] if c in ss2.columns]
+                        dc = [c for c in ['Symbol','Saved','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr'] + (['_circuit'] if MARKET_CFG.get('market') == 'NSE' else []) + ['Ti65','_nr4','_rel_tightness','_rel_wk_dist','off_high_21','off_high_252','_10madist','_20madist','Industry'] if c in ss2.columns]
                         sd = ss2[dc].copy()
                         with st.expander(f"{sec} — tightest {len(ss2)} of {int((sdf['Sector']==sec).sum())} scanned · {n_vol} with volume today"):
                             gb = GridOptionsBuilder.from_dataframe(sd); gb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
@@ -921,7 +923,9 @@ def main():
                             if '_20madist' in sd.columns: gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
                             if '_10madist' in sd.columns: gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
                             if 'W_Dist10wMA' in sd.columns: gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
-                            hs2={'_chg_percentclose':'Chg %','_avgvol_mln':'Avg vol','dvol':'Day vol','Adr':'ADR','_nr4':'NR4 %','_nr4_previous':'NR4 % (prev)','_10madist':'10MA dist','_20madist':'20MA dist','_rel_wk_dist':'ADRs from 10w','_vol_ratio':'Vol x'}
+                            hs2={'_chg_percentclose':'Chg %','_avgvol_mln':'Avg vol','dvol':'Day vol','Adr':'ADR','_nr4':'NR4 %','_nr4_previous':'NR4 % (prev)','_10madist':'10MA dist','_20madist':'20MA dist','_rel_wk_dist':'ADRs from 10w','_vol_ratio':'Vol x','off_high_21':'Off 1M hi %','off_high_252':'Off 52W hi %'}
+                            for _oc, _js in (('off_high_21', OFF21_JS), ('off_high_252', OFFLONG_JS)):
+                                if _oc in sd.columns: gb.configure_column(_oc, cellStyle=_js, minWidth=80, maxWidth=100)
                             for rc,sn in hs2.items():
                                 if rc in sd.columns: gb.configure_column(rc, headerName=sn)
                             if 'Symbol' in sd.columns: gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')

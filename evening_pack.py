@@ -43,6 +43,7 @@ COLS = {
     "_circuit": ("Circuit %", "%.0f", 0), "Ti65": ("Ti65", "%.2f", 0), "_nr4": ("NR4 %", "%.2f", 0),
     "_rel_tightness_today": ("Rel tight", "%.2f", 0), "_rel_wk_dist": ("ADRs from 10w", "%.1f", 0),
     "_10madist": ("10MA %", "%.1f", 0), "_20madist": ("20MA %", "%.1f", 0), "Avg_RS": ("Avg RS", "%.0f", 0),
+    "off_high_21": ("Off 1M hi %", "%.1f", 0), "off_high_126": ("Off 6M hi %", "%.1f", 0), "off_high_252": ("Off 52W hi %", "%.1f", 0),
     "Sector": ("Sector", None, 24), "Industry": ("Industry", None, 26),
     "trigger_date": ("Breakout day", None, 10), "last_trigger_date": ("Latest BO", None, 10),
     "trigger_close": ("BO close", "%.2f", 0), "prev_close": ("Fail level", "%.2f", 0),
@@ -57,7 +58,7 @@ COLS = {
 def _live_cols(mcfg):
     return (["_chg_percentclose", "_vol_ratio", "_avgvol_mln", "dvol", "Adr"]
             + (["_circuit"] if mcfg.get("market") == "NSE" else [])
-            + ["Ti65", "_nr4", "_rel_tightness_today", "_rel_wk_dist", "_10madist", "_20madist"])
+            + ["Ti65", "_nr4", "_rel_tightness_today", "_rel_wk_dist", "off_high_21", "off_high_252", "_10madist", "_20madist"])
 
 
 # ═════════════════════════════════════════════════════════════════ colours
@@ -93,6 +94,7 @@ CELL_FN = {
     "_chg_percentclose": g._c_chg, "chg": g._c_chg, "_vol_ratio": g._c_vol, "vol": g._c_vol,
     "_rel_wk_dist": g._c_relwk, "_10madist": g._c_madist, "_20madist": g._c_madist,
     "_rel_tightness_today": g._c_tight, "_circuit": g._c_circuit, "Rating": g._c_rating,
+    "off_high_126": g._c_offhigh_long, "off_high_252": g._c_offhigh_long,
 }
 
 
@@ -105,6 +107,13 @@ def table_styles(df, mcfg):
         if c in CELL_FN:
             for i, v in enumerate(vals):
                 s = _parse_css(CELL_FN[c](v))
+                if s:
+                    out[(i, c)] = s
+        elif c == "off_high_21":
+            adr = pd.to_numeric(df["Adr"], errors="coerce").tolist() if "Adr" in cols else [np.nan] * len(vals)
+            for i, (v, a) in enumerate(zip(vals, adr)):
+                x, a = g._num(v), g._num(a)
+                s = _parse_css(g._c_off21_adr(abs(x) / a)) if np.isfinite(x) and np.isfinite(a) and a else None
                 if s:
                     out[(i, c)] = s
         elif c == "_avgvol_mln":
