@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12o · Evening pack: pandas 3 fix"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12p · Leadership order + failed breakouts flagged"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -66,7 +66,7 @@ TOMORROW_DEFAULTS = {
     "min_wktight": 2, "min_chg": -1.0, "max_chg": 3.0, "list_size": 10,
     "bo_min_chg": 2.0, "bo_min_vol": 1.5, "gap_max_adr": 2.0,
     "pullback_band": 2.0, "stale_days": 20,
-    "missing_days": 3, "min_circuit": 10,
+    "missing_days": 3, "min_circuit": 10, "fail_adr": 2.0,
     "recent_bo_days": 5, "recent_bo_max_rwd": 3.0,
     # Data pattern "10W Launch Pad" (UNIVCABLES / KSHINTL): on the 10w line, tight, sitting on the 10/20 MA.
     # MA distances in ADRs, so a small dip below the MAs still counts. Volume is NOT part of the pattern;
@@ -429,8 +429,17 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
         d10, d20 = abs(_num(r["_10madist"], 99)), abs(_num(r["_20madist"], 99))
         rt = _num(r["_rel_tightness_today"], 99)
         saved_on_bo = _num(row.get("chg_pct"), 0) >= cfg["bo_min_chg"]
-        if saved_on_bo and rt > cfg["max_reltight"] and np.isfinite(prev_close) and np.isfinite(last) and last < prev_close:
-            d.at[sym, "Label"], d.at[sym, "Reason"] = "5_REMOVE", f"Failed: closed {last:g} below pre-breakout close {prev_close:g}"
+        # Failed breakout — even if it's quiet/tight now: back below the pre-breakout close,
+        # or (no pre-breakout close saved) more than fail_adr ADRs below the breakout close.
+        fail = None
+        if np.isfinite(prev_close) and np.isfinite(last) and last < prev_close:
+            fail = f"Failed: closed {last:g} below pre-breakout close {prev_close:g}"
+        elif np.isfinite(bo_close) and bo_close and np.isfinite(last) and radr > 0 \
+                and (bo_close - last) / bo_close * 100 > cfg.get("fail_adr", 2.0) * radr:
+            fail = (f"Failed: {(last / bo_close - 1) * 100:+.0f}% since breakout "
+                    f"(more than {cfg.get('fail_adr', 2.0):g} ADR below the breakout close)")
+        if fail:
+            d.at[sym, "Label"], d.at[sym, "Reason"] = "5_REMOVE", fail
             updates.append({"id": wid, "symbol": sym, "action": "remove", "reason": "failed"})
             continue
         tags_txt = "+".join(tags_of(row))
@@ -1449,8 +1458,11 @@ def sector_leadership(hist, base_df, group="Sector"):
                      "Trend": trend, "Per 100 in scan": round(100 * n20 / sz, 1) if sz and np.isfinite(sz) else np.nan,
                      "Holding %": hold, "Stocks": int(f["Symbol"].nunique())})
         names[g] = f.sort_values("since", ascending=False, na_position="last")[["Symbol", "date", "chg", "vol", "since"]]
-    t = pd.DataFrame(rows).sort_values(["Last 10", "Holding %", "Last 20"], ascending=[False, False, False],
-                                       na_position="last").reset_index(drop=True)
+    t = pd.DataFrame(rows)
+    # Healthy groups first (holding ≥ 60%, or unknown without today's scan), then by breakouts in the last 10 sessions
+    t["_weak"] = pd.to_numeric(t["Holding %"], errors="coerce").lt(60)
+    t = t.sort_values(["_weak", "Last 10", "Holding %", "Last 20"], ascending=[True, False, False, False],
+                      na_position="last").drop(columns="_weak").reset_index(drop=True)
     return t, names
 
 
@@ -1844,6 +1856,7 @@ RULE_LABELS = {
     "tier1_adr": "ADR tier P1: ADR at least", "tier2_adr": "ADR tier P2: ADR at least (below = P3)",
     "missing_days": "Suggest removing a saved stock missing from the scan for N trading days",
     "min_circuit": "NSE: suggest removing a saved stock whose price band falls below N%",
+    "fail_adr": "Failed breakout: more than N ADRs below the breakout close (when the pre-breakout close isn't saved)",
     "strong_min_vol": "Strong batch: min volume (x)",
     "ep_min_chg": "Suggest EP: min % up",
     "ep_min_vol": "Suggest EP: min volume (x)",

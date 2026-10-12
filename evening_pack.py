@@ -185,9 +185,11 @@ def _add_live(df, live, mcfg, key="Symbol"):
 
 
 def _sort_quality(t):
+    """Same order as the app: healthy groups (holding ≥ 60%) first, then most breakouts in the last 10 sessions."""
     t = t.copy()
-    t["_h"] = pd.to_numeric(t.get("Holding %"), errors="coerce")
-    return t.sort_values(["_h", "Last 10", "Last 20"], ascending=[False, False, False], na_position="last").drop(columns="_h")
+    t["_weak"] = pd.to_numeric(t.get("Holding %"), errors="coerce").lt(60)
+    return t.sort_values(["_weak", "Last 10", "Holding %", "Last 20"], ascending=[True, False, False, False],
+                         na_position="last").drop(columns="_weak")
 
 
 def build_pack(sb, mcfg, base_df, tomorrow=None):
@@ -257,7 +259,7 @@ def build_pack(sb, mcfg, base_df, tomorrow=None):
         t = _sort_quality(t)
         n_sess = hist["date"].nunique()
         sections.append(("Leadership over time", [(
-            f"Sectors · {len(hist)} breakouts over {n_sess} sessions (newest {hist['date'].max()}) · healthiest first",
+            f"Sectors · {len(hist)} breakouts over {n_sess} sessions (newest {hist['date'].max()}) · healthy groups (holding ≥ 60%) by breakouts, weak ones last",
             t[[c for c in ["Sector", "Last 5", "Last 10", "Last 20", "Trend", "Per 100 in scan", "Holding %", "Stocks"] if c in t.columns]].reset_index(drop=True),
             "Holding % = breakouts still above their pre-breakout close. Trend needs 20 sessions of history to mean much.")]))
 
