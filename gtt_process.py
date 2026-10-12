@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12e · Saved breakouts: decision columns from today's scan"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12f · Breakouts in a sector: decision columns + colours"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1493,10 +1493,40 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True):
            .map(lambda v: "color:#28a745;font-weight:bold" if v == "↑" else ("color:#dc3545;font-weight:bold" if v == "↓" else ""),
                 subset=["Trend"]))
     st.dataframe(sty, hide_index=True, use_container_width=True, height=min(36 * len(t) + 40, 520))
+    _live = None
+    if base_df is not None and not base_df.empty and "Symbol" in base_df.columns:
+        _live = add_derived(base_df).drop_duplicates("Symbol")
+        _live["Symbol"] = _live["Symbol"].astype(str).str.upper()
+        _live = _live.set_index("Symbol")
+    _LIVE_COLS = ["_chg_percentclose", "_vol_ratio", "_avgvol_mln", "dvol", "Adr", "Ti65", "_rel_tightness_today",
+                  "_nr4_previous", "_rel_wk_dist", "_10madist", "_20madist"]
+    _LABELS = {"date": "Broke out", "chg": "BO day %", "vol": "BO vol x", "since": "% since BO",
+               "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_avgvol_mln": "Avg vol", "dvol": "Day vol",
+               "Adr": "ADR", "_rel_tightness_today": "Rel tight", "_nr4_previous": "NR4 % (prev)",
+               "_rel_wk_dist": "ADRs from 10w", "_10madist": "10MA %", "_20madist": "20MA %"}
+
     def _names(g, lst):
-        v = lst.rename(columns={"date": "Broke out", "chg": "BO day %", "vol": "BO vol x", "since": "% since BO"})
-        st.dataframe(v.style.format({"BO day %": "{:.1f}", "BO vol x": "{:.1f}", "% since BO": "{:+.1f}"}, na_rep=""),
-                     hide_index=True, use_container_width=True)
+        v = lst.copy()
+        if _live is not None:
+            key = v["Symbol"].astype(str).str.upper()
+            for c in _LIVE_COLS:
+                if c in _live.columns:
+                    v[c] = key.map(_live[c]).values
+            v = v.sort_values("_rel_tightness_today", na_position="last") if "_rel_tightness_today" in v.columns else v
+        else:
+            st.caption("Generate the scan to see today's tightness, volume and MA distances here.")
+        sty = style_table(v)
+        for c, f in (("chg", _c_chg), ("vol", _c_vol)):
+            sty = sty.map(f, subset=[c])
+        sty = sty.map(lambda x: "" if pd.isna(x) else ("color:#28a745;font-weight:bold" if x > 0 else "color:#dc3545;font-weight:bold"),
+                      subset=["since"])
+        sty = sty.format({"chg": "{:.1f}", "vol": "{:.1f}", "since": "{:+.1f}", "Ti65": "{:.1f}", "_nr4_previous": "{:.2f}"},
+                         na_rep="")
+        st.dataframe(sty, hide_index=True, use_container_width=True,
+                     column_config={c: _LABELS[c] for c in v.columns if c in _LABELS})
+        if _live is not None:
+            st.caption("Tightest first. Rel tight = today's NR4 ÷ ADR · ADRs from 10w ≤2 buy, 2–3 half size, >3 no new buy · "
+                       "% since BO green = holding above the breakout close.")
         st.code(",".join(tv_symbol(x, mcfg) for x in lst["Symbol"]), language=None)
     if not heading:      # shown inside an expander already — no nested expanders
         g = st.selectbox(f"Breakouts in a {group.lower()}", list(t[group]), key="sl_pick_wl")
