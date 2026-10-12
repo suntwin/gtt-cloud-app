@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12a · Entry rules: 1-min ORH + GTT orders"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12b · Day vol next to Avg vol, Scans column dropped"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -323,7 +323,7 @@ def style_table(df, liq_floor=None):
     if "Label" in cols:
         sty = sty.map(lambda v: SITUATION_COLOURS.get(str(v), ""), subset=["Label"])
     fmt = {c: "{:.1f}" for c in ["_chg_percentclose", "_vol_ratio", "Adr", "_rel_wk_dist", "_10madist", "_20madist"] if c in cols}
-    fmt.update({c: "{:.0f}" for c in ["_circuit", "_avgvol_mln"] if c in cols})
+    fmt.update({c: "{:.0f}" for c in ["_circuit", "_avgvol_mln", "dvol"] if c in cols})
     fmt.update({c: "{:.2f}" for c in ["_rel_tightness_today", "_rel_tightness_prev"] if c in cols})
     return sty.format(fmt, na_rep="")
 
@@ -1895,8 +1895,8 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
         c.metric(n, int(counts.get(k, 0)))
 
-    show = ["Keep", "CONT", "Tier", "Patterns", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
-            "Adr", "_rel_tightness_today", "_nr4", "_avgvol_mln", "_rel_wk_dist", "_10madist", "_20madist", "Avg_RS", "Sector"]
+    show = ["Keep", "CONT", "Tier", "Patterns", "Label", "Symbol", "Note", "Reason", "Tag", "_chg_percentclose", "_vol_ratio",
+            "Adr", "_rel_tightness_today", "_nr4", "dvol", "_avgvol_mln", "_rel_wk_dist", "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
         grp = {}
@@ -2115,7 +2115,7 @@ def _tomorrow_grid(view, cfg, key):
     gb.configure_column("Symbol", pinned="left", minWidth=95, maxWidth=130)
     js = {k: JsCode(v) for k, v in _JS.items()}
     cols = {"Tier": ("Tier", "tier", 60), "Patterns": ("Pattern", "pat", 130), "Label": ("Situation", "label", 150), "Note": ("My note", None, 160),
-            "Reason": ("Reason", "reason", 300), "Tag": ("Saved as", None, 150), "Scan_Count": ("Scans", None, 60),
+            "Reason": ("Reason", "reason", 300), "Tag": ("Saved as", None, 150), "dvol": ("Day vol", None, 75),
             "_chg_percentclose": ("Chg %", "chg", 70), "_vol_ratio": ("Vol x", "vol", 65), "Adr": ("ADR", None, 60),
             "_circuit": ("Circuit %", None, 75), "_rel_tightness_today": ("Rel tight", "tight", 75),
             "_nr4": ("NR4 %", None, 70), "_rel_wk_dist": ("ADRs from 10w", "relwk", 95), "_avgvol_mln": ("Avg vol", None, 75),
@@ -2127,7 +2127,7 @@ def _tomorrow_grid(view, cfg, key):
             if style:
                 kw["cellStyle"] = js[style]
             if c in ("_chg_percentclose", "_vol_ratio", "Adr", "_rel_tightness_today", "_nr4", "_rel_wk_dist",
-                     "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "_circuit", "Scan_Count"):
+                     "dvol", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "_circuit"):
                 kw["type"] = ["numericColumn"]
                 kw["filter"] = "agNumberColumnFilter"
                 kw["valueFormatter"] = JsCode("function(p){return (p.value===null||p.value===undefined)?'':"
@@ -2193,8 +2193,8 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     if notes:
         part["Note"] = part["Symbol"].map(notes)
     show = ["Skip"] + tagcols + ["Rating", "Symbol", "Note", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
-                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_rel_wk_dist", "_avgvol_mln", "_10madist",
-                                 "_20madist", "Scan_Count", "Avg_RS", "Sector"]
+                                 "_vol_ratio", "Adr", "_rel_tightness_prev", "_rel_wk_dist", "dvol", "_avgvol_mln",
+                                 "_10madist", "_20madist", "Avg_RS", "Sector"]
     show = _with_circuit(show, mcfg)
     view = _circuit_num(part[[c for c in show if c in part.columns]].copy())
     pre = {t: int(part[t].sum()) for t in SETUP_TYPES}
@@ -2215,6 +2215,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
         "_rel_tightness_prev": st.column_config.NumberColumn("Rel tight (prev)", format="%.2f"),
         "_rel_wk_dist": st.column_config.NumberColumn("ADRs from 10w", format="%.1f"),
+        "dvol": st.column_config.NumberColumn("Day vol", format="%.0f", help="Today's volume, same units as Avg vol"),
         "_avgvol_mln": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
         "_10madist": st.column_config.NumberColumn("10MA %", format="%.1f"),
         "_20madist": st.column_config.NumberColumn("20MA %", format="%.1f"),
