@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12f · Breakouts in a sector: decision columns + colours"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12g · Breakouts in a sector: fixed decimals"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1520,10 +1520,14 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True):
             sty = sty.map(f, subset=[c])
         sty = sty.map(lambda x: "" if pd.isna(x) else ("color:#28a745;font-weight:bold" if x > 0 else "color:#dc3545;font-weight:bold"),
                       subset=["since"])
-        sty = sty.format({"chg": "{:.1f}", "vol": "{:.1f}", "since": "{:+.1f}", "Ti65": "{:.1f}", "_nr4_previous": "{:.2f}"},
-                         na_rep="")
+        # one format for every column (a second .format() call wipes the first one's formats)
+        _dp = {"chg": "%.1f", "vol": "%.1f", "since": "%+.1f", "_chg_percentclose": "%.1f", "_vol_ratio": "%.1f",
+               "_avgvol_mln": "%.0f", "dvol": "%.0f", "Adr": "%.1f", "Ti65": "%.1f", "_rel_tightness_today": "%.2f",
+               "_nr4_previous": "%.2f", "_rel_wk_dist": "%.1f", "_10madist": "%.1f", "_20madist": "%.1f"}
+        sty = sty.format({c: (lambda f: (lambda x: "" if pd.isna(x) else f % x))(f) for c, f in _dp.items() if c in v.columns})
         st.dataframe(sty, hide_index=True, use_container_width=True,
-                     column_config={c: _LABELS[c] for c in v.columns if c in _LABELS})
+                     column_config={c: st.column_config.NumberColumn(_LABELS.get(c, c), format=_dp[c]) if c in _dp
+                                    else _LABELS[c] for c in v.columns if c in _LABELS or c in _dp})
         if _live is not None:
             st.caption("Tightest first. Rel tight = today's NR4 ÷ ADR · ADRs from 10w ≤2 buy, 2–3 half size, >3 no new buy · "
                        "% since BO green = holding above the breakout close.")
