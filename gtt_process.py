@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-12m · Breakouts in a sector: includes manually saved stocks"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-12n · Evening pack (PDF + Excel)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2011,6 +2011,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     for c_ in ("Keep", "CONT"):
         view[c_] = [bool(ticks[c_].get(s_, bool(v_) if pd.notna(v_) else False))
                     for s_, v_ in zip(view["Symbol"], view[c_])]
+    st.session_state[f"pack_tomorrow_{mcfg.get('market')}"] = {"sd": str(sd), "view": view.copy()}   # for the evening pack
     if "_days_since_bo" in lab.columns:
         _dsb = pd.to_numeric(lab["_days_since_bo"], errors="coerce")
         _nrec = int(_dsb.between(1, cfg["recent_bo_days"]).sum())
@@ -2513,6 +2514,11 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
     """Working watchlist: generate lists, update entries, clean up, history."""
     st.subheader(f"Watchlist · {mcfg['market']}")
     st.caption(f"gtt_process {PROCESS_VERSION}")
+    try:
+        import evening_pack
+        evening_pack.render_pack_button(st, sb, mcfg, base_df)
+    except Exception as e:
+        st.caption(f"Evening pack unavailable ({e}).")
     if sb is None:
         st.error("Database not connected."); return
     try:
