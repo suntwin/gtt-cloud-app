@@ -53,6 +53,24 @@ gtt_columns = [
 
 OFF21_JS = JsCode(_GTT_JS["off21"])       # distance from the 1-month high, coloured in ADRs
 OFFLONG_JS = JsCode(_GTT_JS["offlong"])   # distance from the 6-month / 52-week high, in %
+# Day volume coloured by its ratio to the average (same bands as Vol Ratio: 1 / 1.5 / 2.5 / 3.5 / 6.5x)
+DVOL_JS = JsCode("""function(p){const v=Number(p.value);const a=p.data?Number(p.data._avgvol_mln):NaN;
+    if(!v||!a||isNaN(v)||isNaN(a))return null;const r=v/a;
+    if(r>=6.5)return{'backgroundColor':'#155724','color':'white','fontWeight':'bold'};
+    if(r>=3.5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};
+    if(r>=2.5)return{'backgroundColor':'#5cb85c','color':'white','fontWeight':'bold'};
+    if(r>=1.5)return{'backgroundColor':'#8ee68e','color':'black'};
+    if(r>=1.0)return{'backgroundColor':'#d4edda','color':'black'};
+    if(r<0.5)return{'backgroundColor':'#f8d7da','color':'#721c24'};return null}""")
+
+
+def liq_js(col, floor=10.0):
+    """Average volume coloured by liquidity: green = top third of this table, red = below the liquidity floor."""
+    v = pd.to_numeric(col, errors='coerce')
+    hi = float(v[v > 0].quantile(2 / 3)) if (v > 0).sum() >= 3 else 1e18
+    return JsCode(f"""function(p){{const v=Number(p.value);if(!v||isNaN(v))return null;
+        if(v<{floor})return{{'backgroundColor':'#f8d7da','color':'#721c24'}};
+        if(v>={hi})return{{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'}};return null}}""")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 SECTOR_FILE = os.path.join(PROJECT_DIR, "TradingView", "Symbols_NSE.csv")
@@ -690,10 +708,10 @@ def main():
                                     cellStyle=vol_jscode, pinned='left')
 
 
-            # ── Also style dvol and _avgvol_mln with the same vol ratio coloring ──
+            # ── dvol coloured by today's volume ÷ average (breakout strength); AvgVol by liquidity ──
             if 'dvol' in fdf.columns and '_avgvol_mln' in fdf.columns:
-                gb.configure_column('dvol', minWidth=60, maxWidth=85, headerName='dvol', cellStyle=vol_jscode)
-                gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, headerName='AvgVol', cellStyle=vol_jscode)
+                gb.configure_column('dvol', minWidth=60, maxWidth=85, headerName='dvol', cellStyle=DVOL_JS)
+                gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, headerName='AvgVol', cellStyle=liq_js(fdf['_avgvol_mln']))
 
             # ── W_Dist10wMA Heatmap ──
             wk_neg_cutoff = float(saved_prefs.get('wk_neg_cutoff', -3.0))
@@ -910,8 +928,8 @@ def main():
                             for c in sd.columns: gb.configure_column(c, headerTooltip=c)
                             if '_vol_ratio' in sd.columns: gb.configure_column('_vol_ratio', minWidth=60, maxWidth=85, headerName='Vol Ratio', cellStyle=vol_jscode if '_vol_ratio' in fdf.columns else None)
                             if 'dvol' in sd.columns and '_avgvol_mln' in sd.columns:
-                                gb.configure_column('dvol', minWidth=60, maxWidth=85, cellStyle=vol_jscode if 'dvol' in fdf.columns else None)
-                                gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, cellStyle=vol_jscode if '_avgvol_mln' in fdf.columns else None)
+                                gb.configure_column('dvol', minWidth=60, maxWidth=85, cellStyle=DVOL_JS)
+                                gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, cellStyle=liq_js(sd['_avgvol_mln']))
                             if '_rel_tightness' in sd.columns: gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel tight', cellStyle=th, comparator=abs_comparator)
                             if '_rel_wk_dist' in sd.columns: gb.configure_column('_rel_wk_dist', minWidth=70, maxWidth=100, headerName='ADRs from 10w', cellStyle=rel_wk_dist_jscode, comparator=abs_comparator)
                             if '_chg_percentclose' in sd.columns:
