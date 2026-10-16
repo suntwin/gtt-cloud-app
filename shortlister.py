@@ -170,7 +170,8 @@ def _add_plan(v, setup, sd, saved):
         elif setup != "ACTION":
             ent.append("Alert at pivot → 1-min ORH on the break day, Rel vol ≥ 2")
         elif r.get("BO date") == str(sd):
-            ent.append("Day 2+: wait for a 15-min / 1-hour flag, buy its break (or 5-min ORH); no chasing the wick")
+            ent.append("Day 2+: 1-min ORH above the breakout-day high, first 30–45 min, Rel vol ≥ 2 "
+                       "(skip if it opens > 1 ADR above or the day left a big wick → wait for the hourly flag)")
         elif "Tight now" in str(r.get("Flags", "")):
             ent.append("Tight day after the breakout: ORH above its high")
         else:
