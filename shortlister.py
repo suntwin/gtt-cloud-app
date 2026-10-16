@@ -13,14 +13,18 @@ import pandas as pd
 
 import gtt_process as gp
 
-SETUPS = {"ACTION": "Action: big-volume breakouts", "3WTC": "3-Week Tight Closing", "HTF": "High Tight Flag"}
+SETUPS = {"ACTION": "Action: big-volume breakouts", "RECENT": "Breakout → tight at pivot", "3WTC": "3-Week Tight Closing", "HTF": "High Tight Flag"}
 
 SHORTLIST_DEFAULTS = {
     # Action: big-volume (imbalance) breakouts, today and the last few sessions
     "act_min_vol": 2.0,           # breakout-day volume ÷ average, at least
     "act_min_value": 100.0,       # breakout-day traded value (₹ cr / $M), at least
     "act_min_chg": 3.0,           # breakout-day change %, at least
-    "act_days": 7,                # also show breakouts from this many recent sessions, still holding
+    "act_days": 3,                # also show breakouts from this many recent sessions, still holding
+    # Breakout -> tight at pivot: a volume breakout 1-20 sessions ago, now tight just under the high
+    "rec_max_age": 20,            # sessions since the breakout, at most
+    "rec_max_reltight": 0.8,      # rel tightness today, at most
+    "rec_max_off1m_adr": 1.0,     # below the 1-month high (the pivot), in ADRs, at most
     # shared
     "min_liq": 50.0,              # avg daily traded value floor (NSE ₹ cr / USA $M)
     "ma_min_adr": -0.3,           # 10MA and 20MA distance floor, in ADRs (small dips allowed)
@@ -44,6 +48,8 @@ MARKET_OVERRIDES = {"NSE": {"min_liq": 50.0, "htf_min_adr": 5.0, "act_min_value"
 RULE_LABELS = {
     "act_min_vol": "Action: min breakout volume (x avg)", "act_min_value": "Action: min breakout-day value (₹ cr / $M)",
     "act_min_chg": "Action: min breakout-day change %", "act_days": "Action: recent sessions to include",
+    "rec_max_age": "BO→tight: max sessions since breakout", "rec_max_reltight": "BO→tight: max rel tightness",
+    "rec_max_off1m_adr": "BO→tight: max below 1M high (ADRs)",
     "min_liq": "Min avg traded value (₹ cr / $M)", "ma_min_adr": "10/20MA floor (ADRs)", "late_rwd": "Flag 'check steps' above (ADRs from 10w)",
     "wtc_min_tight": "3WTC: min weekly tight closes", "wtc_max_wkchg_adr": "3WTC: max week's close change (ADRs)",
     "wtc_max_off1m_adr": "3WTC: max below 1M high (ADRs)", "wtc_min_rwd": "3WTC: min ADRs from 10w",
@@ -159,7 +165,9 @@ def _add_plan(v, setup, sd, saved):
     v["Stop guide"] = (piv * (1 - adr / 100)).round(2)
     ent = []
     for _, r in v.iterrows():
-        if setup != "ACTION":
+        if setup == "RECENT":
+            ent.append("Volume came, now tight under the high → alert at pivot, 1-min ORH on the break, Rel vol ≥ 2")
+        elif setup != "ACTION":
             ent.append("Alert at pivot → 1-min ORH on the break day, Rel vol ≥ 2")
         elif r.get("BO date") == str(sd):
             ent.append("Day 2+: wait for a 15-min / 1-hour flag, buy its break (or 5-min ORH); no chasing the wick")
@@ -245,6 +253,100 @@ def build_action(base_df, cfg, sd, hist=None, holding=None, tags=None, saved=Non
     return _add_plan(v.reset_index(drop=True), "ACTION", sd, saved)
 
 
+AGE_BUCKETS = [(3, "≤ 3 days"), (5, "≤ 1 week"), (10, "≤ 2 weeks"), (20, "≤ 4 weeks"), (10 ** 6, "older")]
+
+
+def _bucket(age):
+    a = _num(age)
+    if not np.isfinite(a):
+        return "—", 9
+    for i, (lim, name) in enumerate(AGE_BUCKETS):
+        if a <= lim:
+            return name, i
+    return "older", len(AGE_BUCKETS)
+
+
+def build_recent(base_df, cfg, sd, hist=None, holding=None, tags=None, watch_dates=None, saved=None):
+    """A volume breakout 1..rec_max_age sessions ago (scan's days-since-BO with breakout value, a recorded
+    breakout on volume, or one you tagged), now tight just under the 1-month high. Newest first."""
+    holding, tags, watch_dates, saved = holding or {}, tags or {}, watch_dates or {}, saved or {}
+    d = _prep(base_df)
+    if d.empty:
+        return d
+    age = pd.Series(np.nan, index=d.index)
+    src = pd.Series("", index=d.index, dtype=object)
+    bo_val, bo_vol = _n(d, "_bo_dollar_vol_mln"), pd.Series(np.nan, index=d.index)
+    dsb = _n(d, "_days_since_bo")
+    m = dsb.between(1, cfg["rec_max_age"]) & (bo_val >= cfg["act_min_value"])
+    age[m], src[m] = dsb[m], "scan"
+    if hist is not None and not hist.empty:
+        sessions = sorted(hist["date"].unique(), reverse=True)
+        pos = {dt: i for i, dt in enumerate(sessions)}
+        h = hist[(hist["date"] < str(sd)) & (hist["vol"] >= cfg["act_min_vol"])].sort_values("date", ascending=False) \
+            .drop_duplicates("Symbol")
+        off0 = 0 if sessions and sessions[0] == str(sd) else 1     # sessions between the breakout and tonight
+        hmap = {r.Symbol: (pos[r.date] + off0, r.vol, r.vol * r.avgvol, r.prev_close) for r in h.itertuples()}
+        for i, sym in d["Symbol"].items():
+            if sym in hmap:
+                a, v, val, _ = hmap[sym]
+                if a <= cfg["rec_max_age"] and (not np.isfinite(age[i]) or a < age[i]):
+                    age[i] = a
+                bo_vol[i] = v
+                if not np.isfinite(bo_val[i]) and np.isfinite(_num(val)):
+                    bo_val[i] = val
+                src[i] = (src[i] + " + recorded").strip(" +")
+    for i, sym in d["Symbol"].items():
+        td = watch_dates.get(sym)
+        if td:
+            try:
+                a = int(np.busday_count(pd.Timestamp(td).date(), sd))
+            except Exception:
+                continue
+            if 1 <= a <= cfg["rec_max_age"]:
+                if not np.isfinite(age[i]):
+                    age[i] = a
+                src[i] = (src[i] + " + tagged").strip(" +")
+    rt, off = d["_rel_tightness_today"], d["_off21_adr"]
+    ma_ok = d["_ma10_adr"] >= cfg["ma_min_adr"]
+    keep = age.notna() & (age >= 1) & (rt <= cfg["rec_max_reltight"]) & (off <= cfg["rec_max_off1m_adr"]) & ma_ok
+    v = d[keep.fillna(False)].copy()
+    if v.empty:
+        return _add_plan(v, "RECENT", sd, saved)
+    v["Age"] = age[v.index]
+    v["Source"] = src[v.index]
+    v["BO value"] = bo_val[v.index]
+    v["BO vol x"] = bo_vol[v.index]
+    bk = [_bucket(a) for a in v["Age"]]
+    v["Age bucket"], v["_b"] = [b[0] for b in bk], [b[1] for b in bk]
+    flags = []
+    for _, r in v.iterrows():
+        f = []
+        if np.isfinite(_num(r.get("_avgvol_mln"))) and _num(r.get("_avgvol_mln")) < cfg["min_liq"]:
+            f.append("Thin stock")
+        if np.isfinite(_num(r.get("_rel_wk_dist"))) and _num(r.get("_rel_wk_dist")) > cfg["late_rwd"]:
+            f.append(f"{_num(r.get('_rel_wk_dist')):.1f} ADR from 10w: check step no.")
+        flags.append(" · ".join(f))
+    v["Flags"] = flags
+    v["Pullback"] = v["_ma10_adr"].apply(lambda x: _pullback(float(x)) if pd.notna(x) else "—")
+    if "Sector" not in v.columns:
+        v["Sector"] = ""
+    v["Grp hold %"] = v["Sector"].map(holding)
+    v["Saved"] = v["Symbol"].map(tags).fillna("")
+    mine = [saved.get(s, {}).get("RECENT", {}) for s in v["Symbol"]]
+    v["Keep"] = [bool(m.get("keep", True)) for m in mine]
+    v["Rank"] = pd.to_numeric(pd.Series([m.get("rank") for m in mine], index=v.index), errors="coerce")
+    v["Comment"] = [m.get("comment", "") for m in mine]
+    v["Weekly comment"] = [m.get("wk", "") for m in mine]
+    v = v.sort_values(["Keep", "Rank", "_b", "_rel_tightness_today", "Age"], ascending=[False, True, True, True, True],
+                      na_position="last").drop(columns="_b")
+    return _add_plan(v.reset_index(drop=True), "RECENT", sd, saved)
+
+
+RECENT_SHOW = ["Keep", "Rank", "Alert set", "Symbol", "Pivot", "To pivot %", "Stop guide", "Entry", "Age bucket", "Age",
+               "BO value", "BO vol x", "Source", "Saved", "Sector", "Grp hold %", "Adr", "Ti65", "_rel_tightness_today",
+               "_ma10_adr", "Pullback", "_rel_wk_dist", "_avgvol_mln", "Flags", "Comment", "Weekly comment"]
+
+
 ACTION_SHOW = ["Keep", "Rank", "Alert set", "Symbol", "Pivot", "To pivot %", "Stop guide", "Entry", "EP", "BO date", "BO chg %", "BO vol x", "BO value", "Base before",
                "Since BO %", "Sector", "Grp hold %", "Saved", "Adr", "Ti65", "_rel_wk_dist", "_ma10_adr", "Pullback",
                "_rel_tightness_today", "_avgvol_mln", "Flags", "Comment", "Weekly comment"]
@@ -287,6 +389,9 @@ def _column_config(st, mcfg):
         "Stop guide": cc.NumberColumn("Stop guide", format="%.2f", width="small",
                                       help="Pivot − 1 ADR: the lowest your low-of-day stop may be for an entry at the pivot"),
         "Entry": cc.TextColumn("Entry", width="medium"),
+        "Age bucket": cc.TextColumn("Since BO", width="small", help="Newest breakouts first"),
+        "Age": cc.NumberColumn("Sessions", format="%d", width="small", help="Sessions since the breakout"),
+        "Source": cc.TextColumn("Source", width="small", help="scan = MarketInOut days-since-BO; recorded = auto-saved breakout; tagged = your watchlist"),
         "EP": cc.TextColumn("EP", width="small", help=f"Breakout ≥ {gp.BREAKOUT_DEFAULTS['ep_min_chg']:g}% on ≥ {gp.BREAKOUT_DEFAULTS['ep_min_vol']:g}x volume — check the news"),
         "BO date": cc.TextColumn("BO date", width="small"),
         "BO chg %": cc.NumberColumn("BO chg %", format="%.1f", width="small"),
@@ -374,21 +479,34 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
             holding = dict(zip(t["Sector"], t["Holding %"])) if not t.empty else {}
         except Exception:
             holding = {}
-    tags = _tags_map(sb, mcfg) if sb else {}
+    watch = []
+    if sb is not None:
+        try:
+            watch = gp.load_active_watchlist(sb, mcfg)
+        except Exception:
+            watch = []
+    tags = {r["symbol"]: ("✓ " + " + ".join(gp.tags_of(r))) if gp.tags_of(r) else "✓" for r in watch}
+    watch_dates = {r["symbol"]: str(r.get("last_trigger_date") or r.get("trigger_date") or r.get("added_date") or "")[:10]
+                   for r in watch}
     lists = build_shortlists(base_df, cfg, holding, tags, saved)
-    lists = {"ACTION": build_action(base_df, cfg, sd, hist, holding, tags, saved), **lists}
+    lists = {"ACTION": build_action(base_df, cfg, sd, hist, holding, tags, saved),
+             "RECENT": build_recent(base_df, cfg, sd, hist, holding, tags, watch_dates, saved), **lists}
     if "W_TightCloses_10w" not in base_df.columns or base_df["W_TightCloses_10w"].isna().all():
         st.warning("Weekly scan data is missing, so the 3-Week Tight Closing list can't be built today.")
-    st.caption(f"Session **{sd}** · {len(lists['ACTION'])} big-volume breakouts · {len(lists['3WTC'])} on 3-Week Tight Closing · {len(lists['HTF'])} on High Tight Flag"
+    st.caption(f"Session **{sd}** · {len(lists['ACTION'])} big-volume breakouts · {len(lists['RECENT'])} breakout → tight · {len(lists['3WTC'])} on 3-Week Tight Closing · {len(lists['HTF'])} on High Tight Flag"
                + (" · ranks saved earlier tonight are loaded" if saved else ""))
     cc = _column_config(st, mcfg)
     edited = {}
-    tabs = st.tabs([f"{SETUPS[k]} ({len(lists[k])})" for k in ("ACTION", "3WTC", "HTF")])
+    tabs = st.tabs([f"{SETUPS[k]} ({len(lists[k])})" for k in ("ACTION", "RECENT", "3WTC", "HTF")])
     helptext = {
         "ACTION": f"Volume is the setup, tightness is the entry. Breakouts ≥ {cfg['act_min_chg']:g}% on ≥ {cfg['act_min_vol']:g}x "
                   f"volume and ≥ {cfg['act_min_value']:g} traded, today and the last {int(cfg['act_days'])} sessions (still holding). "
                   "Today's: alert at the breakout-day high for a day-2 ORH. Older: wait for the tight day / hourly flag. "
                   "EP = check the news.",
+        "RECENT": f"A breakout on volume 1–{int(cfg['rec_max_age'])} sessions ago (MarketInOut days-since-BO with breakout value ≥ "
+                  f"{cfg['act_min_value']:g}, a recorded breakout ≥ {cfg['act_min_vol']:g}x, or one you tagged), now tight "
+                  f"(rel tight ≤ {cfg['rec_max_reltight']:g}) within {cfg['rec_max_off1m_adr']:g} ADR of the 1-month high. "
+                  "Newest first: ≤ 3 days, ≤ 1 week, ≤ 2 weeks, ≤ 4 weeks.",
         "3WTC": "Weekly closes bunched together (MIO weekly tight closes + this week's close change in ADRs), within "
                 f"{cfg['wtc_max_off1m_adr']:g} ADR of the 1-month high, {cfg['wtc_min_rwd']:g}–{cfg['wtc_max_rwd']:g} ADR "
                 "from the 10w line. Check the weekly chart: the last 3 closes should sit in a tight band.",
@@ -397,13 +515,13 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
                f"{cfg['htf_flag_max_10ma_adr']:g} ADR of the 10MA. Far from the 10w line: count the steps — "
                "3rd+ step = pivot must clear any climax high, half size.",
     }
-    for tab, key in zip(tabs, ("ACTION", "3WTC", "HTF")):
+    for tab, key in zip(tabs, ("ACTION", "RECENT", "3WTC", "HTF")):
         with tab:
             st.caption(helptext[key])
             v = lists[key]
             if v.empty:
                 st.info("Nothing matches tonight."); edited[key] = v; continue
-            cols = [c for c in (ACTION_SHOW if key == "ACTION" else SHOW) if c in v.columns]
+            cols = [c for c in {"ACTION": ACTION_SHOW, "RECENT": RECENT_SHOW}.get(key, SHOW) if c in v.columns]
             edited[key] = st.data_editor(
                 v[cols].replace([np.inf, -np.inf], np.nan), column_config=cc, hide_index=True, use_container_width=True,
                 disabled=[c for c in cols if c not in EDIT_COLS], key=f"sl_{mcfg['market']}_{key}_{sd}")
