@@ -288,7 +288,7 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
             st.text_area("Kept names, best rank first (for TradingView)",
                          ",".join(gp.tv_symbol(s, mcfg) for s in syms), height=70, key="sl_copy")
     st.markdown("---")
-    render_why_not(st, base_df, cfg, mcfg)
+    render_why_not(st, base_df, cfg, mcfg, sb)
 
 
 # ── "Why isn't it on the list?" — rule-by-rule check for one stock ──
@@ -362,7 +362,19 @@ def rule_checks(r, setup, cfg, liq_unit=""):
     return out
 
 
-def render_why_not(st, base_df, cfg, mcfg):
+def last_snapshot_row(sb, mcfg, sym):
+    """Most recent saved metrics for a symbol (any scanner): (date, scanner, one-row DataFrame) or None."""
+    r = (sb.table("daily_snapshots").select("snap_date,scanner,metrics").eq("user_id", mcfg["user_id"])
+         .eq("market", mcfg["market"]).eq("symbol", sym).order("snap_date", desc=True).limit(1).execute().data)
+    if not r:
+        return None
+    m = dict(r[0].get("metrics") or {})
+    m.pop("setups", None)
+    m["Symbol"] = sym
+    return str(r[0]["snap_date"])[:10], r[0].get("scanner"), pd.DataFrame([m])
+
+
+def render_why_not(st, base_df, cfg, mcfg, sb=None):
     st.markdown("#### Why isn't it on the list?")
     c1, c2 = st.columns([2, 1])
     sym = c1.text_input("Symbol", key="sl_why_sym", placeholder="e.g. MOBIKWIK").strip().upper()
@@ -371,20 +383,37 @@ def render_why_not(st, base_df, cfg, mcfg):
         return
     d = _prep(base_df)
     hit = d[d["Symbol"].astype(str).str.upper() == sym]
+    asof = None
     if hit.empty:
         near = [s for s in d["Symbol"].astype(str) if sym[:4] in s.upper()][:5]
-        st.warning(f"{sym} isn't in today's scan, so none of the rules can be checked. The MIO screens only return "
-                   "stocks that pass their own filters (RS, price, volume)." + (f" Did you mean: {', '.join(near)}?" if near else ""))
-        return
+        snap = None
+        if sb is not None:
+            try:
+                snap = last_snapshot_row(sb, mcfg, sym)
+            except Exception:
+                snap = None
+        if snap is None:
+            st.warning(f"{sym} isn't in today's scan and has never been saved, so none of the rules can be checked. "
+                       "The MIO screens only return stocks that pass their own filters (RS, price, volume)."
+                       + (f" Did you mean: {', '.join(near)}?" if near else ""))
+            return
+        asof, scanner, snap_df = snap
+        hit = _prep(snap_df)
+        st.warning(f"{sym} dropped out of today's scan (it no longer passes a MarketInOut screen filter, usually RS). "
+                   f"Checked on its last saved data from **{asof}** ({str(scanner).title()}) — re-check the chart, "
+                   "the numbers below are not today's.")
     r = hit.iloc[0]
     liq_unit = "₹ cr" if mcfg.get("market") == "NSE" else "$M"
     rows = rule_checks(r, setup, cfg, liq_unit)
     fails = [x for x in rows if x["Pass"] == "❌"]
     unknown = [x for x in rows if x["Pass"] == "—"]
+    when = f" on {asof} data" if asof else ""
+    passed = sum(1 for x in rows if x["Pass"] == "✅")
     if not fails and not unknown:
-        st.success(f"{sym} passes every {SETUPS[setup]} rule — it should be on that list tonight.")
+        st.success(f"{sym} passes every {SETUPS[setup]} rule{when}" + (" — but it's not in today's scan, so it can't be on the list."
+                   if asof else " — it should be on that list tonight."))
     elif fails:
-        st.error(f"{sym} fails {len(fails)} of {len(rows)} {SETUPS[setup]} rules: " + ", ".join(x["Rule"] for x in fails) + ".")
+        st.error(f"{sym} meets {passed} of {len(rows)} {SETUPS[setup]} rules{when}. Fails: " + ", ".join(x["Rule"] for x in fails) + ".")
     else:
         st.info(f"{sym}: some data is missing ({', '.join(x['Rule'] for x in unknown)}).")
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)

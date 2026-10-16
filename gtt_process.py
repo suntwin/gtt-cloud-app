@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-16c · Breakouts recorded automatically after each scan (once per session)"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-16d · Why-not checker uses the last saved data when a stock drops out of the scan"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -140,7 +140,7 @@ SNAPSHOT_METRICS = ["Last", "_chg_percentclose", "_vol_ratio", "Adr", "_nr4", "_
                     "_rel_tightness_today", "_rel_tightness_prev", "_rel_wk_dist", "W_Dist10wMA",
                     "W_TightCloses_10w", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS",
                     "RS_1M", "RS_3M", "RS_6M", "Sector", "Industry", "Suggested", "rating",
-                    "off_high_21", "off_high_126", "off_high_252"]
+                    "off_high_21", "off_high_126", "off_high_252", "Ti65", "W_CloseChg_Pct"]
 
 
 # ════════════════════════════════════════════════════════════════════════════
