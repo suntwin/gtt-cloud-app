@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-16b · Shortlister: why-not rule check"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-16c · Breakouts recorded automatically after each scan (once per session)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -921,6 +921,35 @@ def save_breakouts(sb, bo, snap_date, mcfg):
     snap["_sel"] = ~snap["_list"].isin(["NOT_SAVED", "SKIPPED"])
     upsert_snapshots(sb, snapshot_rows(snap, snap_date, mcfg, "BREAKOUT", "_list", "_sel"))
     return added, len(bo)
+
+
+def auto_record_breakouts(sb, mcfg, base_df, bo_min_chg=2.0, bo_min_vol=1.5, bo_prefs=None):
+    """After a scan: record every breakout of the last completed session in daily_snapshots (list 'AUTO',
+    not selected), so the history has no gaps even if you never press Save. Runs once per session: symbols
+    already recorded that day (by an earlier run or by your own Save) are left untouched; your Save later
+    overwrites AUTO rows with your choice. Skipped while the market is open (partial-day data)."""
+    if sb is None or base_df is None or base_df.empty:
+        return 0
+    try:
+        if market_is_open(market_now(mcfg), mcfg):
+            return 0
+        sd = effective_session(base_df, mcfg, sb)[0]
+        cfg = {**BREAKOUT_DEFAULTS, **(bo_prefs or {}), "bo_min_chg": bo_min_chg, "bo_min_vol": bo_min_vol}
+        bo = find_breakouts(base_df, set(), [], cfg, today=sd)
+        stale = not_updated(base_df, sd)
+        if stale:
+            bo = bo[~bo["Symbol"].isin(stale)]
+        if bo.empty:
+            return 0
+        have = {r["symbol"] for r in _snap_q(sb, mcfg, "BREAKOUT", sd).execute().data}
+        new = bo[~bo["Symbol"].isin(have)].copy()
+        if new.empty:
+            return 0
+        new["_list"], new["_sel"] = "AUTO", False
+        upsert_snapshots(sb, snapshot_rows(new, sd, mcfg, "BREAKOUT", "_list", "_sel"))
+        return int(len(new))
+    except Exception:
+        return 0
 
 
 def _snap_q(sb, mcfg, scanner, sd):
@@ -2039,7 +2068,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         lab = lab.reset_index(drop=True)
     # Breakouts already reviewed in Post Breakout today (saved or left on Skip) don't need tagging again
     try:
-        reviewed = {r["symbol"] for r in _snap_q(sb, mcfg, "BREAKOUT", sd).execute().data}
+        reviewed = {r["symbol"] for r in _snap_q(sb, mcfg, "BREAKOUT", sd).execute().data if r.get("list") != "AUTO"}
     except Exception:
         reviewed = set()
     if reviewed:

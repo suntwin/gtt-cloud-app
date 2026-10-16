@@ -10,6 +10,7 @@ from datetime import datetime
 from gtt_process import MARKETS, tv_symbol, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
 from gtt_process import assign_scan_columns, _JS as _GTT_JS
 from shortlister import render_shortlister_tab
+from gtt_process import auto_record_breakouts
 from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan, row_card_js, render_sector_leadership
 
 st.set_page_config(page_title="GTT Trade Generator (USA)", page_icon="⚡", layout="wide")
@@ -555,6 +556,10 @@ def main():
                     st.session_state.weekly_full_df = None; st.warning("Weekly scan unavailable.")
                 st.session_state.gtt_base_df = adf
                 remember_scan(st, MARKET_CFG)
+                _n_auto = auto_record_breakouts(supabase, MARKET_CFG, adf, vol_bo_min_chg, vol_bo_min_vol,
+                                                saved_prefs.get('breakout_tags', {}))
+                if _n_auto:
+                    st.toast(f"Recorded {_n_auto} breakouts for this session")
                 save_auto_breadth(supabase, MARKET_CFG, journal_session(MARKET_CFG), adf, vol_bo_min_chg, vol_bo_min_vol,
                                   float(saved_prefs.get('breakout_tags', {}).get('strong_min_vol', 3.5)), coil_max_reltight)
             else:
