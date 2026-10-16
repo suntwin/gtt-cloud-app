@@ -17,7 +17,8 @@ SETUPS = {"FOCUS": "Focus: 1-min ORH ready", "ACTION": "Action: big-volume break
 
 SHORTLIST_DEFAULTS = {
     # Action: big-volume (imbalance) breakouts, today and the last few sessions
-    "act_min_vol": 2.0,           # breakout-day volume ÷ average, at least
+    "act_min_vol": 1.5,           # breakout-day volume ÷ average, at least (same as the breakout rule; < 2x is flagged)
+    "act_strong_vol": 2.0,        # imbalance volume: below this the row is flagged "Volume < 2x"
     "act_min_value": 100.0,       # breakout-day traded value (₹ cr / $M), at least
     "act_min_chg": 3.0,           # breakout-day change %, at least
     "act_days": 3,                # also show breakouts from this many recent sessions, still holding
@@ -51,7 +52,7 @@ SHORTLIST_DEFAULTS = {
 MARKET_OVERRIDES = {"NSE": {"min_liq": 50.0, "htf_min_adr": 5.0, "act_min_value": 100.0},
                     "USA": {"min_liq": 30.0, "htf_min_adr": 6.0, "act_min_value": 50.0}}
 RULE_LABELS = {
-    "act_min_vol": "Action: min breakout volume (x avg)", "act_min_value": "Action: min breakout-day value (₹ cr / $M)",
+    "act_min_vol": "Action: min breakout volume (x avg)", "act_strong_vol": "Imbalance volume (x avg), below = flagged", "act_min_value": "Action: min breakout-day value (₹ cr / $M)",
     "act_min_chg": "Action: min breakout-day change %", "act_days": "Action: recent sessions to include",
     "focus_max_off1m_adr": "Focus: max below 1M high (ADRs)", "focus_max_off52": "Focus: max below 52W high (%)",
     "focus_max_reltight": "Focus: max rel tightness", "focus_top": "Focus: show top N",
@@ -242,6 +243,8 @@ def build_action(base_df, cfg, sd, hist=None, holding=None, tags=None, saved=Non
         f = []
         if r["BO date"] == str(sd):
             f.append("Today")
+        if np.isfinite(_num(r.get("BO vol x"))) and _num(r.get("BO vol x")) < cfg["act_strong_vol"]:
+            f.append(f"Volume {_num(r.get('BO vol x')):.1f}x (< {cfg['act_strong_vol']:g}x)")
         if np.isfinite(_num(r.get("_avgvol_mln"))) and _num(r.get("_avgvol_mln")) < cfg["min_liq"]:
             f.append("Thin stock: needs big breakout days")
         if np.isfinite(_num(r.get("_rel_tightness_today"))) and _num(r.get("_rel_tightness_today")) <= cfg["htf_max_reltight"] \
@@ -401,6 +404,8 @@ def build_focus(base_df, cfg, sd, lists, hist=None, holding=None, tags=None, wat
             f.append("Narrow day")
         if not np.isfinite(_num(r["Age"])):
             f.append("No recent volume breakout")
+        elif np.isfinite(_num(r.get("BO vol x"))) and _num(r.get("BO vol x")) < cfg["act_strong_vol"]:
+            f.append(f"Volume {_num(r.get('BO vol x')):.1f}x (< {cfg['act_strong_vol']:g}x)")
         if np.isfinite(_num(r.get("_avgvol_mln"))) and _num(r.get("_avgvol_mln")) < cfg["min_liq"]:
             f.append("Thin stock")
         flags.append(" · ".join(f))
