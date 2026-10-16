@@ -287,3 +287,106 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
         if syms:
             st.text_area("Kept names, best rank first (for TradingView)",
                          ",".join(gp.tv_symbol(s, mcfg) for s in syms), height=70, key="sl_copy")
+    st.markdown("---")
+    render_why_not(st, base_df, cfg, mcfg)
+
+
+# ── "Why isn't it on the list?" — rule-by-rule check for one stock ──
+def _fmt(x, nd=2, suffix=""):
+    return "—" if not np.isfinite(_num(x)) else f"{_num(x):.{nd}f}{suffix}"
+
+
+def rule_checks(r, setup, cfg, liq_unit=""):
+    """Rows of {Rule, Needs, Actual, Pass, Watch for} for one prepped scan row and one setup."""
+    g = lambda c: _num(r.get(c))
+    rwd, m10, m20, off = g("_rel_wk_dist"), g("_ma10_adr"), g("_ma20_adr"), g("_off21_adr")
+    adr, liq, w10 = g("Adr"), g("_avgvol_mln"), g("W_Dist10wMA")
+    out = []
+
+    def add(rule, needs, actual, ok, watch):
+        out.append({"Rule": rule, "Needs": needs, "Actual": actual,
+                    "Pass": "—" if ok is None else ("✅" if ok else "❌"), "Watch for": "" if ok else watch})
+
+    def chk(v, cond):
+        return None if not np.isfinite(v) else bool(cond(v))
+
+    add("Liquidity", f"avg traded value ≥ {cfg['min_liq']:g} {liq_unit}", _fmt(liq, 0, f" {liq_unit}"),
+        chk(liq, lambda v: v >= cfg["min_liq"]), "Too thin: breakouts fade. Only if the breakout day itself trades big (≥ 2x and ≥ 2–3x ADV).")
+    add("Above the 10-week line", "10w distance > 0", _fmt(w10, 1, "%"), chk(w10, lambda v: v > 0),
+        "Below the 10w line: no uptrend yet. Wait for it to reclaim and hold.")
+    add("10MA / 20MA", f"both ≥ {cfg['ma_min_adr']:g} ADR", f"{_fmt(m10, 1)} / {_fmt(m20, 1)} ADR",
+        None if not (np.isfinite(m10) and np.isfinite(m20)) else (m10 >= cfg["ma_min_adr"] and m20 >= cfg["ma_min_adr"]),
+        "Below its short MAs: let it reclaim the 10MA and 20MA first.")
+    if setup == "3WTC":
+        wt, wk = g("W_TightCloses_10w"), g("_wkchg_adr")
+        add("Weekly tight closes", f"≥ {cfg['wtc_min_tight']:g}", _fmt(wt, 0), chk(wt, lambda v: v >= cfg["wtc_min_tight"]),
+            "Weekly closes still loose: give it another quiet week or two.")
+        add("This week's close change", f"≤ {cfg['wtc_max_wkchg_adr']:g} ADR", _fmt(wk, 2, " ADR"),
+            chk(wk, lambda v: v <= cfg["wtc_max_wkchg_adr"]),
+            "Big weekly move: wait for a week that closes near last week's close.")
+        add("Near the pivot (1M high)", f"≤ {cfg['wtc_max_off1m_adr']:g} ADR below", _fmt(off, 2, " ADR"),
+            chk(off, lambda v: v <= cfg["wtc_max_off1m_adr"]), "Too far below the high: needs to work back up to the range top.")
+        add("ADRs from the 10w line", f"{cfg['wtc_min_rwd']:g}–{cfg['wtc_max_rwd']:g}", _fmt(rwd, 2),
+            chk(rwd, lambda v: cfg["wtc_min_rwd"] <= v <= cfg["wtc_max_rwd"]),
+            "Too close: no prior move yet." if np.isfinite(rwd) and rwd < cfg["wtc_min_rwd"]
+            else "Extended: wait for the 10w line to catch up (sideways weeks).")
+        add("ADR", f"≥ {cfg['wtc_min_adr']:g}%", _fmt(adr, 1, "%"), chk(adr, lambda v: v >= cfg["wtc_min_adr"]),
+            "Low volatility: moves will be small.")
+    else:
+        ti, rt = g("Ti65"), g("_rel_tightness_today")
+        add("Momentum (Ti65)", f"≥ {cfg['htf_min_ti65']:g}", _fmt(ti, 2), chk(ti, lambda v: v >= cfg["htf_min_ti65"]),
+            "Not enough momentum for an HTF: maybe a 3-week tight closing instead.")
+        add("ADR", f"≥ {cfg['htf_min_adr']:g}%", _fmt(adr, 1, "%"), chk(adr, lambda v: v >= cfg["htf_min_adr"]),
+            "Not volatile enough for an HTF.")
+        add("Rel tightness", f"≤ {cfg['htf_max_reltight']:g}", _fmt(rt, 2), chk(rt, lambda v: v <= cfg["htf_max_reltight"]),
+            "Not tight yet: watch for 2–3 narrow/inside days (NR4 under 0.8 ADR).")
+        add("Near the pivot (1M high)", f"≤ {cfg['htf_max_off1m_adr']:g} ADR below", _fmt(off, 2, " ADR"),
+            chk(off, lambda v: v <= cfg["htf_max_off1m_adr"]), "Too far below the flag high: the flag is too deep or still pulling back.")
+        normal = chk(rwd, lambda v: cfg["htf_min_rwd"] <= v <= cfg["htf_max_rwd"])
+        leader = (np.isfinite(rwd) and rwd > cfg["htf_max_rwd"] and np.isfinite(m10) and m10 <= cfg["htf_flag_max_10ma_adr"])
+        if normal or leader:
+            add("Distance", f"{cfg['htf_min_rwd']:g}–{cfg['htf_max_rwd']:g} ADR from 10w, or leader flag ≤ "
+                f"{cfg['htf_flag_max_10ma_adr']:g} ADR above 10MA",
+                f"{_fmt(rwd, 1)} ADR from 10w · {_fmt(m10, 1)} ADR from 10MA" + (" (leader flag)" if leader else ""), True, "")
+        else:
+            if np.isfinite(rwd) and rwd < cfg["htf_min_rwd"]:
+                w = "Hasn't moved enough off the 10w line for an HTF."
+            elif np.isfinite(m10):
+                w = (f"Extended {m10:.1f} ADR above the 10MA. Wait for the flag to go sideways until the 10MA is within "
+                     f"{cfg['htf_flag_max_10ma_adr']:g} ADR (≈ {max(m10 - cfg['htf_flag_max_10ma_adr'], 0) * adr:.1f}% to close).")
+            else:
+                w = "Distance data missing."
+            add("Distance", f"{cfg['htf_min_rwd']:g}–{cfg['htf_max_rwd']:g} ADR from 10w, or leader flag ≤ "
+                f"{cfg['htf_flag_max_10ma_adr']:g} ADR above 10MA", f"{_fmt(rwd, 1)} ADR from 10w · {_fmt(m10, 1)} ADR from 10MA",
+                None if not np.isfinite(rwd) else False, w)
+    return out
+
+
+def render_why_not(st, base_df, cfg, mcfg):
+    st.markdown("#### Why isn't it on the list?")
+    c1, c2 = st.columns([2, 1])
+    sym = c1.text_input("Symbol", key="sl_why_sym", placeholder="e.g. MOBIKWIK").strip().upper()
+    setup = c2.selectbox("Setup", list(SETUPS), format_func=lambda k: SETUPS[k], index=1, key="sl_why_setup")
+    if not sym:
+        return
+    d = _prep(base_df)
+    hit = d[d["Symbol"].astype(str).str.upper() == sym]
+    if hit.empty:
+        near = [s for s in d["Symbol"].astype(str) if sym[:4] in s.upper()][:5]
+        st.warning(f"{sym} isn't in today's scan, so none of the rules can be checked. The MIO screens only return "
+                   "stocks that pass their own filters (RS, price, volume)." + (f" Did you mean: {', '.join(near)}?" if near else ""))
+        return
+    r = hit.iloc[0]
+    liq_unit = "₹ cr" if mcfg.get("market") == "NSE" else "$M"
+    rows = rule_checks(r, setup, cfg, liq_unit)
+    fails = [x for x in rows if x["Pass"] == "❌"]
+    unknown = [x for x in rows if x["Pass"] == "—"]
+    if not fails and not unknown:
+        st.success(f"{sym} passes every {SETUPS[setup]} rule — it should be on that list tonight.")
+    elif fails:
+        st.error(f"{sym} fails {len(fails)} of {len(rows)} {SETUPS[setup]} rules: " + ", ".join(x["Rule"] for x in fails) + ".")
+    else:
+        st.info(f"{sym}: some data is missing ({', '.join(x['Rule'] for x in unknown)}).")
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    if fails:
+        st.markdown("**What to watch for:**\n" + "\n".join(f"- **{x['Rule']}:** {x['Watch for']}" for x in fails))
