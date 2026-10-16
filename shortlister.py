@@ -54,7 +54,7 @@ RULE_LABELS = {
 }
 gp.RULE_LABELS.update(RULE_LABELS)
 
-EDIT_COLS = ["Keep", "Rank", "Comment", "Weekly comment"]
+EDIT_COLS = ["Keep", "Rank", "Alert set", "Comment", "Weekly comment"]
 
 
 def _n(d, c):
@@ -134,7 +134,7 @@ def build_shortlists(base_df, cfg, holding=None, tags=None, saved=None):
         v["_r"] = pd.to_numeric(v["Rank"], errors="coerce")
         v = v.sort_values(["Keep", "_r", "_rel_tightness_today"], ascending=[False, True, True],
                           na_position="last").drop(columns="_r")
-        out[key] = v.reset_index(drop=True)
+        out[key] = _add_plan(v.reset_index(drop=True), key, None, saved)
     return out
 
 
@@ -144,6 +144,32 @@ def _num(x):
         return x if np.isfinite(x) else np.nan
     except (TypeError, ValueError):
         return np.nan
+
+
+def _add_plan(v, setup, sd, saved):
+    """Pivot (1-month high as a starting line), distance, the widest allowed stop (pivot − 1 ADR), entry style."""
+    if v.empty:
+        v["Pivot"] = v["To pivot %"] = v["Stop guide"] = v["Entry"] = []
+        v["Alert set"] = []
+        return v
+    last, off, adr = _n(v, "Last"), _n(v, "off_high_21").abs(), _n(v, "Adr")
+    piv = (last / (1 - off / 100)).where(off < 100)
+    v["Pivot"] = piv.round(2)
+    v["To pivot %"] = ((piv / last - 1) * 100).round(1)
+    v["Stop guide"] = (piv * (1 - adr / 100)).round(2)
+    ent = []
+    for _, r in v.iterrows():
+        if setup != "ACTION":
+            ent.append("Alert at pivot → 1-min ORH on the break day, Rel vol ≥ 2")
+        elif r.get("BO date") == str(sd):
+            ent.append("Day 2+: wait for a 15-min / 1-hour flag, buy its break (or 5-min ORH); no chasing the wick")
+        elif "Tight now" in str(r.get("Flags", "")):
+            ent.append("Tight day after the breakout: ORH above its high")
+        else:
+            ent.append("Wait for a tight day / hourly flag")
+    v["Entry"] = ent
+    v["Alert set"] = [bool(saved.get(sym, {}).get(setup, {}).get("alert", False)) for sym in v["Symbol"]]
+    return v
 
 
 def _base_label(rp):
@@ -216,15 +242,15 @@ def build_action(base_df, cfg, sd, hist=None, holding=None, tags=None, saved=Non
     v["_ep"] = v["EP"] == "EP"
     v = v.sort_values(["Keep", "_r", "BO date", "_ep", "BO vol x"], ascending=[False, True, False, False, False],
                       na_position="last").drop(columns=["_r", "_ep"])
-    return v.reset_index(drop=True)
+    return _add_plan(v.reset_index(drop=True), "ACTION", sd, saved)
 
 
-ACTION_SHOW = ["Keep", "Rank", "Symbol", "EP", "BO date", "BO chg %", "BO vol x", "BO value", "Base before",
+ACTION_SHOW = ["Keep", "Rank", "Alert set", "Symbol", "Pivot", "To pivot %", "Stop guide", "Entry", "EP", "BO date", "BO chg %", "BO vol x", "BO value", "Base before",
                "Since BO %", "Sector", "Grp hold %", "Saved", "Adr", "Ti65", "_rel_wk_dist", "_ma10_adr", "Pullback",
                "_rel_tightness_today", "_avgvol_mln", "Flags", "Comment", "Weekly comment"]
 
 
-SHOW = ["Keep", "Rank", "Symbol", "Sector", "Grp hold %", "Saved", "_rel_wk_dist", "_ma10_adr", "Pullback",
+SHOW = ["Keep", "Rank", "Alert set", "Symbol", "Pivot", "To pivot %", "Stop guide", "Entry", "Sector", "Grp hold %", "Saved", "_rel_wk_dist", "_ma10_adr", "Pullback",
         "Ti65", "Adr", "_rel_tightness_today", "off_high_21", "W_TightCloses_10w", "_avgvol_mln", "_vol_ratio",
         "_chg_percentclose", "Flags", "Comment", "Weekly comment"]
 
@@ -254,6 +280,13 @@ def _column_config(st, mcfg):
         "Flags": cc.TextColumn("Flags", width="medium"),
         "Comment": cc.TextColumn("Comment", width="medium"),
         "Weekly comment": cc.TextColumn("Weekly comment", width="medium"),
+        "Alert set": cc.CheckboxColumn("Alert set", width="small", help="Tick once the range line and alert are set in TradingView"),
+        "Pivot": cc.NumberColumn("Pivot", format="%.2f", width="small",
+                                 help="Starting line = the 1-month high. Adjust on the chart (cluster of highs, not a one-day spike)"),
+        "To pivot %": cc.NumberColumn("To pivot %", format="%.1f", width="small"),
+        "Stop guide": cc.NumberColumn("Stop guide", format="%.2f", width="small",
+                                      help="Pivot − 1 ADR: the lowest your low-of-day stop may be for an entry at the pivot"),
+        "Entry": cc.TextColumn("Entry", width="medium"),
         "EP": cc.TextColumn("EP", width="small", help=f"Breakout ≥ {gp.BREAKOUT_DEFAULTS['ep_min_chg']:g}% on ≥ {gp.BREAKOUT_DEFAULTS['ep_min_vol']:g}x volume — check the news"),
         "BO date": cc.TextColumn("BO date", width="small"),
         "BO chg %": cc.NumberColumn("BO chg %", format="%.1f", width="small"),
@@ -295,6 +328,7 @@ def save_shortlist(sb, mcfg, sd, edited, base):
             rk = _num(r.get("Rank"))
             per.setdefault(r["Symbol"], {})[key] = {
                 "keep": bool(r.get("Keep")), "rank": int(rk) if np.isfinite(rk) else None,
+                "alert": bool(r.get("Alert set")) if pd.notna(r.get("Alert set")) else False,
                 "comment": str(r.get("Comment") or ""), "wk": str(r.get("Weekly comment") or "")}
     b = base.set_index("Symbol") if base is not None and not base.empty else None
     rows = []
