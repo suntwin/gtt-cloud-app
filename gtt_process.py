@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-16d · Why-not checker uses the last saved data when a stock drops out of the scan"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-16e · Shortlister: Action list (big-volume breakouts) first"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1513,6 +1513,7 @@ def load_breakout_history(sb, mcfg, days=45):
                     "Sector": m.get("Sector") or "Unknown", "Industry": m.get("Industry"),
                     "bo_close": last, "prev_close": last / (1 + chg / 100) if np.isfinite(last) else np.nan,
                     "chg": chg, "vol": _num(m.get("_vol_ratio")),
+                    "avgvol": _num(m.get("_avgvol_mln")), "relprev": _num(m.get("_rel_tightness_prev")),
                     "selected": bool(r.get("selected")), "list": r.get("list")})
     return pd.DataFrame(out)
 

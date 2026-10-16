@@ -13,9 +13,14 @@ import pandas as pd
 
 import gtt_process as gp
 
-SETUPS = {"3WTC": "3-Week Tight Closing", "HTF": "High Tight Flag"}
+SETUPS = {"ACTION": "Action: big-volume breakouts", "3WTC": "3-Week Tight Closing", "HTF": "High Tight Flag"}
 
 SHORTLIST_DEFAULTS = {
+    # Action: big-volume (imbalance) breakouts, today and the last few sessions
+    "act_min_vol": 2.0,           # breakout-day volume ÷ average, at least
+    "act_min_value": 100.0,       # breakout-day traded value (₹ cr / $M), at least
+    "act_min_chg": 3.0,           # breakout-day change %, at least
+    "act_days": 7,                # also show breakouts from this many recent sessions, still holding
     # shared
     "min_liq": 50.0,              # avg daily traded value floor (NSE ₹ cr / USA $M)
     "ma_min_adr": -0.3,           # 10MA and 20MA distance floor, in ADRs (small dips allowed)
@@ -34,9 +39,11 @@ SHORTLIST_DEFAULTS = {
     "htf_flag_max_10ma_adr": 1.0, # above max_rwd: a leader flag counts if within this many ADRs above the 10MA
     "htf_max_off1m_adr": 2.0,
 }
-MARKET_OVERRIDES = {"NSE": {"min_liq": 50.0, "htf_min_adr": 5.0},
-                    "USA": {"min_liq": 30.0, "htf_min_adr": 6.0}}
+MARKET_OVERRIDES = {"NSE": {"min_liq": 50.0, "htf_min_adr": 5.0, "act_min_value": 100.0},
+                    "USA": {"min_liq": 30.0, "htf_min_adr": 6.0, "act_min_value": 50.0}}
 RULE_LABELS = {
+    "act_min_vol": "Action: min breakout volume (x avg)", "act_min_value": "Action: min breakout-day value (₹ cr / $M)",
+    "act_min_chg": "Action: min breakout-day change %", "act_days": "Action: recent sessions to include",
     "min_liq": "Min avg traded value (₹ cr / $M)", "ma_min_adr": "10/20MA floor (ADRs)", "late_rwd": "Flag 'check steps' above (ADRs from 10w)",
     "wtc_min_tight": "3WTC: min weekly tight closes", "wtc_max_wkchg_adr": "3WTC: max week's close change (ADRs)",
     "wtc_max_off1m_adr": "3WTC: max below 1M high (ADRs)", "wtc_min_rwd": "3WTC: min ADRs from 10w",
@@ -139,6 +146,84 @@ def _num(x):
         return np.nan
 
 
+def _base_label(rp):
+    rp = _num(rp)
+    if not np.isfinite(rp):
+        return "—"
+    return "Tight base" if rp <= 0.8 else ("Base" if rp <= 1.2 else "Loose")
+
+
+def build_action(base_df, cfg, sd, hist=None, holding=None, tags=None, saved=None):
+    """Big-volume breakouts: today's from the scan, plus recent ones (recorded breakouts) still holding."""
+    holding, tags, saved = holding or {}, tags or {}, saved or {}
+    d = _prep(base_df)
+    ep_chg, ep_vol = gp.BREAKOUT_DEFAULTS["ep_min_chg"], gp.BREAKOUT_DEFAULTS["ep_min_vol"]
+    chg, vol, dv = _n(d, "_chg_percentclose"), _n(d, "_vol_ratio"), _n(d, "dvol")
+    today = d[(chg >= cfg["act_min_chg"]) & (vol >= cfg["act_min_vol"]) & (dv >= cfg["act_min_value"])].copy()
+    today["BO date"] = str(sd)
+    today["BO chg %"], today["BO vol x"], today["BO value"] = chg[today.index], vol[today.index], dv[today.index]
+    today["Since BO %"] = 0.0
+    today["Base before"] = today["_rel_tightness_prev"].map(_base_label)
+    rows = [today]
+    if hist is not None and not hist.empty:
+        h = hist[hist["date"] < str(sd)].copy()
+        sessions = sorted(h["date"].unique(), reverse=True)[: int(cfg["act_days"])]
+        h = h[h["date"].isin(sessions)]
+        h["value"] = h["vol"] * h["avgvol"]
+        h = h[(h["vol"] >= cfg["act_min_vol"]) & (h["chg"] >= cfg["act_min_chg"])
+              & (h["value"].isna() | (h["value"] >= cfg["act_min_value"]))]
+        h = h.sort_values("date", ascending=False).drop_duplicates("Symbol")
+        h = h[~h["Symbol"].isin(today["Symbol"])]
+        live = d.set_index("Symbol")
+        h = h[h["Symbol"].isin(live.index)]
+        if not h.empty:
+            past = live.loc[h["Symbol"]].reset_index()
+            past["BO date"] = h["date"].values
+            past["BO chg %"], past["BO vol x"], past["BO value"] = h["chg"].values, h["vol"].values, h["value"].values
+            now = pd.to_numeric(past["Last"], errors="coerce").values
+            past["Since BO %"] = np.round((now / h["bo_close"].values - 1) * 100, 1)
+            past = past[now >= h["prev_close"].values]          # still holding above the pre-breakout close
+            past["Base before"] = [_base_label(x) for x in h.loc[h["Symbol"].isin(past["Symbol"]), "relprev"]] \
+                if len(past) else []
+            rows.append(past)
+    v = pd.concat(rows, ignore_index=True) if len(rows) > 1 else today.reset_index(drop=True)
+    if v.empty:
+        return v
+    v["EP"] = np.where((v["BO chg %"] >= ep_chg) & (v["BO vol x"] >= ep_vol), "EP", "")
+    flags = []
+    for _, r in v.iterrows():
+        f = []
+        if r["BO date"] == str(sd):
+            f.append("Today")
+        if np.isfinite(_num(r.get("_avgvol_mln"))) and _num(r.get("_avgvol_mln")) < cfg["min_liq"]:
+            f.append("Thin stock: needs big breakout days")
+        if np.isfinite(_num(r.get("_rel_tightness_today"))) and _num(r.get("_rel_tightness_today")) <= cfg["htf_max_reltight"] \
+                and r["BO date"] != str(sd):
+            f.append("Tight now: entry spot")
+        flags.append(" · ".join(f))
+    v["Flags"] = flags
+    v["Pullback"] = v["_ma10_adr"].apply(lambda x: _pullback(float(x)) if pd.notna(x) else "—")
+    v["Grp hold %"] = v["Sector"].map(holding) if "Sector" in v.columns else np.nan
+    if "Sector" not in v.columns:
+        v["Sector"] = ""
+    v["Saved"] = v["Symbol"].map(tags).fillna("")
+    mine = [saved.get(s, {}).get("ACTION", {}) for s in v["Symbol"]]
+    v["Keep"] = [bool(m.get("keep", True)) for m in mine]
+    v["Rank"] = pd.to_numeric(pd.Series([m.get("rank") for m in mine], index=v.index), errors="coerce")
+    v["Comment"] = [m.get("comment", "") for m in mine]
+    v["Weekly comment"] = [m.get("wk", "") for m in mine]
+    v["_r"] = v["Rank"]
+    v["_ep"] = v["EP"] == "EP"
+    v = v.sort_values(["Keep", "_r", "BO date", "_ep", "BO vol x"], ascending=[False, True, False, False, False],
+                      na_position="last").drop(columns=["_r", "_ep"])
+    return v.reset_index(drop=True)
+
+
+ACTION_SHOW = ["Keep", "Rank", "Symbol", "EP", "BO date", "BO chg %", "BO vol x", "BO value", "Base before",
+               "Since BO %", "Sector", "Grp hold %", "Saved", "Adr", "Ti65", "_rel_wk_dist", "_ma10_adr", "Pullback",
+               "_rel_tightness_today", "_avgvol_mln", "Flags", "Comment", "Weekly comment"]
+
+
 SHOW = ["Keep", "Rank", "Symbol", "Sector", "Grp hold %", "Saved", "_rel_wk_dist", "_ma10_adr", "Pullback",
         "Ti65", "Adr", "_rel_tightness_today", "off_high_21", "W_TightCloses_10w", "_avgvol_mln", "_vol_ratio",
         "_chg_percentclose", "Flags", "Comment", "Weekly comment"]
@@ -169,6 +254,13 @@ def _column_config(st, mcfg):
         "Flags": cc.TextColumn("Flags", width="medium"),
         "Comment": cc.TextColumn("Comment", width="medium"),
         "Weekly comment": cc.TextColumn("Weekly comment", width="medium"),
+        "EP": cc.TextColumn("EP", width="small", help=f"Breakout ≥ {gp.BREAKOUT_DEFAULTS['ep_min_chg']:g}% on ≥ {gp.BREAKOUT_DEFAULTS['ep_min_vol']:g}x volume — check the news"),
+        "BO date": cc.TextColumn("BO date", width="small"),
+        "BO chg %": cc.NumberColumn("BO chg %", format="%.1f", width="small"),
+        "BO vol x": cc.NumberColumn("BO vol x", format="%.1f", width="small", help="Breakout-day volume ÷ average"),
+        "BO value": cc.NumberColumn(f"BO value ({liq})", format="%.0f", width="small", help="Traded value on the breakout day"),
+        "Base before": cc.TextColumn("Base before", width="small", help="Rel tightness the day before the breakout"),
+        "Since BO %": cc.NumberColumn("Since BO %", format="%.1f", width="small"),
     }
 
 
@@ -221,7 +313,7 @@ def save_shortlist(sb, mcfg, sd, edited, base):
 
 
 def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
-    st.subheader("Shortlister  ·  two setups, ranked by you")
+    st.subheader("Shortlister  ·  volume first, then the tight setups")
     st.caption("Pre-filled from today's scan. Flip each chart, untick what you'd skip, rank the rest (1 = best) "
                "and add a comment. Your top 5–7 get range lines and alerts.")
     if base_df is None or getattr(base_df, "empty", True):
@@ -235,16 +327,34 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
             saved = load_saved(sb, mcfg, sd)
         except Exception:
             saved = {}
-    lists = build_shortlists(base_df, cfg, _holding_map(sb, mcfg, base_df) if sb else {},
-                             _tags_map(sb, mcfg) if sb else {}, saved)
+    hist = None
+    if sb is not None:
+        try:
+            hist = gp.load_breakout_history(sb, mcfg)
+        except Exception:
+            hist = None
+    holding = {}
+    if hist is not None and not hist.empty:
+        try:
+            t, _ = gp.sector_leadership(hist, base_df)
+            holding = dict(zip(t["Sector"], t["Holding %"])) if not t.empty else {}
+        except Exception:
+            holding = {}
+    tags = _tags_map(sb, mcfg) if sb else {}
+    lists = build_shortlists(base_df, cfg, holding, tags, saved)
+    lists = {"ACTION": build_action(base_df, cfg, sd, hist, holding, tags, saved), **lists}
     if "W_TightCloses_10w" not in base_df.columns or base_df["W_TightCloses_10w"].isna().all():
         st.warning("Weekly scan data is missing, so the 3-Week Tight Closing list can't be built today.")
-    st.caption(f"Session **{sd}** · {len(lists['3WTC'])} on 3-Week Tight Closing · {len(lists['HTF'])} on High Tight Flag"
+    st.caption(f"Session **{sd}** · {len(lists['ACTION'])} big-volume breakouts · {len(lists['3WTC'])} on 3-Week Tight Closing · {len(lists['HTF'])} on High Tight Flag"
                + (" · ranks saved earlier tonight are loaded" if saved else ""))
     cc = _column_config(st, mcfg)
     edited = {}
-    tabs = st.tabs([f"{SETUPS['3WTC']} ({len(lists['3WTC'])})", f"{SETUPS['HTF']} ({len(lists['HTF'])})"])
+    tabs = st.tabs([f"{SETUPS[k]} ({len(lists[k])})" for k in ("ACTION", "3WTC", "HTF")])
     helptext = {
+        "ACTION": f"Volume is the setup, tightness is the entry. Breakouts ≥ {cfg['act_min_chg']:g}% on ≥ {cfg['act_min_vol']:g}x "
+                  f"volume and ≥ {cfg['act_min_value']:g} traded, today and the last {int(cfg['act_days'])} sessions (still holding). "
+                  "Today's: alert at the breakout-day high for a day-2 ORH. Older: wait for the tight day / hourly flag. "
+                  "EP = check the news.",
         "3WTC": "Weekly closes bunched together (MIO weekly tight closes + this week's close change in ADRs), within "
                 f"{cfg['wtc_max_off1m_adr']:g} ADR of the 1-month high, {cfg['wtc_min_rwd']:g}–{cfg['wtc_max_rwd']:g} ADR "
                 "from the 10w line. Check the weekly chart: the last 3 closes should sit in a tight band.",
@@ -253,13 +363,13 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
                f"{cfg['htf_flag_max_10ma_adr']:g} ADR of the 10MA. Far from the 10w line: count the steps — "
                "3rd+ step = pivot must clear any climax high, half size.",
     }
-    for tab, key in zip(tabs, ("3WTC", "HTF")):
+    for tab, key in zip(tabs, ("ACTION", "3WTC", "HTF")):
         with tab:
             st.caption(helptext[key])
             v = lists[key]
             if v.empty:
                 st.info("Nothing matches tonight."); edited[key] = v; continue
-            cols = [c for c in SHOW if c in v.columns]
+            cols = [c for c in (ACTION_SHOW if key == "ACTION" else SHOW) if c in v.columns]
             edited[key] = st.data_editor(
                 v[cols].replace([np.inf, -np.inf], np.nan), column_config=cc, hide_index=True, use_container_width=True,
                 disabled=[c for c in cols if c not in EDIT_COLS], key=f"sl_{mcfg['market']}_{key}_{sd}")
@@ -378,7 +488,7 @@ def render_why_not(st, base_df, cfg, mcfg, sb=None):
     st.markdown("#### Why isn't it on the list?")
     c1, c2 = st.columns([2, 1])
     sym = c1.text_input("Symbol", key="sl_why_sym", placeholder="e.g. MOBIKWIK").strip().upper()
-    setup = c2.selectbox("Setup", list(SETUPS), format_func=lambda k: SETUPS[k], index=1, key="sl_why_setup")
+    setup = c2.selectbox("Setup", ["3WTC", "HTF"], format_func=lambda k: SETUPS[k], index=1, key="sl_why_setup")
     if not sym:
         return
     d = _prep(base_df)
