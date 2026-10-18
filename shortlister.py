@@ -471,6 +471,8 @@ def _column_config(st, mcfg):
         "Flags": cc.TextColumn("Flags", width="medium"),
         "Comment": cc.TextColumn("Comment", width="medium"),
         "Weekly comment": cc.TextColumn("Weekly comment", width="medium"),
+        "_circuit": cc.NumberColumn("Circuit %", format="%.0f", width="small",
+                                    help="NSE price band: 20% free, 10% caution, 5% or less can lock (stop may not fill)"),
         "Alert set": cc.CheckboxColumn("Alert set", width="small", help="Tick once the range line and alert are set in TradingView"),
         "Pivot": cc.NumberColumn("Pivot", format="%.2f", width="small",
                                  help="Starting line = the 1-month high. Adjust on the chart (cluster of highs, not a one-day spike)"),
@@ -542,6 +544,76 @@ def save_shortlist(sb, mcfg, sd, edited, base):
                      "scan_count": 0, "metrics": m})
     gp.upsert_snapshots(sb, rows)
     return len(rows)
+
+
+def _css(bg, fg="black", bold=False):
+    return f"background-color:{bg};color:{fg}" + (";font-weight:bold" if bold else "")
+
+
+def _c_adr_dist(v, good=0.5, ok=1.0, fair=2.0):
+    """Distances measured in ADRs (to the pivot, from the 10MA): closer = greener."""
+    v = _num(v)
+    if not np.isfinite(v):
+        return ""
+    a = abs(v)
+    if a <= good: return _css("#28a745", "white", True)
+    if a <= ok: return _css("#8ee68e")
+    if a <= fair: return _css("#d4edda")
+    return _css("#fff3cd", "#664d03")
+
+
+def _c_hold(v):
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    return _css("#28a745", "white", True) if v >= 75 else (_css("#d4edda") if v >= 60 else _css("#f8d7da", "#721c24"))
+
+
+def _c_ti65(v):
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    return _css("#28a745", "white", True) if v >= 1.25 else (_css("#8ee68e") if v >= 1.1 else "")
+
+
+def _c_age(v):
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    return _css("#28a745", "white", True) if v <= 1 else (_css("#8ee68e") if v <= 3 else (_css("#d4edda") if v <= 5 else ""))
+
+
+def _c_flags(v):
+    t = str(v)
+    if "Thin" in t or "< 2x" in t or "No recent" in t: return _css("#fff3cd", "#664d03")
+    if "52W high" in t or "Narrow day" in t or "Tight now" in t: return _css("#d4edda")
+    return ""
+
+
+def style_shortlist(v, cfg):
+    """The scanner's colour bands plus the Shortlister's own columns (Styler works inside st.data_editor)."""
+    sty = gp.style_table(v, liq_floor=cfg.get("min_liq"))
+    cols = set(v.columns)
+    adr = _n(v, "Adr")
+    for c, f in [("Off 1M (ADR)", _c_adr_dist), ("_ma10_adr", lambda x: _c_adr_dist(x, 0.5, 1.0, 2.0)),
+                 ("Off 52W %", gp._c_offhigh_long), ("BO vol x", gp._c_vol), ("Grp hold %", _c_hold), ("Ti65", _c_ti65),
+                 ("Age", _c_age), ("Flags", _c_flags), ("EP", lambda x: _css("#8c008c", "white", True) if x == "EP" else "")]:
+        if c in cols:
+            sty = sty.map(f, subset=[c])
+    if "To pivot %" in cols:
+        sty = sty.apply(lambda col: [_c_adr_dist(_num(x) / a if a and np.isfinite(a) else np.nan) for x, a in zip(col, adr)],
+                        subset=["To pivot %"])
+    return sty
+
+
+def _copy_box(st, e, mcfg, label, key):
+    """Kept names of one list, best rank first, as TradingView symbols."""
+    if e is None or e.empty or "Symbol" not in e.columns:
+        return
+    k = e[e["Keep"] == True].copy() if "Keep" in e.columns else e.copy()  # noqa: E712
+    if k.empty:
+        return
+    k["_r"] = pd.to_numeric(k["Rank"], errors="coerce") if "Rank" in k.columns else np.nan
+    syms = k.sort_values("_r", na_position="last")["Symbol"].tolist()
+    st.text_area(f"{label} — {len(syms)} kept names, best rank first (for TradingView)",
+                 ",".join(gp.tv_symbol(x, mcfg) for x in syms), height=68, key=key)
 
 
 def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
@@ -619,10 +691,15 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
             v = lists[key]
             if v.empty:
                 st.info("Nothing matches tonight."); edited[key] = v; continue
-            cols = [c for c in {"FOCUS": FOCUS_SHOW, "ACTION": ACTION_SHOW, "RECENT": RECENT_SHOW}.get(key, SHOW) if c in v.columns]
+            show = list({"FOCUS": FOCUS_SHOW, "ACTION": ACTION_SHOW, "RECENT": RECENT_SHOW}.get(key, SHOW))
+            if mcfg.get("market") == "NSE" and "Adr" in show:
+                show.insert(show.index("Adr") + 1, "_circuit")
+            cols = [c for c in show if c in v.columns]
             edited[key] = st.data_editor(
-                v[cols].replace([np.inf, -np.inf], np.nan), column_config=cc, hide_index=True, use_container_width=True,
+                style_shortlist(v[cols].replace([np.inf, -np.inf], np.nan).reset_index(drop=True), cfg),
+                column_config=cc, hide_index=True, use_container_width=True,
                 disabled=[c for c in cols if c not in EDIT_COLS], key=f"sl_{mcfg['market']}_{key}_{sd}")
+            _copy_box(st, edited[key], mcfg, SETUPS[key], f"sl_copy_{key}")
     c1, c2 = st.columns([1, 3])
     with c1:
         if st.button("Save shortlist", type="primary", disabled=not can_save, key="sl_save"):
@@ -645,7 +722,7 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
             if s not in seen:
                 seen.add(s); syms.append(s)
         if syms:
-            st.text_area("Kept names, best rank first (for TradingView)",
+            st.text_area("All lists together — kept names, best rank first (for TradingView)",
                          ",".join(gp.tv_symbol(s, mcfg) for s in syms), height=70, key="sl_copy")
     st.markdown("---")
     render_why_not(st, base_df, cfg, mcfg, sb)
