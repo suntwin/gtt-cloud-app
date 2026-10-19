@@ -10,7 +10,7 @@ which talks to TradingView on the debug port 9222. TradingView must be open in d
 Settings (optional environment variables):
     TVMCP_DIR  folder of tradingview-mcp  (default C:\\Tools\\tradingview-mcp\\tradingview-mcp)
     NODE_EXE   node executable            (default: node on PATH, else C:\\Program Files\\nodejs\\node.exe)
-Supabase URL/key come from .streamlit/secrets.toml (same as the app).
+Supabase URL/key come from .streamlit/secrets.toml (same as the app). Standard library only - no pip installs.
 """
 import argparse
 import datetime as dt
@@ -46,6 +46,40 @@ def read_secrets():
     if not out["SUPABASE_URL"] or not out["SUPABASE_KEY"]:
         sys.exit("SUPABASE_URL / SUPABASE_KEY not found (.streamlit/secrets.toml).")
     return out
+
+
+class Rest:
+    """Tiny Supabase (PostgREST) client using only the standard library - no pip installs needed."""
+    def __init__(self, url, key):
+        self.base, self.key = url.rstrip("/") + "/rest/v1/", key
+
+    def _call(self, method, table, query="", body=None, prefer=None):
+        import urllib.request, urllib.error
+        h = {"apikey": self.key, "Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
+        if prefer:
+            h["Prefer"] = prefer
+        data = json.dumps(body, default=str).encode() if body is not None else None
+        req = urllib.request.Request(self.base + table + (("?" + query) if query else ""), data=data,
+                                     headers=h, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                txt = r.read().decode() or "null"
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"Supabase {method} {table}: {e.code} {e.read().decode()[:300]}") from None
+        return json.loads(txt) if txt.strip() else None
+
+    def upsert(self, table, rows, on_conflict):
+        return self._call("POST", table, f"on_conflict={on_conflict}", rows,
+                          "resolution=merge-duplicates,return=minimal")
+
+    def insert(self, table, row):
+        return self._call("POST", table, "", row, "return=minimal")
+
+    def select(self, table, cols):
+        return self._call("GET", table, f"select={cols}") or []
+
+    def delete(self, table, query):
+        return self._call("DELETE", table, query, None, "return=minimal")
 
 
 def node_exe():
@@ -110,21 +144,22 @@ def sync_once(sb):
     except Exception as e:
         log(f"FAILED: {e}")
         try:
-            sb.table("tv_alert_sync").insert({"n_alerts": 0, "ok": False, "error": str(e)[:500]}).execute()
+            sb.insert("tv_alert_sync", {"n_alerts": 0, "ok": False, "error": str(e)[:500]})
         except Exception as e2:
             log(f"(could not log the failure to Supabase: {e2})")
         return False
     rows = [to_row(a, now_iso) for a in alerts if a.get("alert_id") is not None]
     for i in range(0, len(rows), 200):
-        sb.table("tv_alerts").upsert(rows[i:i + 200], on_conflict="alert_id").execute()
+        sb.upsert("tv_alerts", rows[i:i + 200], "alert_id")
     keep = {r["alert_id"] for r in rows}
-    have = [r["alert_id"] for r in sb.table("tv_alerts").select("alert_id").execute().data]
+    have = [r["alert_id"] for r in sb.select("tv_alerts", "alert_id")]
     gone = [x for x in have if x not in keep]               # deleted (or expired) in TradingView
     for i in range(0, len(gone), 200):
-        sb.table("tv_alerts").delete().in_("alert_id", gone[i:i + 200]).execute()
-    sb.table("tv_alert_sync").insert({"n_alerts": len(rows), "ok": True}).execute()
+        sb.delete("tv_alerts", "alert_id=in.(" + ",".join(str(x) for x in gone[i:i + 200]) + ")")
+    sb.insert("tv_alert_sync", {"n_alerts": len(rows), "ok": True})
     cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).isoformat()
-    sb.table("tv_alert_sync").delete().lt("synced_at", cutoff).execute()
+    from urllib.parse import quote
+    sb.delete("tv_alert_sync", "synced_at=lt." + quote(cutoff))
     fired = sum(1 for r in rows if r["last_fired"])
     log(f"Synced {len(rows)} alerts ({fired} triggered), removed {len(gone)} that are gone from TradingView.")
     return True
@@ -134,9 +169,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--loop", type=float, default=0, help="minutes between syncs (0 = sync once and exit)")
     args = ap.parse_args()
-    from supabase import create_client
     s = read_secrets()
-    sb = create_client(s["SUPABASE_URL"], s["SUPABASE_KEY"])
+    sb = Rest(s["SUPABASE_URL"], s["SUPABASE_KEY"])
     ok = sync_once(sb)
     while args.loop > 0:
         time.sleep(args.loop * 60)
