@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-19c · Alert Management: 100-alert limit, A/B/C priority, suggested deletes"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-19d · Copy boxes refresh with the data (Alert Management, Shortlister)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -195,6 +195,15 @@ def _circuit_num(df):
     if "_circuit" in df.columns:
         df["_circuit"] = pd.to_numeric(df["_circuit"], errors="coerce")
     return df
+
+
+def copy_area(st, label, value, height=68, key=None):
+    """A text box to copy from that always shows the current value.
+    (A keyed st.text_area keeps its first value for the whole session, so lists went stale after a sync.)"""
+    if key:
+        st.session_state[key] = value
+        return st.text_area(label, height=height, key=key)
+    return st.text_area(label, value, height=height)
 
 
 def tv_symbol(sym, mcfg, exchange=None):

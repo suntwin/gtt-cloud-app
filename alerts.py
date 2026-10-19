@@ -330,6 +330,10 @@ def render_alerts_tab(st, sb, base_df, mcfg):
     view = st.radio("Status", ["Waiting", "Triggered", "All"], horizontal=True, key=f"al_view_{mkt}")
     v = t[~t["_trig"]] if view == "Waiting" else t[t["_trig"]] if view == "Triggered" else t
     cols = [c for c in SHOW if c in v.columns]
+    v = v.copy()
+    for c in ("Alert at", "Last", "To alert %", "Set d ago", "Expires in d"):
+        if c in v.columns:
+            v[c] = pd.to_numeric(v[c], errors="coerce")
     st.dataframe(style_alerts(v[cols].reset_index(drop=True), v["_adr"].tolist()), hide_index=True,
                  use_container_width=True,
                  column_config={"To alert %": st.column_config.NumberColumn(help="Line price vs the last close (green = within 0.5 / 1 / 2 ADR)"),
@@ -349,7 +353,7 @@ def render_alerts_tab(st, sb, base_df, mcfg):
             if not lists:
                 st.caption("Open the Shortlister tab first (it builds tonight's lists).")
             elif missing:
-                st.text_area("Set these in TradingView", ",".join(gp.tv_symbol(s, mcfg) for s in missing), height=68,
+                gp.copy_area(st, "Set these in TradingView", ",".join(gp.tv_symbol(s, mcfg) for s in missing), height=68,
                              key=f"al_missing_{mkt}")
             else:
                 st.caption("Every Focus name has an alert. ✓")
@@ -357,27 +361,27 @@ def render_alerts_tab(st, sb, base_df, mcfg):
             st.markdown("**Waiting alerts on names that are on no list today**")
             if lists and stale:
                 st.caption("Still a valid plan (holding, your own idea)? Keep it. Otherwise delete it in TradingView.")
-                st.text_area("Review / delete", ",".join(gp.tv_symbol(s, mcfg) for s in stale), height=68,
+                gp.copy_area(st, "Review / delete", ",".join(gp.tv_symbol(s, mcfg) for s in stale), height=68,
                              key=f"al_stale_{mkt}")
             elif lists:
                 st.caption("None — every waiting alert is on tonight's lists. ✓")
     cut = t[t["Priority"].isin(["Delete · triggered", "C · cut?"])]
     if not cut.empty:
-        st.text_area(f"Suggested deletes in TradingView ({len(cut)}: triggered + on no list)",
+        gp.copy_area(st, f"Suggested deletes in TradingView ({len(cut)}: triggered + on no list)",
                      ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
                                             for tv, m in zip(cut["_tv"], cut["_mkt"]))),
                      height=68, key=f"al_cut_{mkt}_{scope}")
     st.markdown("**Grab the alerts in this view** (the ranges you've marked to focus on)")
     syms = ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
                                   for tv, m in zip(v["_tv"], v["_mkt"])))
-    st.text_area(f"{len(v)} alerts · {scope} · {view} — symbols for TradingView",
+    gp.copy_area(st, f"{len(v)} alerts · {scope} · {view} — symbols for TradingView",
                  syms, height=68, key=f"al_copy_{mkt}_{scope}_{view}")
     lines = [f"{r['Symbol']} | {r['TF']} | {r['Line']} | alert {r['Alert at']:g} | last "
              + (f"{r['Last']:g}" if np.isfinite(_num(r['Last'])) else "-")
              + (f" | {r['To alert %']:+.1f}%" if np.isfinite(_num(r['To alert %'])) else "")
              + f" | {r['Status']}" + (f" | {r['Lists']}" if r['Lists'] else "")
              for r in v.to_dict("records") if np.isfinite(_num(r["Alert at"]))]
-    st.text_area("Same alerts with their levels — paste to Claude or your notes", "\n".join(lines),
+    gp.copy_area(st, "Same alerts with their levels — paste to Claude or your notes", "\n".join(lines),
                  height=150, key=f"al_lines_{mkt}_{scope}_{view}")
     out = v[[c for c in SHOW if c in v.columns]].copy()
     out.insert(1, "TradingView", v["_tv"].values)

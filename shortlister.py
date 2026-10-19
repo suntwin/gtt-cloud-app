@@ -612,7 +612,7 @@ def _copy_box(st, e, mcfg, label, key):
         return
     k["_r"] = pd.to_numeric(k["Rank"], errors="coerce") if "Rank" in k.columns else np.nan
     syms = k.sort_values("_r", na_position="last")["Symbol"].tolist()
-    st.text_area(f"{label} — {len(syms)} kept names, best rank first (for TradingView)",
+    gp.copy_area(st, f"{label} — {len(syms)} kept names, best rank first (for TradingView)",
                  ",".join(gp.tv_symbol(x, mcfg) for x in syms), height=68, key=key)
 
 
@@ -732,7 +732,7 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
             if s not in seen:
                 seen.add(s); syms.append(s)
         if syms:
-            st.text_area("All lists together — kept names, best rank first (for TradingView)",
+            gp.copy_area(st, "All lists together — kept names, best rank first (for TradingView)",
                          ",".join(gp.tv_symbol(s, mcfg) for s in syms), height=70, key="sl_copy")
     st.markdown("---")
     render_why_not(st, base_df, cfg, mcfg, sb)
