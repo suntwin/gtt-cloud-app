@@ -34,11 +34,18 @@ def _num(x):
 
 
 def _ts(x):
+    """Timestamp (UTC) or None for blanks / NaN / junk."""
+    if x is None or (isinstance(x, float) and not math.isfinite(x)) or (isinstance(x, str) and not x.strip()):
+        return None
     try:
         t = pd.to_datetime(x, utc=True)
         return None if pd.isna(t) else t
     except Exception:
         return None
+
+
+def _day(t):
+    return t.strftime("%d-%b") if t is not None else "?"
 
 
 # ── data ───────────────────────────────────────────────────────────────────
@@ -53,7 +60,9 @@ def load_syncs(sb, n=5):
 
 def is_triggered(r):
     """A one-shot alert that has fired is done. Repeating alerts keep waiting."""
-    return bool(r.get("last_fired")) and str(r.get("frequency") or "on_first_fire") == "on_first_fire"
+    freq = r.get("frequency")
+    freq = freq if isinstance(freq, str) and freq else "on_first_fire"
+    return _ts(r.get("last_fired")) is not None and freq == "on_first_fire"
 
 
 def waiting_tickers(sb, market):
@@ -164,12 +173,12 @@ def build_table(df, base_df, lists, market_filter=None):
         lp = _num(last.get(tk)) if r.get("market") in ("NSE", "USA") else np.nan
         trig = is_triggered(r)
         fired, cre, exp = _ts(r.get("last_fired")), _ts(r.get("created")), _ts(r.get("expiration"))
-        tool = str(r.get("line_tool") or "")
+        tool = r.get("line_tool") if isinstance(r.get("line_tool"), str) else ""
         line = {"HorzLine": "Horizontal", "TrendLine": "Trendline ≈"}.get(tool, tool or str(r.get("alert_type") or "Price").title())
         if trig:
-            status = f"Triggered {fired:%d-%b}"
+            status = f"Triggered {_day(fired)}"
         elif fired is not None:
-            status = f"Waiting (fired {fired:%d-%b})"
+            status = f"Waiting (fired {_day(fired)})"
         else:
             status = "Waiting"
         out.append({
@@ -180,7 +189,7 @@ def build_table(df, base_df, lists, market_filter=None):
             "Status": status,
             "Set d ago": (now - cre).days if cre is not None else np.nan,
             "Expires in d": (exp - now).days if exp is not None else np.nan,
-            "Lists": " · ".join(on.get(tk, [])), "Note": r.get("message") or "",
+            "Lists": " · ".join(on.get(tk, [])), "Note": r.get("message") if isinstance(r.get("message"), str) else "",
             "_trig": trig, "_adr": _num(adr.get(tk)), "_fired": fired, "_mkt": r.get("market"),
             "_tv": r.get("symbol"), "_id": r.get("alert_id"),
         })
@@ -259,7 +268,7 @@ def render_alerts_tab(st, sb, base_df, mcfg):
             ok_last = next((s for s in syncs if s.get("ok")), None)
             if not s0.get("ok"):
                 st.warning(f"Last sync failed {when}: {s0.get('error')}"
-                           + (f" — showing the sync from {_ts(ok_last['synced_at']):%d-%b %H:%M} UTC" if ok_last else ""))
+                           + (f" — showing the sync from {_day(_ts(ok_last['synced_at']))}" if ok_last else ""))
             elif np.isfinite(age_h) and age_h > 24:
                 st.warning(f"Last synced {when} ({age_h / 24:.0f} days ago). Run sync_tv_alerts.bat after setting alerts.")
             else:
