@@ -275,8 +275,11 @@ def render_alerts_tab(st, sb, base_df, mcfg):
                 st.caption(f"Last synced **{when}** · {s0.get('n_alerts')} alerts in TradingView")
 
     lists = st.session_state.get(f"sl_lists_{mkt}", {})
-    scope = st.radio("Show", [mkt, "Crypto", "All markets"], horizontal=True, key=f"al_scope_{mkt}")
-    mf = {mkt: [mkt], "Crypto": ["CRYPTO"], "All markets": None}[scope]
+    opts = [mkt] + [m for m in ("NSE", "USA") if m != mkt] + ["Crypto", "All markets"]   # this page's market first
+    scope = st.radio("Show", opts, horizontal=True, key=f"al_scope_{mkt}")
+    mf = {"NSE": ["NSE"], "USA": ["USA"], "Crypto": ["CRYPTO"], "All markets": None}[scope]
+    if scope != mkt:
+        base_df, lists = None, {}          # Last / lists come from this page's scan only
     t = build_table(df, base_df, lists, mf)
     if t.empty:
         st.info("No alerts here."); return
