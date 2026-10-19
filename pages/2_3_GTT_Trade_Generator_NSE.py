@@ -566,7 +566,7 @@ def main():
             else:
                 st.error("Failed to retrieve base 1M scan data."); st.session_state.gtt_base_df = None
 
-    tab1, tab7, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Shortlister", "Alerts", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
+    tab1, tab7, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Shortlister", "Alert Management", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 1: SCANNER (NO SCORING — just computed columns + filters)

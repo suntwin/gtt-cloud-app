@@ -22,7 +22,9 @@ except Exception:  # pragma: no cover
 SESSION_MIN = {"NSE": 375, "USA": 390, "CRYPTO": 1440}       # minutes per session, for counting intraday bars
 LIST_LABELS = {"FOCUS": "Focus", "ACTION": "Action", "RECENT": "BO→tight", "3WTC": "3WTC", "HTF": "HTF"}
 TZ = {"NSE": "Asia/Kolkata", "USA": "America/New_York", "CRYPTO": "UTC"}
-SHOW = ["Symbol", "TF", "Line", "Alert at", "Last", "To alert %", "Status", "Set d ago", "Expires in d", "Lists", "Note"]
+TV_LIMIT = 100                      # TradingView plan: max active alerts (all markets together)
+FOCUS_TARGET = 15                   # suggested waiting alerts per market: only the best breakout candidates
+SHOW = ["Priority", "Symbol", "TF", "Line", "Alert at", "Last", "To alert %", "Status", "Set d ago", "Expires in d", "Lists", "Note"]
 
 
 def _num(x):
@@ -197,7 +199,22 @@ def build_table(df, base_df, lists, market_filter=None):
     if t.empty:
         return t
     t["_d"] = pd.to_numeric(t["To alert %"], errors="coerce").abs()
-    w = t[~t["_trig"]].sort_values(["_d", "Symbol"], na_position="last")
+    t["_dadr"] = [d / a if np.isfinite(_num(a)) and _num(a) else d / 3.0 for d, a in zip(t["_d"], t["_adr"])]
+    pr, rank = [], []
+    for trig, ls, da in zip(t["_trig"], t["Lists"], t["_dadr"]):
+        if trig:
+            p = ("Delete · triggered", 9)
+        elif not lists:
+            p = ("—", 5)
+        elif "Focus" in ls and (not np.isfinite(da) or da <= 1):
+            p = ("A · keep", 1)
+        elif ls:
+            p = ("B · keep", 2) if "Focus" in ls or (np.isfinite(da) and da <= 2) else ("B · far", 3)
+        else:
+            p = ("C · cut?", 4)
+        pr.append(p[0]); rank.append(p[1])
+    t["Priority"], t["_rank"] = pr, rank
+    w = t[~t["_trig"]].sort_values(["_rank", "_d", "Symbol"], na_position="last")
     f = t[t["_trig"]].sort_values("_fired", ascending=False)
     return pd.concat([w, f], ignore_index=True)
 
@@ -235,7 +252,13 @@ def style_alerts(v, adr):
 
     if "To alert %" in v.columns:
         sty = sty.apply(dist, subset=["To alert %"])
-    for c, f in [("Status", status), ("Expires in d", expiry), ("Lists", lists)]:
+    def prio(x):
+        s = str(x)
+        return (_css("#28a745", "white", True) if s.startswith("A") else _css("#d4edda") if s == "B · keep" else
+                _css("#fff3cd", "#664d03") if s in ("B · far", "C · cut?") else
+                _css("#f8d7da", "#721c24") if s.startswith("Delete") else "")
+
+    for c, f in [("Priority", prio), ("Status", status), ("Expires in d", expiry), ("Lists", lists)]:
         if c in v.columns:
             sty = sty.map(f, subset=[c])
     return sty
@@ -244,7 +267,7 @@ def style_alerts(v, adr):
 # ── tab ───────────────────────────────────────────────────────────────────
 def render_alerts_tab(st, sb, base_df, mcfg):
     mkt = mcfg.get("market")
-    st.subheader("TradingView alerts")
+    st.subheader("Alert management")
     if sb is None:
         st.info("Supabase isn't connected."); return
     c1, c2 = st.columns([4, 1])
@@ -274,6 +297,19 @@ def render_alerts_tab(st, sb, base_df, mcfg):
             else:
                 st.caption(f"Last synced **{when}** · {s0.get('n_alerts')} alerts in TradingView")
 
+    total = len(df)
+    by_m = df["market"].value_counts().to_dict() if total and "market" in df.columns else {}
+    n_trig_all = sum(1 for r in df.to_dict("records") if is_triggered(r)) if total else 0
+    st.progress(min(total / TV_LIMIT, 1.0),
+                text=f"{total} / {TV_LIMIT} alerts used (TradingView limit, all markets) · "
+                     + " · ".join(f"{k} {v}" for k, v in sorted(by_m.items()))
+                     + (f" · {n_trig_all} already triggered — delete them" if n_trig_all else ""))
+    if total >= 0.8 * TV_LIMIT:
+        st.warning(f"{total} of {TV_LIMIT} alerts used. Delete triggered and C-priority alerts before adding new ones.")
+    st.info(f"**Fewer alerts, better focus.** The limit is {TV_LIMIT}, but aim for about {FOCUS_TARGET} waiting per market: "
+            "only names with the highest odds of breaking out — on Focus, within 1 ADR of the pivot, volume already "
+            "came in. Priority **A** = on Focus and within 1 ADR (keep) · **B** = on a list (keep if close) · "
+            "**C** = on no list today (cut unless you hold it) · **Delete** = already triggered.")
     lists = st.session_state.get(f"sl_lists_{mkt}", {})
     opts = [mkt] + [m for m in ("NSE", "USA") if m != mkt] + ["Crypto", "All markets"]   # this page's market first
     scope = st.radio("Show", opts, horizontal=True, key=f"al_scope_{mkt}")
@@ -286,6 +322,9 @@ def render_alerts_tab(st, sb, base_df, mcfg):
     n_w, n_t = int((~t["_trig"]).sum()), int(t["_trig"].sum())
     near = int((pd.to_numeric(t["To alert %"], errors="coerce").abs() <= 2).sum())
     exp5 = int((pd.to_numeric(t["Expires in d"], errors="coerce") <= 5).sum())
+    if scope in ("NSE", "USA") and n_w > FOCUS_TARGET:
+        st.warning(f"{n_w} waiting {scope} alerts — about {n_w - FOCUS_TARGET} more than the ~{FOCUS_TARGET} that keep you focused. "
+                   "Start cutting from the bottom of the table (C, then B · far).")
     st.caption(f"**{n_w} waiting** · {n_t} triggered (delete them in TradingView) · {near} within 2% of the close"
                + (f" · ⚠️ {exp5} expire within 5 days" if exp5 else ""))
     view = st.radio("Status", ["Waiting", "Triggered", "All"], horizontal=True, key=f"al_view_{mkt}")
@@ -322,6 +361,12 @@ def render_alerts_tab(st, sb, base_df, mcfg):
                              key=f"al_stale_{mkt}")
             elif lists:
                 st.caption("None — every waiting alert is on tonight's lists. ✓")
+    cut = t[t["Priority"].isin(["Delete · triggered", "C · cut?"])]
+    if not cut.empty:
+        st.text_area(f"Suggested deletes in TradingView ({len(cut)}: triggered + on no list)",
+                     ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
+                                            for tv, m in zip(cut["_tv"], cut["_mkt"]))),
+                     height=68, key=f"al_cut_{mkt}_{scope}")
     w = t[~t["_trig"]]
     if not w.empty:
         st.text_area("All waiting alerts (TradingView watchlist import)",
