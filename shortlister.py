@@ -657,6 +657,16 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
     lists = {"ACTION": build_action(base_df, cfg, sd, hist, holding, tags, saved),
              "RECENT": build_recent(base_df, cfg, sd, hist, holding, tags, watch_dates, saved), **lists}
     lists = {"FOCUS": build_focus(base_df, cfg, sd, lists, hist, holding, tags, watch_dates, saved), **lists}
+    if sb is not None:                       # a waiting TradingView alert (synced by sync_tv_alerts.py) ticks "Alert set"
+        try:
+            import alerts as _al
+            tv = _al.waiting_tickers(sb, mcfg.get("market"))
+            for k, v in lists.items():
+                if not v.empty and "Alert set" in v.columns:
+                    v["Alert set"] = v["Alert set"].astype(bool) | v["Symbol"].astype(str).str.upper().isin(tv)
+        except Exception:
+            pass
+    st.session_state[f"sl_lists_{mcfg.get('market')}"] = {k: v["Symbol"].tolist() for k, v in lists.items() if not v.empty}
     if "W_TightCloses_10w" not in base_df.columns or base_df["W_TightCloses_10w"].isna().all():
         st.warning("Weekly scan data is missing, so the 3-Week Tight Closing list can't be built today.")
     st.caption(f"Session **{sd}** · {len(lists['FOCUS'])} on Focus · {len(lists['ACTION'])} big-volume breakouts · {len(lists['RECENT'])} breakout → tight · {len(lists['3WTC'])} on 3-Week Tight Closing · {len(lists['HTF'])} on High Tight Flag"
