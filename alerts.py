@@ -325,4 +325,6 @@ def render_alerts_tab(st, sb, base_df, mcfg):
     w = t[~t["_trig"]]
     if not w.empty:
         st.text_area("All waiting alerts (TradingView watchlist import)",
-                     ",".join(dict.fromkeys(str(x) for x in w["_tv"])), height=68, key=f"al_copy_{mkt}_{scope}")
+                     ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
+                                            for tv, m in zip(w["_tv"], w["_mkt"]))),
+                     height=68, key=f"al_copy_{mkt}_{scope}")
