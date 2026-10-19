@@ -367,9 +367,21 @@ def render_alerts_tab(st, sb, base_df, mcfg):
                      ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
                                             for tv, m in zip(cut["_tv"], cut["_mkt"]))),
                      height=68, key=f"al_cut_{mkt}_{scope}")
-    w = t[~t["_trig"]]
-    if not w.empty:
-        st.text_area("All waiting alerts (TradingView watchlist import)",
-                     ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
-                                            for tv, m in zip(w["_tv"], w["_mkt"]))),
-                     height=68, key=f"al_copy_{mkt}_{scope}")
+    st.markdown("**Grab the alerts in this view** (the ranges you've marked to focus on)")
+    syms = ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
+                                  for tv, m in zip(v["_tv"], v["_mkt"])))
+    st.text_area(f"{len(v)} alerts · {scope} · {view} — symbols for TradingView",
+                 syms, height=68, key=f"al_copy_{mkt}_{scope}_{view}")
+    lines = [f"{r['Symbol']} | {r['TF']} | {r['Line']} | alert {r['Alert at']:g} | last "
+             + (f"{r['Last']:g}" if np.isfinite(_num(r['Last'])) else "-")
+             + (f" | {r['To alert %']:+.1f}%" if np.isfinite(_num(r['To alert %'])) else "")
+             + f" | {r['Status']}" + (f" | {r['Lists']}" if r['Lists'] else "")
+             for r in v.to_dict("records") if np.isfinite(_num(r["Alert at"]))]
+    st.text_area("Same alerts with their levels — paste to Claude or your notes", "\n".join(lines),
+                 height=150, key=f"al_lines_{mkt}_{scope}_{view}")
+    out = v[[c for c in SHOW if c in v.columns]].copy()
+    out.insert(1, "TradingView", v["_tv"].values)
+    out["Alert ID"] = v["_id"].values
+    st.download_button(f"Download {len(v)} alerts (CSV)", out.to_csv(index=False).encode(),
+                       file_name=f"tv_alerts_{scope.replace(' ', '_').lower()}_{view.lower()}_{dt.date.today()}.csv",
+                       mime="text/csv", key=f"al_dl_{mkt}_{scope}_{view}")
