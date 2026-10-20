@@ -171,8 +171,10 @@ def build_table(df, base_df, lists, market_filter=None):
         if market_filter and r.get("market") not in market_filter:
             continue
         tk = str(r.get("ticker") or "").upper()
+        if r.get("market") == "CRYPTO":
+            tk = tk[:-2] if tk.endswith(".P") else tk          # INJUSDT.P (perp alert) ↔ INJUSDT (scan / flags)
         lvl = line_now(r, now)
-        lp = _num(last.get(tk)) if r.get("market") in ("NSE", "USA") else np.nan
+        lp = _num(last.get(tk))
         trig = is_triggered(r)
         fired, cre, exp = _ts(r.get("last_fired")), _ts(r.get("created")), _ts(r.get("expiration"))
         tool = r.get("line_tool") if isinstance(r.get("line_tool"), str) else ""
@@ -184,7 +186,7 @@ def build_table(df, base_df, lists, market_filter=None):
         else:
             status = "Waiting"
         out.append({
-            "Symbol": tk if r.get("market") in ("NSE", "USA") else str(r.get("symbol")),
+            "Symbol": tk,
             "TF": _tf_label(r.get("resolution")), "Line": line,
             "Alert at": round(lvl, 4 if np.isfinite(lvl) and abs(lvl) < 10 else 2) if np.isfinite(lvl) else np.nan,
             "Last": lp, "To alert %": round((lvl / lp - 1) * 100, 1) if np.isfinite(lp) and lp and np.isfinite(lvl) else np.nan,
@@ -311,10 +313,13 @@ def render_alerts_tab(st, sb, base_df, mcfg):
             "already came in. Priority **A** = Picked and within 1 ADR (keep) · **B** = Flagged (keep if close) · "
             "**C** = on no list today (cut unless you hold it) · **Delete** = already triggered.")
     lists = st.session_state.get(f"sl_lists_{mkt}", {})
-    opts = [mkt] + [m for m in ("NSE", "USA") if m != mkt] + ["Crypto", "All markets"]   # this page's market first
+    crypto = str(mkt).startswith("CRYPTO")
+    own = "Crypto" if crypto else mkt                       # the scope that matches this page's scan
+    opts = ["Crypto", "NSE", "USA", "All markets"] if crypto else \
+        [mkt] + [m for m in ("NSE", "USA") if m != mkt] + ["Crypto", "All markets"]   # this page's market first
     scope = st.radio("Show", opts, horizontal=True, key=f"al_scope_{mkt}")
     mf = {"NSE": ["NSE"], "USA": ["USA"], "Crypto": ["CRYPTO"], "All markets": None}[scope]
-    if scope != mkt:
+    if scope != own:
         base_df, lists = None, {}          # Last / lists come from this page's scan only
     t = build_table(df, base_df, lists, mf)
     if t.empty:
@@ -322,7 +327,7 @@ def render_alerts_tab(st, sb, base_df, mcfg):
     n_w, n_t = int((~t["_trig"]).sum()), int(t["_trig"].sum())
     near = int((pd.to_numeric(t["To alert %"], errors="coerce").abs() <= 2).sum())
     exp5 = int((pd.to_numeric(t["Expires in d"], errors="coerce") <= 5).sum())
-    if scope in ("NSE", "USA") and n_w > FOCUS_TARGET:
+    if scope == own and n_w > FOCUS_TARGET:
         st.warning(f"{n_w} waiting {scope} alerts — about {n_w - FOCUS_TARGET} more than the ~{FOCUS_TARGET} that keep you focused. "
                    "Start cutting from the bottom of the table (C, then B · far).")
     st.caption(f"**{n_w} waiting** · {n_t} triggered (delete them in TradingView) · {near} within 2% of the close"
@@ -335,7 +340,7 @@ def render_alerts_tab(st, sb, base_df, mcfg):
         if c in v.columns:
             v[c] = pd.to_numeric(v[c], errors="coerce")
     vv = v[cols].reset_index(drop=True)
-    extra = gp.live_extra(st.session_state.get("gtt_base_df"), v["Symbol"]) if scope == mkt else None
+    extra = gp.live_extra(base_df, v["Symbol"]) if scope == own else None
     if extra is not None:
         extra = extra.loc[:, [c for c in extra.columns if extra[c].notna().any()]]
     gp.card_grid(st, vv, key=f"al_grid_{mkt}_{scope}_{view}", sty=style_alerts(vv, v["_adr"].tolist()), extra=extra,
@@ -343,7 +348,7 @@ def render_alerts_tab(st, sb, base_df, mcfg):
     st.caption("Click a ticker for all its data. Trendline prices are estimated for today's bar. "
                "Last / To alert % come from today's scan (generate data first).")
 
-    if scope == mkt:
+    if scope == own:
         waiting = set(t.loc[~t["_trig"], "Symbol"].astype(str).str.upper())
         focus = [str(s).upper() for s in lists.get("FOCUS", [])]
         missing = [s for s in focus if s not in waiting]

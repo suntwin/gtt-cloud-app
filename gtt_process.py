@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20m · Compact grid columns (fit to contents, wrapped headers)"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20n · Crypto Focus page (daily + hourly), crypto alerts"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2599,9 +2599,11 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
         kind = edit.get(c)
         if kind == "bool":
             kw.update(editable=True, cellDataType="boolean", cellRenderer="agCheckboxCellRenderer",
-                      cellEditor="agCheckboxCellEditor", pinned="left", width=58, maxWidth=70)
+                      cellEditor="agCheckboxCellEditor", width=72 if c == "Unflag" else 58, maxWidth=80)
+            if c in ("Flag", "Pick"):
+                kw["pinned"] = "left"
         elif kind == "number":
-            kw.update(editable=True, cellEditor="agNumberCellEditor", width=62, maxWidth=80)
+            kw.update(editable=True, cellEditor="agNumberCellEditor", width=68, maxWidth=80)
         elif kind == "text":
             kw.update(editable=True, cellEditor="agTextCellEditor", minWidth=160)
         gb.configure_column(c, **kw)
