@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20h · Sector Focus fast (fragment + form + cached prep), setup/entry/pivot/flags commentary, Shortlister retired"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20i · Click a ticker → white card with all attributes (Sector Focus, Flagged, Alerts, sector breakouts)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1877,8 +1877,9 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
                                                    help="✓ Saved = on your watchlist · ✓ Saved (manual) = on your watchlist but no evening "
                                                         "breakout record (saved by hand, or before the history starts) · Skipped = recorded in "
                                                         "the batch but left on Skip · Removed = saved once, removed since")
-        st.dataframe(sty, hide_index=True, use_container_width=False, column_config=cc)
-        render_stock_card(st, sb, mcfg, base_df, v["Symbol"], key=f"sec_card_{mcfg.get('market')}_{g}")
+        card_grid(st, v, key=f"sec_grid_{mcfg.get('market')}_{g}", sty=sty, extra=live_extra(base_df, v["Symbol"]),
+                  labels={**_LABELS, "Saved?": "Saved?"}, height=min(32 * len(v) + 60, 480))
+        st.caption("Click a ticker for all its data.")
         st.code(",".join(tv_symbol(x, mcfg) for x in lst["Symbol"]), language=None)
     if not heading:      # shown inside an expander already — no nested expanders
         opts = list(t[group])
@@ -2483,7 +2484,7 @@ function(params){
   let rows = '';
   params.api.getColumns().forEach(function(c){
     const cd = c.getColDef(); const f = cd.field;
-    if(!f || skip.indexOf(f) >= 0) return;
+    if(!f || skip.indexOf(f) >= 0 || f.indexOf('__') === 0) return;
     let v = params.data[f];
     if(v === null || v === undefined || v === '' || (typeof v === 'number' && isNaN(v))) return;
     if(typeof v === 'number') v = Math.round(v * 100) / 100;
@@ -2501,9 +2502,96 @@ function(params){
 
 
 def row_card_js():
-    """AgGrid onCellClicked: tapping a Symbol cell opens a card with every visible value in that row (phone-friendly)."""
+    """AgGrid onCellClicked: tapping a Symbol cell opens a card with every value in that row (phone-friendly)."""
     from st_aggrid import JsCode
     return JsCode(ROW_CARD_JS)
+
+
+# cellStyle that reads the per-cell CSS computed by a pandas Styler (column '__s_<field>')
+_CSS_FROM_DATA = """function(p){const s=p.data?p.data['__s_'+p.colDef.field]:null;if(!s)return null;const o={};
+s.split(';').forEach(function(kv){const i=kv.indexOf(':');if(i<1)return;const k=kv.slice(0,i).trim().replace(/-([a-z])/g,
+function(m,c){return c.toUpperCase();});o[k]=kv.slice(i+1).trim();});return o;}"""
+
+
+def _styler_css(sty):
+    """{(row, col): 'css'} from a pandas Styler (its computed per-cell styles)."""
+    try:
+        sty._compute()
+        return {k: ";".join(f"{a}:{b}" for a, b in v) for k, v in sty.ctx.items() if v}
+    except Exception:
+        return {}
+
+
+def live_extra(base_df, symbols):
+    """All of today's scan attributes for the given tickers (same order), for card_grid's `extra`."""
+    syms = [str(x).upper().split(":")[-1] for x in symbols]
+    if base_df is None or getattr(base_df, "empty", True) or "Symbol" not in base_df.columns:
+        return pd.DataFrame(index=range(len(syms)))
+    b = add_derived(base_df).drop_duplicates("Symbol")
+    b = b.assign(_k=b["Symbol"].astype(str).str.upper()).set_index("_k")
+    return b.reindex(syms).reset_index(drop=True)
+
+
+def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, height=420, widths=None, fmt=None):
+    """AgGrid table where clicking a ticker opens the white card with ALL its attributes.
+
+    view   visible columns (in order) · sty: optional pandas Styler of `view` (its colours are reused)
+    extra  more attributes per row (same row order), hidden in the grid but shown in the card
+    edit   {column: "bool" | "number" | "text"} editable columns; then the grid has an Update button and the
+           edited frame is returned, else None
+    """
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
+    labels, edit, widths, fmt = labels or {}, edit or {}, widths or {}, fmt or {}
+    vis = view.reset_index(drop=True).copy()
+    data = vis.copy()
+    for c in data.columns:                                   # round numbers for display (the card rounds too)
+        if c not in edit and pd.api.types.is_float_dtype(data[c]):
+            data[c] = data[c].round(fmt.get(c, 2))
+    css = _styler_css(sty) if sty is not None else {}
+    for (i, j), v in css.items():
+        if i < len(vis) and j < len(vis.columns):
+            data.loc[i, "__s_" + str(vis.columns[j])] = v
+    hidden = []
+    if extra is not None and not extra.empty:
+        ex = extra.reset_index(drop=True)
+        for c in ex.columns:
+            if c not in data.columns and not str(c).startswith("__"):
+                data[c] = ex[c].values
+                hidden.append(c)
+    data = _grid_safe(data)
+    gb = GridOptionsBuilder.from_dataframe(data)
+    gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=55, flex=0)
+    gb.configure_grid_options(enableBrowserTooltips=True, onCellClicked=row_card_js(), rowHeight=30,
+                              suppressRowClickSelection=True)
+    style_js = JsCode(_CSS_FROM_DATA)
+    for c in data.columns:
+        if str(c).startswith("__s_") or c in hidden:
+            gb.configure_column(c, hide=True)
+            continue
+        kw = {"headerName": labels.get(c, c), "headerTooltip": labels.get(c, c)}
+        if c in widths:
+            kw["minWidth"] = widths[c]
+        if "__s_" + str(c) in data.columns:
+            kw["cellStyle"] = style_js
+        if c == "Symbol":
+            kw.update(pinned="left", cellStyle={"fontWeight": "bold", "textDecoration": "underline", "cursor": "pointer"},
+                      headerTooltip="Click a ticker to see all its data")
+        kind = edit.get(c)
+        if kind == "bool":
+            kw.update(editable=True, cellDataType="boolean", cellRenderer="agCheckboxCellRenderer",
+                      cellEditor="agCheckboxCellEditor", pinned="left", maxWidth=80)
+        elif kind == "number":
+            kw.update(editable=True, cellEditor="agNumberCellEditor", maxWidth=80)
+        elif kind == "text":
+            kw.update(editable=True, cellEditor="agTextCellEditor", minWidth=160)
+        gb.configure_column(c, **kw)
+    resp = AgGrid(data, gridOptions=gb.build(), height=height, width="100%", key=key, allow_unsafe_jscode=True,
+                  update_mode=GridUpdateMode.MANUAL if edit else GridUpdateMode.NO_UPDATE,
+                  data_return_mode=DataReturnMode.AS_INPUT)
+    if not edit:
+        return None
+    out = resp["data"] if resp is not None and resp.get("data") is not None else None
+    return pd.DataFrame(out) if out is not None else None
 
 
 def _tomorrow_grid(view, cfg, key):

@@ -55,6 +55,28 @@ def _num(x):
         return np.nan
 
 
+LABELS = {"Flag": "⚑", "ADR": "🖍 ADR", "Ti65": "🖍 Ti65", "Rel tight": "🖍 Rel tight", "ADRs from 10w": "🖍 Rel Wk Dist",
+          "R1": "R1 Liquid", "R2": "R2 Volume", "R3": "R3 Sector", "R4": "R4 ADR", "R5": "R5 Pivot", "R6": "R6 Tight",
+          "R7": "R7 10MA", "R8": "R8 Weekly", "Entry": "Entry plan"}
+CARD_NAMES = {"Last": "Last", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol ratio", "dvol": "Day vol",
+              "_nr4": "NR4 %", "_nr4_previous": "NR4 prev %", "_rel_tightness_prev": "Rel tight prev",
+              "off_high_21": "Off 1M hi %", "off_high_126": "Off 6M hi %", "_10madist": "10MA %", "_20madist": "20MA %",
+              "W_Dist10wMA": "Wk 10wMA %", "W_CloseChg_Pct": "Wk close chg %", "W_TightCloses_10w": "Wk tight closes",
+              "W_InsideBars": "Wk inside bars", "W_PctOf10wkHigh": "Wk % of 10w high", "Avg_RS": "Avg RS",
+              "RS_1M": "RS 1M", "RS_3M": "RS 3M", "RS_6M": "RS 6M", "Sector_Percentile": "Sector %ile",
+              "_days_since_bo": "Days since BO", "_bo_dollar_vol_mln": "BO value", "_avg_vol_float_ratio": "Vol / float",
+              "Industry": "Industry", "Sector": "Sector", "Entry": "Entry plan", "Pivot": "Pivot", "Stop guide": "Stop guide"}
+
+
+def _card_extra(df, shown):
+    """Every other attribute of each row for the click card (friendly names, skips internals and empties)."""
+    keep = [c for c in df.columns if c not in shown and c not in ("Flag", "_bo_age", "_bo_chg", "Scan_Count", "Missing_Weekly",
+                                                                  "Data_Date", "_off21_adr", "_ma10_adr")]
+    ex = df[keep].copy()
+    ex = ex.loc[:, [c for c in ex.columns if ex[c].notna().any()]]
+    return ex.rename(columns={c: CARD_NAMES.get(c, c) for c in ex.columns})
+
+
 def cfg_for(mcfg):
     return {**CFG, **MARKET_CFG.get(mcfg.get("market"), {})}
 
@@ -503,21 +525,21 @@ def _render_sector_focus(st, sb, base_df, mcfg):
         st.info("Nothing in this sector at that score."); return
     cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
     ver = st.session_state.get(f"sf_ver_{mkt}", 0)
-    with st.form(f"sf_form_{mkt}_{g}", border=False):      # ticking doesn't reload anything until Save
-        ed = st.data_editor(style(part[cols].reset_index(drop=True), cfg["min_liq"]), hide_index=True, use_container_width=True,
-                            column_config=_colcfg(st, cfg), disabled=[c for c in cols if c != "Flag"],
-                            key=f"sf_ed_{mkt}_{g}_{sd}_{ver}", height=min(36 * len(part) + 40, 560))
-        save = st.form_submit_button(f"Save flags for {g}", type="primary")
-    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). Tick ⚑, then Save.")
-    gp.render_stock_card(st, sb, mcfg, base_df, part["Symbol"], key=f"sf_card_{mkt}_{g}")
-    if save:
-        now = set(ed.loc[ed["Flag"] == True, "Symbol"])  # noqa: E712
+    pv = part.reset_index(drop=True)
+    ed = gp.card_grid(st, pv[cols], key=f"sf_grid_{mkt}_{g}_{sd}_{ver}", sty=style(pv[cols], cfg["min_liq"]),
+                      extra=_card_extra(pv, cols), labels=LABELS, edit={"Flag": "bool"},
+                      height=min(32 * len(pv) + 70, 560), widths={"Setup": 170, "Flags": 200, "Source": 110})
+    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). "
+               "**Click a ticker** for all its data · tick ⚑ then press **Update** under the table to save the flags.")
+    if ed is not None and "Flag" in ed.columns:
+        now = set(ed.loc[ed["Flag"].astype(bool), "Symbol"])
         was = set(part.loc[part["Flag"], "Symbol"])
-        add_flags(sb, mcfg, sorted(now - was), sector=g, source=g)
-        remove_flags(sb, mcfg, was - now)
-        st.session_state[f"sf_ver_{mkt}"] = ver + 1
-        st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
-        _rerun(st)
+        if now != was:
+            add_flags(sb, mcfg, sorted(now - was), sector=g, source=g)
+            remove_flags(sb, mcfg, was - now)
+            st.session_state[f"sf_ver_{mkt}"] = ver + 1
+            st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
+            _rerun(st)
 
     # ── Step 3: flagged ──
     st.markdown("---")
@@ -580,17 +602,21 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                "Unflag": st.column_config.CheckboxColumn("Unflag", width="small"),
                "Flagged": st.column_config.TextColumn("Flagged", width="small")})
     ver = st.session_state.get(f"sf_fver_{mkt}", 0)
-    with st.form(f"sf_flag_form_{mkt}", border=False):
-        ed = st.data_editor(style(d[show].reset_index(drop=True), cfg["min_liq"]), hide_index=True, use_container_width=True,
-                            column_config=cc, disabled=[c for c in show if c not in ("Pick", "Rank", "Note", "Unflag")],
-                            key=f"sf_fed_{mkt}_{ver}", height=min(36 * len(d) + 40, 520))
-        saved = st.form_submit_button("Save shortlist", type="primary")
-    if saved:
+    dv = d.reset_index(drop=True)
+    ed = gp.card_grid(st, dv[show], key=f"sf_fgrid_{mkt}_{ver}", sty=style(dv[show], cfg["min_liq"]),
+                      extra=_card_extra(dv, show), labels={**LABELS, "Entry": "Entry plan"},
+                      edit={"Pick": "bool", "Rank": "number", "Note": "text", "Unflag": "bool"},
+                      height=min(32 * len(dv) + 70, 520), widths={"Setup": 170, "Entry": 300, "Flags": 200})
+    st.caption("**Click a ticker** for all its data · edit Pick / Rank / Note / Unflag, then press **Update** under the table to save.")
+    changed = False
+    if ed is not None and "Symbol" in ed.columns:
         orig = d.set_index("Symbol")
         for r in ed.to_dict("records"):
             s = r["Symbol"]
+            if s not in orig.index:
+                continue
             if r.get("Unflag"):
-                remove_flags(sb, mcfg, [s]); continue
+                remove_flags(sb, mcfg, [s]); changed = True; continue
             o = orig.loc[s]
             rk = _num(r.get("Rank"))
             ch = {}
@@ -601,10 +627,10 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
             if str(r.get("Note") or "") != str(o["Note"] or ""):
                 ch["note"] = str(r.get("Note") or "")
             if ch:
-                update_flag(sb, mcfg, s, **ch)
-        st.session_state[f"sf_fver_{mkt}"] = ver + 1
-        st.toast("Saved."); _rerun(st)
-    gp.render_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), d["Symbol"], key=f"sf_fcard_{mkt}")
+                update_flag(sb, mcfg, s, **ch); changed = True
+        if changed:
+            st.session_state[f"sf_fver_{mkt}"] = ver + 1
+            st.toast("Saved."); _rerun(st)
     picks = d[d["Pick"]].sort_values("Rank", na_position="last")["Symbol"].tolist()
     if picks:
         gp.copy_area(st, f"Picked {len(picks)} — draw ranges and set alerts (TradingView)",

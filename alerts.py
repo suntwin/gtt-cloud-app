@@ -334,14 +334,14 @@ def render_alerts_tab(st, sb, base_df, mcfg):
     for c in ("Alert at", "Last", "To alert %", "Set d ago", "Expires in d"):
         if c in v.columns:
             v[c] = pd.to_numeric(v[c], errors="coerce")
-    st.dataframe(style_alerts(v[cols].reset_index(drop=True), v["_adr"].tolist()), hide_index=True,
-                 use_container_width=True,
-                 column_config={"To alert %": st.column_config.NumberColumn(help="Line price vs the last close (green = within 0.5 / 1 / 2 ADR)"),
-                                "Line": st.column_config.TextColumn(help="Trendline ≈ : today's value is estimated from the line's slope and the bar count"),
-                                "Note": st.column_config.TextColumn(width="medium")})
-    st.caption("Trendline prices are estimated for today's bar. Last / To alert % come from today's scan (generate data first).")
-    if scope == mkt:
-        gp.render_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), v["Symbol"], key=f"al_card_{mkt}")
+    vv = v[cols].reset_index(drop=True)
+    extra = gp.live_extra(st.session_state.get("gtt_base_df"), v["Symbol"]) if scope == mkt else None
+    if extra is not None:
+        extra = extra.loc[:, [c for c in extra.columns if extra[c].notna().any()]]
+    gp.card_grid(st, vv, key=f"al_grid_{mkt}_{scope}_{view}", sty=style_alerts(vv, v["_adr"].tolist()), extra=extra,
+                 height=min(32 * len(vv) + 60, 520), widths={"Note": 220, "Status": 130, "Lists": 110})
+    st.caption("Click a ticker for all its data. Trendline prices are estimated for today's bar. "
+               "Last / To alert % come from today's scan (generate data first).")
 
     if scope == mkt:
         waiting = set(t.loc[~t["_trig"], "Symbol"].astype(str).str.upper())
