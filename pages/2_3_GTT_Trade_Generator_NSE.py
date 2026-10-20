@@ -11,6 +11,7 @@ from gtt_process import MARKETS, breakout_batch_lists, render_rules_tab, render_
 from gtt_process import assign_scan_columns, _JS as _GTT_JS
 from shortlister import render_shortlister_tab
 from alerts import render_alerts_tab
+from nse_bands import apply_nse_bands
 from gtt_process import auto_record_breakouts
 from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan, row_card_js, render_sector_leadership
 
@@ -555,6 +556,7 @@ def main():
                     adf = adf.merge(ws, on='Symbol', how='left')
                 else:
                     st.session_state.weekly_full_df = None; st.warning("Weekly scan unavailable.")
+                adf = apply_nse_bands(st, supabase, MARKET_CFG, adf)   # Circuit % from NSE's daily security list
                 st.session_state.gtt_base_df = adf
                 remember_scan(st, MARKET_CFG)
                 _n_auto = auto_record_breakouts(supabase, MARKET_CFG, adf, vol_bo_min_chg, vol_bo_min_vol,
