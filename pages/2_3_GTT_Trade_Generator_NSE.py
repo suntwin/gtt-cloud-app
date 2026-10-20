@@ -11,7 +11,7 @@ from gtt_process import MARKETS, breakout_batch_lists, render_rules_tab, render_
 from gtt_process import assign_scan_columns, _JS as _GTT_JS
 from shortlister import render_shortlister_tab
 from alerts import render_alerts_tab
-from nse_bands import apply_nse_bands
+from nse_bands import apply_nse_bands, render_bands_status
 from gtt_process import auto_record_breakouts
 from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan, row_card_js, render_sector_leadership
 
@@ -631,6 +631,7 @@ def main():
 
             st.session_state.gtt_display_df = ddf
             st.success(f"Loaded {len(ddf)} stocks. Use the checkboxes to filter.")
+            render_bands_status(st, supabase, MARKET_CFG)
             _sc = st.session_state.get('screen_counts') or {}
             if _sc:
                 st.caption("Rows per MarketInOut screen: " + " · ".join(f"{k} {v:,}" for k, v in _sc.items()))

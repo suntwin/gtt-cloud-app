@@ -26,10 +26,25 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 NO_BAND = 100.0            # shown as 100 in Circuit % = no price band (F&O stocks move freely)
 SERIES_ORDER = ["EQ", "BE", "BZ", "SM", "ST"]
 MAX_BACK = 10              # weekdays to look back for a published file
+PUBLISH_HOUR_IST = 18      # NSE posts the day's list in the evening; before this hour only look for earlier days
+RETRY_MIN = 60             # after an evening miss, wait this long before asking NSE again (any browser session)
+
+
+def _now_ist():
+    return datetime.now(ZoneInfo("Asia/Kolkata")) if ZoneInfo else datetime.now()
 
 
 def _today_ist():
-    return datetime.now(ZoneInfo("Asia/Kolkata")).date() if ZoneInfo else date.today()
+    return _now_ist().date()
+
+
+def newest_possible(now=None):
+    """The newest file that can exist right now: today's after the evening publish, else the previous weekday."""
+    now = now or _now_ist()
+    d = now.date() if now.hour >= PUBLISH_HOUR_IST else now.date() - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
 
 
 def weekdays_back(start, n=MAX_BACK):
@@ -73,9 +88,17 @@ def fetch_sec_list(d, timeout=20):
     return parse_sec_list(r.text)
 
 
+def latest_stored(sb):
+    """(file_date, updated_at) of the stored bands, or (None, None)."""
+    rows = (sb.table("nse_price_bands").select("file_date,updated_at").order("file_date", desc=True)
+            .limit(1).execute().data)
+    if not rows:
+        return None, None
+    return date.fromisoformat(str(rows[0]["file_date"])[:10]), rows[0].get("updated_at")
+
+
 def latest_stored_date(sb):
-    rows = sb.table("nse_price_bands").select("file_date").order("file_date", desc=True).limit(1).execute().data
-    return date.fromisoformat(str(rows[0]["file_date"])[:10]) if rows else None
+    return latest_stored(sb)[0]
 
 
 def store(sb, df, d):
@@ -89,10 +112,22 @@ def store(sb, df, d):
     return len(rows)
 
 
-def refresh_bands(sb, today=None, fetch=fetch_sec_list):
-    """Download the newest file not yet stored. Returns (file_date in DB, message)."""
+def refresh_bands(sb, now=None, fetch=fetch_sec_list, store_=None):
+    """Download the newest file not yet stored. Returns (file_date in DB, message).
+    No request at all when the table already has the newest file that can exist (e.g. Tuesday daytime with
+    Monday's list stored, or any time at the weekend with Friday's). An evening miss is retried at most hourly."""
     have = latest_stored_date(sb)
-    for d in weekdays_back(today or _today_ist()):
+    top = newest_possible(now)
+    if have and have >= top:
+        return have, f"price bands up to date ({have:%d-%b})"
+    memo = store_ if store_ is not None else {}
+    last = memo.get("nse_bands_try")
+    t = (now or _now_ist())
+    if last and last[0] == top and (t - last[1]).total_seconds() < RETRY_MIN * 60:
+        return have, (f"price bands from {have:%d-%b} (NSE's {top:%d-%b} list not out yet)" if have
+                      else "waiting for NSE's security list")
+    memo["nse_bands_try"] = (top, t)
+    for d in weekdays_back(top):
         if have and d <= have:
             return have, f"price bands up to date ({have:%d-%b})"
         try:
@@ -131,11 +166,14 @@ def apply_nse_bands(st, sb, mcfg, df):
     """NSE page: refresh the table once per session, then overwrite df['_circuit'] with NSE's band."""
     if mcfg.get("market") != "NSE" or sb is None or df is None or df.empty or "Symbol" not in df.columns:
         return df
-    key = f"nse_bands_checked_{_today_ist()}"
+    key = "nse_bands_msg"
     try:
-        if not st.session_state.get(key):
-            _, msg = refresh_bands(sb)
-            st.session_state[key] = msg
+        try:
+            import gtt_process as gp
+            memo = gp._app_store()
+        except Exception:
+            memo = {}
+        _, st.session_state[key] = refresh_bands(sb, store_=memo)
         bands = load_bands(sb)
     except Exception as e:
         st.caption(f"NSE price bands unavailable ({e}). Run supabase_nse_bands.sql once — using MarketInOut's circuit %.")
@@ -150,3 +188,26 @@ def apply_nse_bands(st, sb, mcfg, df):
     st.caption(f"Circuit %: {st.session_state.get(key)} · {int(nse.notna().sum())} of {len(df)} scanned matched"
                + (f" · {diff} differ from MarketInOut" if diff else "") + " · 100 = no band (F&O)")
     return df
+
+
+def render_bands_status(st, sb, mcfg):
+    """One line on the NSE page: which NSE list the Circuit % comes from and when it was loaded."""
+    if mcfg.get("market") != "NSE" or sb is None:
+        return
+    try:
+        d, upd = latest_stored(sb)
+    except Exception:
+        st.caption("Circuit %: from MarketInOut (run supabase_nse_bands.sql to use NSE's own price bands)")
+        return
+    if not d:
+        st.caption("Circuit %: from MarketInOut — NSE's price bands load with the next scan")
+        return
+    when = ""
+    try:
+        t = pd.to_datetime(upd, utc=True)
+        when = f", loaded {t.tz_convert('Asia/Kolkata'):%d-%b %H:%M} IST" if ZoneInfo else f", loaded {t:%d-%b %H:%M} UTC"
+    except Exception:
+        pass
+    stale = d < newest_possible() - timedelta(days=3)
+    st.caption(f"Circuit %: NSE security list of **{d:%a %d-%b-%Y}**{when}"
+               + (" ⚠️ older than expected" if stale else "") + " · 100 = no band (F&O)")
