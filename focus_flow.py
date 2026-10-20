@@ -531,8 +531,8 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     live = v[~stale]
     counts = {g: int((live["Sector"] == g).sum()) for g in focus}
     flagged_in = {g: int(((v["Sector"] == g) & v["Flag"]).sum()) for g in focus}
-    g = st.radio("Sector", focus, horizontal=True, key=f"sf_sector_{mkt}",
-                 format_func=lambda x: f"{x} ({counts.get(x, 0)} · ⚑{flagged_in.get(x, 0)})")
+    g = st.radio("Sector", focus, horizontal=True, key=f"sf_sector_{mkt}")      # static labels keep the selection stable
+    st.caption(" · ".join(f"**{x}** {counts.get(x, 0)} stocks, ⚑{flagged_in.get(x, 0)}" for x in focus))
     c1, c2 = st.columns([1, 3])
     min_score = c1.slider("Min score", 0.0, 8.0, 4.0, 0.5, key=f"sf_min_{mkt}",
                           help="Hide stocks passing fewer rules. Flagged stocks always show.")
@@ -550,14 +550,21 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
     ver = st.session_state.get(f"sf_ver_{mkt}", 0)
     pv = part.reset_index(drop=True)
-    ed = gp.card_grid(st, pv[cols], key=f"sf_grid_{mkt}_{g}_{sd}_{ver}", sty=style(pv[cols], cfg["min_liq"]),
-                      extra=_card_extra(pv, cols), labels=LABELS, edit={"Flag": "bool"},
-                      height=min(32 * len(pv) + 70, 560), widths={"Setup": 170, "Flags": 200, "Source": 110})
-    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). "
-               "**Click a ticker** for all its data · tick ⚑ then press **Update** under the table to save the flags.")
-    if ed is not None and "Flag" in ed.columns:
-        now = set(ed.loc[ed["Flag"].astype(bool), "Symbol"])
-        was = set(part.loc[part["Flag"], "Symbol"])
+    gv = pv[cols].copy()
+    gv["Flag"] = np.where(gv["Flag"], "⚑", "")
+    gp.card_grid(st, gv, key=f"sf_grid_{mkt}_{g}_{sd}_{ver}", sty=style(gv, cfg["min_liq"]),
+                 extra=_card_extra(pv, cols), labels=LABELS,
+                 height=min(32 * len(pv) + 70, 560), widths={"Symbol": 115, "Setup": 170, "Flags": 200, "Source": 110})
+    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). **Click a ticker** for all its data.")
+    was = set(part.loc[part["Flag"], "Symbol"])
+    with st.form(f"sf_flagform_{mkt}_{g}_{ver}", border=False):      # nothing is sent until Save
+        c1, c2 = st.columns([5, 1])
+        chosen = c1.multiselect(f"⚑ Flagged in {g} — add or remove, then Save", list(pv["Symbol"]),
+                                default=[x for x in pv["Symbol"] if x in was], key=f"sf_flagsel_{mkt}_{g}_{ver}")
+        c2.write("")
+        save = c2.form_submit_button("Save flags", type="primary", use_container_width=True)
+    if save:
+        now = set(chosen)
         if now != was:
             add_flags(sb, mcfg, sorted(now - was), sector=g, source=g)
             remove_flags(sb, mcfg, was - now)
@@ -627,13 +634,23 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                "Flagged": st.column_config.TextColumn("Flagged", width="small")})
     ver = st.session_state.get(f"sf_fver_{mkt}", 0)
     dv = d.reset_index(drop=True)
-    ed = gp.card_grid(st, dv[show], key=f"sf_fgrid_{mkt}_{ver}", sty=style(dv[show], cfg["min_liq"]),
-                      extra=_card_extra(dv, show), labels={**LABELS, "Entry": "Entry plan"},
-                      edit={"Pick": "bool", "Rank": "number", "Note": "text", "Unflag": "bool"},
-                      height=min(32 * len(dv) + 70, 520), widths={"Setup": 170, "Entry": 300, "Flags": 200})
-    st.caption("**Click a ticker** for all its data · edit Pick / Rank / Note / Unflag, then press **Update** under the table to save.")
+    shown = [c for c in show if c not in ("Unflag",)]
+    gv = dv[shown].copy()
+    gv["Pick"] = np.where(gv["Pick"], "✓", "")
+    gp.card_grid(st, gv, key=f"sf_fgrid_{mkt}_{ver}", sty=style(gv, cfg["min_liq"]),
+                 extra=_card_extra(dv, shown), labels={**LABELS, "Entry": "Entry plan"},
+                 height=min(32 * len(dv) + 70, 520), widths={"Symbol": 115, "Setup": 170, "Entry": 300, "Flags": 200})
+    st.caption("**Click a ticker** for all its data. Pick / rank / note / unflag in the small table below, then Save.")
+    with st.form(f"sf_fform_{mkt}_{ver}", border=False):            # nothing is sent until Save
+        ed = st.data_editor(dv[["Symbol", "Pick", "Rank", "Note", "Unflag"]], hide_index=True, use_container_width=False,
+                            key=f"sf_fed_{mkt}_{ver}", disabled=["Symbol"],
+                            column_config={"Pick": st.column_config.CheckboxColumn("Pick", help="Build the range + alert"),
+                                           "Rank": st.column_config.NumberColumn("Rank", min_value=1, max_value=99, step=1),
+                                           "Note": st.column_config.TextColumn("Note", width="large"),
+                                           "Unflag": st.column_config.CheckboxColumn("Unflag")})
+        saved = st.form_submit_button("Save shortlist", type="primary")
     changed = False
-    if ed is not None and "Symbol" in ed.columns:
+    if saved and ed is not None:
         orig = d.set_index("Symbol")
         for r in ed.to_dict("records"):
             s = r["Symbol"]

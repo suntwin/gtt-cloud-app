@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20j · Sector Focus: only today's scan; dropped-out names show no stale numbers"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20k · Sector Focus: no reload on ticks (read-only grid + Save forms), ticker click card"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2540,8 +2540,7 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
 
     view   visible columns (in order) · sty: optional pandas Styler of `view` (its colours are reused)
     extra  more attributes per row (same row order), hidden in the grid but shown in the card
-    edit   {column: "bool" | "number" | "text"} editable columns; then the grid has an Update button and the
-           edited frame is returned, else None
+    edit   kept for compatibility; the grid is always read-only (do edits in an st.form)
     """
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
     labels, edit, widths, fmt = labels or {}, edit or {}, widths or {}, fmt or {}
@@ -2588,13 +2587,13 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
         elif kind == "text":
             kw.update(editable=True, cellEditor="agTextCellEditor", minWidth=160)
         gb.configure_column(c, **kw)
-    resp = AgGrid(data, gridOptions=gb.build(), height=height, width="100%", key=key, allow_unsafe_jscode=True,
-                  update_mode=GridUpdateMode.MANUAL if edit else GridUpdateMode.NO_UPDATE,
-                  data_return_mode=DataReturnMode.AS_INPUT)
-    if not edit:
-        return None
-    out = resp["data"] if resp is not None and resp.get("data") is not None else None
-    return pd.DataFrame(out) if out is not None else None
+    # Read-only on purpose: update_on=[] so sorting, filtering, clicking a ticker (card) never reruns the app.
+    # (st_aggrid 1.2's "Manual Update" toolbar button is a no-op, and any update_on event reruns on every tick —
+    # so edits are done in a separate st.form next to the grid instead.)
+    AgGrid(data, gridOptions=gb.build(), height=height, width="100%", key=key, allow_unsafe_jscode=True,
+           update_mode=GridUpdateMode.NO_UPDATE, update_on=[], show_toolbar=False,
+           data_return_mode=DataReturnMode.AS_INPUT)
+    return None
 
 
 def _tomorrow_grid(view, cfg, key):
