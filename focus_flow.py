@@ -577,7 +577,7 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     ed, save = gp.card_grid(st, gv, key=f"sf_grid_{mkt}_{g}_{sd}", sty=style(gv, cfg["min_liq"]),
                             extra=_card_extra(pv, cols), labels=LABELS, tips=_tips(cfg), card_first=CARD_FIRST,
                             edit={"Flag": "bool"}, submit=f"Save flags for {g}",
-                            height=min(32 * len(pv) + 70, 560), widths={"Symbol": 115, "Setup": 170, "Flags": 200, "Source": 110})
+                            height=min(32 * len(pv) + 70, 560), widths={"Symbol": 110, "Score": 58, "Setup": 170, "Flags": 200, "Source": 110})
     st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). **Click a ticker** for all its "
                "data · tick ⚑ on the rows you like, then **Save flags** (nothing reloads while you tick or sort).")
     okey = f"sf_order_{mkt}_{g}"
@@ -661,7 +661,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                              extra=_card_extra(dv, show), labels={**LABELS, "Entry": "Entry plan"}, tips=_tips(cfg),
                              card_first=CARD_FIRST, edit={"Pick": "bool", "Rank": "number", "Note": "text", "Unflag": "bool"},
                              submit="Save shortlist", height=min(32 * len(dv) + 70, 520),
-                             widths={"Symbol": 115, "Setup": 170, "Entry": 300, "Flags": 200})
+                             widths={"Symbol": 110, "Score": 58, "Setup": 170, "Entry": 300, "Flags": 200})
     st.caption("**Click a ticker** for all its data · tick Pick / Unflag, type a Rank or Note on the row, then **Save shortlist**.")
     changed = False
     if saved and ed is not None and "Symbol" in ed.columns:

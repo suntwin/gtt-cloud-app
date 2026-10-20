@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20l · Flag on the ticker row (grid inside a form: no reload until Save), card order, rule hovers, copy in sort order"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20m · Compact grid columns (fit to contents, wrapped headers)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2576,8 +2576,11 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
                 hidden.append(c)
     data = _grid_safe(data)
     gb = GridOptionsBuilder.from_dataframe(data)
-    gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=55, flex=0)
+    gb.configure_default_column(resizable=True, filterable=True, sortable=True, width=70, minWidth=40, flex=0,
+                                wrapHeaderText=True, autoHeaderHeight=True, suppressHeaderFilterButton=True,
+                                suppressHeaderMenuButton=True)
     gb.configure_grid_options(enableBrowserTooltips=True, tooltipShowDelay=200, onCellClicked=row_card_js(), rowHeight=30,
+                              autoSizeStrategy={"type": "fitCellContents", "skipHeader": True},
                               suppressRowClickSelection=True, context={"cardFirst": list(card_first or [])},
                               stopEditingWhenCellsLoseFocus=True)
     style_js = JsCode(_CSS_FROM_DATA)
@@ -2587,18 +2590,18 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
             continue
         kw = {"headerName": labels.get(c, c), "headerTooltip": (tips or {}).get(c, labels.get(c, c))}
         if c in widths:
-            kw["minWidth"] = widths[c]
+            kw["width"] = kw["minWidth"] = widths[c]
         if "__s_" + str(c) in data.columns:
             kw["cellStyle"] = style_js
         if c == "Symbol":
             kw.update(pinned="left", cellStyle={"fontWeight": "bold", "textDecoration": "underline", "cursor": "pointer"},
-                      headerTooltip="Click a ticker to see all its data")
+                      headerTooltip="Click a ticker to see all its data", width=widths.get(c, 105), maxWidth=140)
         kind = edit.get(c)
         if kind == "bool":
             kw.update(editable=True, cellDataType="boolean", cellRenderer="agCheckboxCellRenderer",
-                      cellEditor="agCheckboxCellEditor", pinned="left", maxWidth=80)
+                      cellEditor="agCheckboxCellEditor", pinned="left", width=58, maxWidth=70)
         elif kind == "number":
-            kw.update(editable=True, cellEditor="agNumberCellEditor", maxWidth=80)
+            kw.update(editable=True, cellEditor="agNumberCellEditor", width=62, maxWidth=80)
         elif kind == "text":
             kw.update(editable=True, cellEditor="agTextCellEditor", minWidth=160)
         gb.configure_column(c, **kw)
