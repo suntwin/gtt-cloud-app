@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20c · NSE bands: read from Supabase, fetch only via Update price bands button"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20d · Sector breakouts: last saved values for names not in today's scan (Data = as of)"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1569,6 +1569,29 @@ def sector_leadership(hist, base_df, group="Sector"):
     return t, names
 
 
+def _last_snapshots(sb, mcfg, syms):
+    """symbol → (snap_date, metrics) of the most recent saved row (any scanner) for each symbol."""
+    out = {}
+    syms = sorted({str(x).upper() for x in syms if x})
+    for i in range(0, len(syms), 100):
+        try:
+            rows = (sb.table("daily_snapshots").select("symbol,snap_date,metrics").eq("user_id", mcfg["user_id"])
+                    .eq("market", mcfg["market"]).in_("symbol", syms[i:i + 100])
+                    .order("snap_date", desc=True).limit(2000).execute().data or [])
+        except Exception:
+            continue
+        for r in rows:
+            m = r.get("metrics") or {}
+            s_ = str(r["symbol"]).upper()
+            if s_ in out:
+                if out[s_][1].get("_chg_percentclose") is not None:
+                    continue
+                if m.get("_chg_percentclose") is None:        # keep the newest; replace only an empty one
+                    continue
+            out[s_] = (str(r["snap_date"])[:10], m)
+    return out
+
+
 def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, saved_syms=None, saved_rows=None):
     if heading:
         st.subheader("Sector leadership · from your breakout history")
@@ -1672,14 +1695,43 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
             v = v[v["Saved?"].str.startswith("✓")]
             if v.empty:
                 st.info("None of this group's recent breakouts are on your watchlist."); return
+        key = v["Symbol"].astype(str).str.upper()
         if _live is not None:
-            key = v["Symbol"].astype(str).str.upper()
             for c in _LIVE_COLS:
                 if c in _live.columns:
                     v[c] = pd.to_numeric(key.map(_live[c]), errors="coerce").values
-            v = v.sort_values("_rel_tightness_today", na_position="last") if "_rel_tightness_today" in v.columns else v
+            v.insert(2, "Data", np.where(key.isin(_live.index), "today", ""))
         else:
             st.caption("Generate the scan to see today's tightness, volume and MA distances here.")
+            v.insert(2, "Data", "")
+        miss = [s_ for s_, d_ in zip(key, v["Data"]) if d_ != "today"]
+        if miss and sb is not None:          # not in today's scan → the last values saved for it (any scanner)
+            snap = _last_snapshots(sb, mcfg, miss)
+            bands = {}
+            if mcfg.get("market") == "NSE":
+                try:
+                    import nse_bands as _nb
+                    bands = _nb.load_bands(sb)
+                except Exception:
+                    bands = {}
+            for i, s_ in zip(v.index, key):
+                if s_ not in snap and s_ not in bands:
+                    continue
+                d_, m_ = snap.get(s_, ("", {}))
+                for c in _LIVE_COLS:
+                    val = _num(m_.get(c))
+                    if c == "_circuit" and s_ in bands:
+                        val = bands[s_]
+                    if c in v.columns and pd.isna(v.at[i, c]) and np.isfinite(val):
+                        v.at[i, c] = val
+                    elif c not in v.columns and np.isfinite(val):
+                        v.loc[i, c] = val
+                if d_:
+                    v.at[i, "Data"] = f"as of {pd.to_datetime(d_):%d-%b}"
+            if any(str(x).startswith("as of") for x in v["Data"]):
+                st.caption("Rows marked *as of* aren't in today's scan (they no longer pass the MarketInOut screens) — "
+                           "their numbers are the last ones saved for them.")
+        v = v.sort_values("_rel_tightness_today", na_position="last") if "_rel_tightness_today" in v.columns else v
         sty = style_table(v)
         for c, f in (("chg", _c_chg), ("vol", _c_vol)):
             sty = sty.map(f, subset=[c])
@@ -1698,6 +1750,8 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
               for c in v.columns if c in _dp}
         cc["Symbol"] = st.column_config.TextColumn("Symbol", width="small")
         cc["date"] = st.column_config.TextColumn("Broke out", width="small")
+        cc["Data"] = st.column_config.TextColumn("Data", width="small",
+                                                 help="today = from today's scan · as of = not in today's scan, last saved values")
         cc["Saved?"] = st.column_config.TextColumn("Saved?", width="small",
                                                    help="✓ Saved = on your watchlist · ✓ Saved (manual) = on your watchlist but no evening "
                                                         "breakout record (saved by hand, or before the history starts) · Skipped = recorded in "
@@ -2607,7 +2661,7 @@ def _saved_groups(wdf, live, hist):
     return sec, ind
 
 
-def _render_saved_themes(st, v, wdf, hist, base_df, mcfg):
+def _render_saved_themes(st, v, wdf, hist, base_df, mcfg, sb=None):
     """Theme counts for the saved breakouts + a filter. Returns the (possibly filtered) table."""
     with st.container(border=True):
         st.markdown("**Themes in your saved breakouts**")
@@ -2640,7 +2694,7 @@ def _render_saved_themes(st, v, wdf, hist, base_df, mcfg):
                 _mine = set(wdf["symbol"].astype(str).str.upper()) if wdf is not None and not wdf.empty and "symbol" in wdf.columns else set()
                 _rows = v[[c for c in ("symbol", "Sector", "Industry", "trigger_date", "last_trigger_date", "trigger_close",
                                "prev_close", "vol_ratio") if c in v.columns]].copy()
-                render_sector_leadership(st, None, base_df, mcfg, hist=hist, heading=False, saved_syms=_mine, saved_rows=_rows)
+                render_sector_leadership(st, sb, base_df, mcfg, hist=hist, heading=False, saved_syms=_mine, saved_rows=_rows)
     return v[g.isin(pick)] if pick else v
 
 
@@ -2738,7 +2792,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         sec, ind = _saved_groups(wdf, live, _hist)
         v.insert(v.columns.get_loc("symbol") + 1, "Sector", v["symbol"].map(sec))
         v.insert(v.columns.get_loc("Sector") + 1, "Industry", v["symbol"].map(ind))
-        v = _render_saved_themes(st, v, wdf, _hist, base_df, mcfg)
+        v = _render_saved_themes(st, v, wdf, _hist, base_df, mcfg, sb)
         _notes = latest_note_by_symbol(sb, mcfg)
         if _notes:
             v["My note"] = v["symbol"].map(_notes)
