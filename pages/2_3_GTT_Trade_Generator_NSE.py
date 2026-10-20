@@ -498,6 +498,7 @@ def main():
 
     manual_fetch = st.button("Generate GTT Trading Plan", type="primary", disabled=not gate_ok,
                              help=None if gate_ok else "Write today's market note first (top of the page)")
+    render_bands_status(st, supabase, MARKET_CFG)   # Circuit % source + Update price bands button
     should_fetch = (manual_fetch or refresh_clicked) and gate_ok
 
     if should_fetch:
@@ -631,7 +632,6 @@ def main():
 
             st.session_state.gtt_display_df = ddf
             st.success(f"Loaded {len(ddf)} stocks. Use the checkboxes to filter.")
-            render_bands_status(st, supabase, MARKET_CFG)
             _sc = st.session_state.get('screen_counts') or {}
             if _sc:
                 st.caption("Rows per MarketInOut screen: " + " · ".join(f"{k} {v:,}" for k, v in _sc.items()))

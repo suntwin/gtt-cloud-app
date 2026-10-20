@@ -5,13 +5,14 @@ NSE price bands (circuit %) from NSE's own daily security list, instead of Marke
     https://nsearchives.nseindia.com/content/equities/sec_list_DDMMYYYY.csv
     columns: Symbol, Series, Security Name, Band, Remarks   (Band = 2/5/10/20 or "No Band")
 
-Once per session (when the NSE scanner runs) the newest file is downloaded — today's if NSE has published it,
-otherwise the previous weekday, and so on back up to 10 weekdays (holidays have no file) — and stored in the
-Supabase table nse_price_bands (supabase_nse_bands.sql). The scan's _circuit column is then taken from that table.
+The scan always reads the stored Supabase table nse_price_bands (supabase_nse_bands.sql). NSE is contacted only
+when you press "Update price bands" on the NSE page: it downloads today's file if published, otherwise the
+previous weekday, and so on back up to 10 weekdays (holidays have no file).
 """
 import io
 from datetime import date, datetime, timedelta
 
+import numpy as np
 import pandas as pd
 
 try:
@@ -112,12 +113,18 @@ def store(sb, df, d):
     return len(rows)
 
 
-def refresh_bands(sb, now=None, fetch=fetch_sec_list, store_=None):
+def refresh_bands(sb, now=None, fetch=None, store_=None, manual=False):
     """Download the newest file not yet stored. Returns (file_date in DB, message).
     No request at all when the table already has the newest file that can exist (e.g. Tuesday daytime with
     Monday's list stored, or any time at the weekend with Friday's). An evening miss is retried at most hourly."""
+    fetch = fetch or fetch_sec_list
     have = latest_stored_date(sb)
     top = newest_possible(now)
+    if manual:                         # button press: also try today's list whatever the hour
+        t0 = (now or _now_ist()).date()
+        while t0.weekday() >= 5:
+            t0 -= timedelta(days=1)
+        top, store_ = max(top, t0), {}
     if have and have >= top:
         return have, f"price bands up to date ({have:%d-%b})"
     memo = store_ if store_ is not None else {}
@@ -166,48 +173,68 @@ def apply_nse_bands(st, sb, mcfg, df):
     """NSE page: refresh the table once per session, then overwrite df['_circuit'] with NSE's band."""
     if mcfg.get("market") != "NSE" or sb is None or df is None or df.empty or "Symbol" not in df.columns:
         return df
-    key = "nse_bands_msg"
     try:
-        try:
-            import gtt_process as gp
-            memo = gp._app_store()
-        except Exception:
-            memo = {}
-        _, st.session_state[key] = refresh_bands(sb, store_=memo)
-        bands = load_bands(sb)
+        bands = load_bands(sb)          # read the stored table only; NSE is fetched only from the Update button
     except Exception as e:
         st.caption(f"NSE price bands unavailable ({e}). Run supabase_nse_bands.sql once — using MarketInOut's circuit %.")
         return df
     if not bands:
         return df
     df = df.copy()
-    mio = pd.to_numeric(df["_circuit"], errors="coerce") if "_circuit" in df.columns else pd.Series(index=df.index, dtype=float)
+    if "_circuit_mio" not in df.columns:                  # keep MarketInOut's value (re-applying after an update)
+        df["_circuit_mio"] = df["_circuit"] if "_circuit" in df.columns else np.nan
+    mio = pd.to_numeric(df["_circuit_mio"], errors="coerce")
     nse = df["Symbol"].astype(str).str.upper().map(bands)
     df["_circuit"] = nse.where(nse.notna(), mio)
     diff = int(((nse.notna()) & (mio.notna()) & (nse != mio)).sum())
-    st.caption(f"Circuit %: {st.session_state.get(key)} · {int(nse.notna().sum())} of {len(df)} scanned matched"
-               + (f" · {diff} differ from MarketInOut" if diff else "") + " · 100 = no band (F&O)")
+    st.session_state["nse_bands_match"] = (int(nse.notna().sum()), len(df), diff)
     return df
 
 
 def render_bands_status(st, sb, mcfg):
-    """One line on the NSE page: which NSE list the Circuit % comes from and when it was loaded."""
+    """NSE page: which NSE list the Circuit % comes from, and a button to fetch a newer one."""
     if mcfg.get("market") != "NSE" or sb is None:
         return
-    try:
-        d, upd = latest_stored(sb)
-    except Exception:
-        st.caption("Circuit %: from MarketInOut (run supabase_nse_bands.sql to use NSE's own price bands)")
-        return
-    if not d:
-        st.caption("Circuit %: from MarketInOut — NSE's price bands load with the next scan")
-        return
-    when = ""
-    try:
-        t = pd.to_datetime(upd, utc=True)
-        when = f", loaded {t.tz_convert('Asia/Kolkata'):%d-%b %H:%M} IST" if ZoneInfo else f", loaded {t:%d-%b %H:%M} UTC"
-    except Exception:
-        pass
-    stale = d < newest_possible() - timedelta(days=3)
-    st.caption(f"Circuit %: NSE security list of **{d:%a %d-%b-%Y}**{when}"
-               + (" ⚠️ older than expected" if stale else "") + " · 100 = no band (F&O)")
+    c1, c2 = st.columns([5, 1])
+    with c2:
+        clicked = st.button("Update price bands", key="nse_bands_update",
+                            help="Download NSE's latest security list (price bands / circuit limits) into Supabase")
+    if clicked:
+        with st.spinner("Fetching NSE's security list…"):
+            try:
+                _, msg = refresh_bands(sb, manual=True)
+                try:
+                    import gtt_process as gp
+                    gp.clear_db_cache()
+                except Exception:
+                    pass
+                base = st.session_state.get("gtt_base_df")
+                if base is not None:
+                    st.session_state.gtt_base_df = apply_nse_bands(st, sb, mcfg, base)
+                st.session_state["nse_bands_msg"] = msg
+            except Exception as e:
+                st.session_state["nse_bands_msg"] = f"Update failed: {e}"
+    with c1:
+        try:
+            d, upd = latest_stored(sb)
+        except Exception:
+            st.caption("Circuit %: from MarketInOut — run supabase_nse_bands.sql once, then press Update price bands.")
+            return
+        if not d:
+            st.caption("Circuit %: from MarketInOut — press **Update price bands** to load NSE's own price bands.")
+        else:
+            when = ""
+            try:
+                t = pd.to_datetime(upd, utc=True)
+                when = f", loaded {t.tz_convert('Asia/Kolkata'):%d-%b %H:%M} IST"
+            except Exception:
+                pass
+            behind = newest_possible() > d
+            m = st.session_state.get("nse_bands_match")
+            st.caption(f"Circuit %: NSE security list of **{d:%a %d-%b-%Y}**{when}"
+                       + (" · a newer list should be out — press Update" if behind else "")
+                       + (f" · {m[0]} of {m[1]} scanned matched" + (f", {m[2]} differ from MarketInOut" if m[2] else "")
+                          if m else "") + " · 100 = no band (F&O)")
+        msg = st.session_state.pop("nse_bands_msg", None)
+        if msg:
+            (st.warning if msg.startswith(("Update failed", "couldn't", "no NSE")) else st.success)(msg)
