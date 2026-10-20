@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20i · Click a ticker → white card with all attributes (Sector Focus, Flagged, Alerts, sector breakouts)"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20j · Sector Focus: only today's scan; dropped-out names show no stale numbers"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1664,7 +1664,7 @@ def card_row(sb, mcfg, base_df, sym):
         snap = _last_snapshots(sb, mcfg, [sym])
         if sym in snap:
             d_, m = snap[sym]
-            return {k: v for k, v in (m or {}).items() if k != "setups"}, f"last saved {d_} (not in today's scan)"
+            return {k: v for k, v in (m or {}).items() if k != "setups"}, f"⚠️ DROPPED OUT of today's scan — numbers are from {d_}, don't trade on them"
     return None, "no data"
 
 
@@ -1842,6 +1842,9 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
                         v.loc[i, c] = val
                 if d_:
                     v.at[i, "Data"] = f"as of {pd.to_datetime(d_):%d-%b}"
+                    for c in ("_chg_percentclose", "_vol_ratio", "dvol"):     # that day's move is not today's — never show it
+                        if c in v.columns:
+                            v.at[i, c] = np.nan
         v["Data"] = v["Data"].replace("", "not in scan" if _live is not None else "scan not run")
         if any(str(x).startswith("as of") for x in v["Data"]) or (v["Data"] == "not in scan").any():
             st.caption("**Data**: *today* = from today's scan · *as of dd-Mon* = not in today's scan (no longer passes the "

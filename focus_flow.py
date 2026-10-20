@@ -308,7 +308,7 @@ def _c_score(x):
 
 def _c_data(x):
     s = str(x)
-    return "color:#28a745" if s == "today" else ("color:#b58900;font-style:italic" if s.startswith("as of") else "color:#9aa7ba")
+    return "color:#28a745" if s == "today" else ("color:#dc3545;font-weight:bold" if s == "dropped out" else "color:#9aa7ba")
 
 
 def _hl(kind):
@@ -366,13 +366,15 @@ def _c_setup(x):
     return {"1-min ORH ready": _css("#155724", "white", True), "Broke out today": _css("#8c008c", "white", True),
             "Leader flag on 10MA": _css("#cff4fc", "#055160", True), "Tight at pivot, no volume yet": _css("#d4edda"),
             "Volume came, not tight yet": _css("#fff3cd", "#664d03"), "Near the pivot": _css("#e2e3e5", "#41464b"),
-            "Not ready": "color:#9aa7ba"}.get(str(x), "")
+            "Not ready": "color:#9aa7ba", "Dropped out of the scan": _css("#f8d7da", "#721c24", True)}.get(str(x), "")
 
 
 def _c_flags(x):
     t = str(x)
     if "EP" in t:
         return _css("#e2d9f3", "#3d2a73", True)
+    if "Not in today's scan" in t:
+        return _css("#f8d7da", "#721c24", True)
     if "Thin" in t or "< 2x" in t or "No recent" in t or "Circuit" in t or "count steps" in t:
         return _css("#fff3cd", "#664d03")
     if "52W high" in t or "Narrow day" in t:
@@ -502,6 +504,22 @@ def _render_sector_focus(st, sb, base_df, mcfg):
         memo["scored"][fk] = commentary(score(u, cfg, focus, memo["bos"], memo["tiers"]), cfg, mkt)
     v = memo["scored"][fk].copy()
     v["Flag"] = v["Symbol"].isin(flags)
+    # Only today's scan is tradeable. Anything that dropped out of the scan keeps NO numbers (stale numbers such as an
+    # old EP day's +8.7% are dangerous): it only shows up in Flagged, marked "Dropped out of the scan".
+    stale = v["Data"] != "today"
+    if stale.any():
+        keep = {"Symbol", "Sector", "Industry", "Flag", "Data"} | {r for r, _ in RULES}
+        blank = [c for c in v.columns if c not in keep]
+        v[blank] = v[blank].astype(object)
+        v.loc[stale, blank] = np.nan
+        for c in NUMERIC + ["Pivot", "To pivot %", "Stop guide", "Last", "off_high_21"]:
+            if c in v.columns:
+                v[c] = pd.to_numeric(v[c], errors="coerce")
+        v.loc[stale, [r for r, _ in RULES]] = "·"
+        v.loc[stale, "Setup"] = "Dropped out of the scan"
+        v.loc[stale, "Entry"] = "No longer passes the screens — check the chart; unflag unless you hold it"
+        v.loc[stale, "Flags"] = "Not in today's scan"
+        v.loc[stale, "Data"] = "dropped out"
     # Alert Management uses these for its priorities (Shortlister is retired)
     picked = [s_ for s_, r_ in flags.items() if r_.get("build_range")]
     st.session_state[f"sl_lists_{mkt}"] = {"FOCUS": picked, "FLAGGED": [s_ for s_ in flags if s_ not in picked]}
@@ -510,7 +528,8 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     st.markdown("#### 2 · Go through each sector and flag the best few")
     if not focus:
         st.info("Pick at least one focus sector above."); return
-    counts = {g: int((v["Sector"] == g).sum()) for g in focus}
+    live = v[~stale]
+    counts = {g: int((live["Sector"] == g).sum()) for g in focus}
     flagged_in = {g: int(((v["Sector"] == g) & v["Flag"]).sum()) for g in focus}
     g = st.radio("Sector", focus, horizontal=True, key=f"sf_sector_{mkt}",
                  format_func=lambda x: f"{x} ({counts.get(x, 0)} · ⚑{flagged_in.get(x, 0)})")
@@ -520,7 +539,12 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     c2.caption("Rules: " + " · ".join(f"**{r}** {n}" for r, n in RULES) +
                ". ✓ pass · ½ half · ✗ fail · · no data. Hover a rule header for its threshold. "
                "Volume (R2) and sector (R3) first — tightness (R6) is only the entry.")
-    part = v[(v["Sector"] == g) & ((v["Score"] >= min_score) | v["Flag"])]
+    part = live[(live["Sector"] == g) & ((live["Score"] >= min_score) | live["Flag"])]
+    gone = v[stale & (v["Sector"] == g)]
+    if not gone.empty:
+        st.caption(f"Not shown — dropped out of today's scan (recent breakouts / watchlist names that no longer pass the "
+                   f"screens): {', '.join(gone['Symbol'])}" + (" · ⚑ flagged ones stay in Flagged, marked dropped out"
+                                                               if gone["Flag"].any() else ""))
     if part.empty:
         st.info("Nothing in this sector at that score."); return
     cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
