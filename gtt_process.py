@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20f · Sector Focus tab (sector → tickers → flagged), watchlist: leadership first"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20g · Sector Focus colours + highlighter (ADR, Ti65, Rel tight, Rel Wk Dist), stock card under every table"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1592,6 +1592,127 @@ def _last_snapshots(sb, mcfg, syms):
     return out
 
 
+def style_leadership(t):
+    """Colour bands for the sector / industry leadership table (Last 5/10, Holding %, Trend)."""
+    def _c(good):
+        def f(v):
+            v = _num(v)
+            if not np.isfinite(v):
+                return ""
+            return "background-color:#28a745;color:white;font-weight:bold" if v >= good[0] else (
+                "background-color:#d4edda;color:black" if v >= good[1] else "")
+        return f
+    sty = t.style.format({"Per 100 in scan": "{:.1f}", "Holding %": "{:.0f}"}, na_rep="–")
+    for c, good in (("Last 5", (5, 3)), ("Last 10", (5, 3)), ("Holding %", (70, 55))):
+        if c in t.columns:
+            sty = sty.map(_c(good), subset=[c])
+    if "Holding %" in t.columns:
+        sty = sty.map(lambda v: "background-color:#f8d7da;color:#721c24" if np.isfinite(_num(v)) and _num(v) < 55 else "",
+                      subset=["Holding %"])
+    if "Trend" in t.columns:
+        sty = sty.map(lambda v: "color:#28a745;font-weight:bold" if v == "↑" else (
+            "color:#dc3545;font-weight:bold" if v == "↓" else ""), subset=["Trend"])
+    return sty
+
+
+# ── Stock card: every data point of one ticker, colour coded (for tables that can't pop a card on click) ──
+CARD_FIELDS = [  # (label, column, format, colour)
+    ("Last", "Last", "{:g}", None), ("Chg %", "_chg_percentclose", "{:+.1f}", "chg"), ("Vol x", "_vol_ratio", "{:.2f}", "vol"),
+    ("Avg vol", "_avgvol_mln", "{:.0f}", None), ("Day vol", "dvol", "{:.0f}", None),
+    ("ADR", "Adr", "{:.1f}", "adr"), ("Ti65", "Ti65", "{:.2f}", "ti65"), ("Rel tight", "_rel_tightness_today", "{:.2f}", "tight"),
+    ("ADRs from 10w", "_rel_wk_dist", "{:.1f}", "relwk"), ("NR4 %", "_nr4", "{:.2f}", None),
+    ("NR4 prev %", "_nr4_previous", "{:.2f}", None), ("Rel tight prev", "_rel_tightness_prev", "{:.2f}", "tight"),
+    ("Off 1M hi %", "off_high_21", "{:.1f}", "off21"), ("Off 6M hi %", "off_high_126", "{:.1f}", "offlong"),
+    ("Off 52W hi %", "off_high_252", "{:.1f}", "offlong"), ("10MA %", "_10madist", "{:.1f}", "ma"), ("20MA %", "_20madist", "{:.1f}", "ma"),
+    ("Wk 10wMA %", "W_Dist10wMA", "{:.1f}", None), ("Wk close chg %", "W_CloseChg_Pct", "{:.1f}", None),
+    ("Wk tight closes", "W_TightCloses_10w", "{:g}", None), ("Wk inside bars", "W_InsideBars", "{:g}", None),
+    ("Avg RS", "Avg_RS", "{:.0f}", None), ("RS 1M", "RS_1M", "{:.0f}", None), ("RS 3M", "RS_3M", "{:.0f}", None),
+    ("RS 6M", "RS_6M", "{:.0f}", None), ("Sector %ile", "Sector_Percentile", "{:.0f}", None),
+    ("Circuit %", "_circuit", "{:.0f}", "circuit"), ("Days since BO", "_days_since_bo", "{:.0f}", None),
+    ("BO value", "_bo_dollar_vol_mln", "{:.0f}", None), ("Vol / float", "_avg_vol_float_ratio", "{:.2f}", None),
+]
+
+
+def _card_colour(kind, v, row):
+    v = _num(v)
+    if not np.isfinite(v):
+        return ""
+    if kind == "adr":
+        return _css("#ffeb3b", "black", True) if v >= 6 else (_css("#fff9c4") if v >= 4.5 else _css("#f8d7da", "#721c24"))
+    if kind == "ti65":
+        return _css("#ffeb3b", "black", True) if v >= 1.25 else (_css("#fff9c4") if v >= 1.1 else (
+            _css("#f8d7da", "#721c24") if v < 1.0 else ""))
+    if kind == "tight":
+        return _css("#ffeb3b", "black", True) if v <= 0.5 else (_css("#fff9c4") if v <= 0.8 else (
+            _css("#f8d7da", "#721c24") if v > 1.2 else ""))
+    if kind == "relwk":
+        return _css("#ffeb3b", "black", True) if v <= 2 else (_css("#fff9c4") if v <= 3 else _css("#f8d7da", "#721c24"))
+    if kind == "off21":
+        a = _num(row.get("Adr"))
+        return _c_off21_adr(abs(v) / a) if np.isfinite(a) and a else ""
+    return {"chg": _c_chg, "vol": _c_vol, "offlong": _c_offhigh_long, "ma": _c_madist, "circuit": _c_circuit}[kind](v)
+
+
+def card_row(sb, mcfg, base_df, sym):
+    """(dict of values, source text) for one ticker: today's scan, else the last saved snapshot."""
+    sym = str(sym).upper().split(":")[-1]
+    if base_df is not None and not getattr(base_df, "empty", True) and "Symbol" in base_df.columns:
+        b = base_df[base_df["Symbol"].astype(str).str.upper() == sym]
+        if not b.empty:
+            return add_derived(b.head(1)).iloc[0].to_dict(), "today's scan"
+    if sb is not None:
+        snap = _last_snapshots(sb, mcfg, [sym])
+        if sym in snap:
+            d_, m = snap[sym]
+            return {k: v for k, v in (m or {}).items() if k != "setups"}, f"last saved {d_} (not in today's scan)"
+    return None, "no data"
+
+
+def render_stock_card(st, sb, mcfg, base_df, symbols, key):
+    """A picker under a table: choose a ticker → a colour-coded card with all its data points."""
+    syms = list(dict.fromkeys(str(s).upper().split(":")[-1] for s in symbols if isinstance(s, str) and s))
+    if not syms:
+        return
+    pick = st.selectbox("🔍 Stock card", ["—"] + syms, key=key, help="All data points for one ticker, colour coded")
+    if pick == "—":
+        return
+    row, src = card_row(sb, mcfg, base_df, pick)
+    if row is None:
+        st.caption(f"No data for {pick}."); return
+    if mcfg.get("market") == "NSE" and sb is not None:
+        try:
+            import nse_bands
+            b = nse_bands.load_bands(sb).get(pick)
+            if b is not None:
+                row["_circuit"] = b
+        except Exception:
+            pass
+    cells = []
+    for label, col, fmt, kind in CARD_FIELDS:
+        v = row.get(col)
+        if v is None or (isinstance(v, float) and not np.isfinite(v)):
+            continue
+        try:
+            txt = fmt.format(float(v))
+        except Exception:
+            txt = str(v)
+        css = _card_colour(kind, v, row) if kind else ""
+        hl = kind in ("adr", "ti65", "tight", "relwk")
+        cells.append(f"<div style='padding:4px 8px;border-radius:6px;{css}'><div style='font-size:11px;opacity:.75'>"
+                     f"{'🖍 ' if hl else ''}{label}</div><div style='font-size:15px'>{txt}</div></div>")
+    head = (f"<div style='font-weight:700;font-size:18px'>{pick}"
+            f"<span style='font-weight:400;font-size:12px;opacity:.7'> · {row.get('Sector') or ''}"
+            f"{' · ' + str(row.get('Industry')) if row.get('Industry') else ''} · {src}</span></div>")
+    st.markdown(head + "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;"
+                "margin-top:6px'>" + "".join(cells) + "</div>", unsafe_allow_html=True)
+    rest = {k: v for k, v in row.items() if k not in {c for _, c, _, _ in CARD_FIELDS} | {"Sector", "Industry"}
+            and v is not None and not (isinstance(v, float) and not np.isfinite(v))}
+    if rest:
+        with st.expander("All other fields"):
+            st.dataframe(pd.DataFrame({"Field": list(rest), "Value": [str(x) for x in rest.values()]}),
+                         hide_index=True, use_container_width=True)
+
+
 def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, saved_syms=None, saved_rows=None):
     if heading:
         st.subheader("Sector leadership · from your breakout history")
@@ -1618,19 +1739,7 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
                "Trend = this week's breakouts vs the 3 weeks before. Holding % = breakouts still above their pre-breakout close "
                "(needs today's scan). Per 100 = breakouts per 100 stocks of that group in today's scan. "
                "Focus on the top 2–3 with ↑ and a good holding rate.")
-    def _c(col, good):
-        def f(v):
-            try:
-                v = float(v)
-            except (TypeError, ValueError):
-                return ""
-            return "background-color:#28a745;color:white;font-weight:bold" if v >= good[0] else (
-                "background-color:#d4edda;color:black" if v >= good[1] else "")
-        return f
-    sty = (t.style.format({"Per 100 in scan": "{:.1f}", "Holding %": "{:.0f}"}, na_rep="")
-           .map(_c("Last 10", (5, 3)), subset=["Last 10"]).map(_c("Holding %", (70, 55)), subset=["Holding %"])
-           .map(lambda v: "color:#28a745;font-weight:bold" if v == "↑" else ("color:#dc3545;font-weight:bold" if v == "↓" else ""),
-                subset=["Trend"]))
+    sty = style_leadership(t)
     st.dataframe(sty, hide_index=True, use_container_width=False, height=min(36 * len(t) + 40, 520),
                  column_config={c: st.column_config.Column(c, width="small") for c in t.columns if c != group})
     _live = None
@@ -1764,6 +1873,7 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
                                                         "breakout record (saved by hand, or before the history starts) · Skipped = recorded in "
                                                         "the batch but left on Skip · Removed = saved once, removed since")
         st.dataframe(sty, hide_index=True, use_container_width=False, column_config=cc)
+        render_stock_card(st, sb, mcfg, base_df, v["Symbol"], key=f"sec_card_{mcfg.get('market')}_{g}")
         st.code(",".join(tv_symbol(x, mcfg) for x in lst["Symbol"]), language=None)
     if not heading:      # shown inside an expander already — no nested expanders
         opts = list(t[group])
@@ -2821,6 +2931,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             ed = st.data_editor(_vdata, hide_index=True, height=420, key=f"wl_editor_{st.session_state.get('wl_theme_key', '')}",
                                 disabled=[c for c in v.columns if c not in editable], column_config=cfgcols)
             applied = st.form_submit_button("Apply changes")
+        render_stock_card(st, sb, mcfg, base_df, v["symbol"], key=f"wl_card_{mcfg.get('market')}")
 
         def tagset(r):
             if multi:

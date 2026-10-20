@@ -40,9 +40,11 @@ RULE_HELP = {
     "R7": "On the 10MA: {ma10_min_adr:g} to +{ma10_max_adr:g} ADR from the 10-day MA",
     "R8": "Weekly: ≤ {wk_full:g} ADR from the 10-week MA (½ for {wk_full:g}–{wk_half:g}, ✗ above)",
 }
-SHOW = ["Flag", "Symbol", "Score", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO", "BO vol x",
-        "ADR", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Chg %", "Vol x",
-        "Circuit %", "Data"]
+HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
+SHOW = ["Flag", "Symbol", "Score"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
+        "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x", "Circuit %", "Data"]
+NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
+           "Avg vol", "Chg %", "Vol x", "Circuit %"]
 
 
 def _num(x):
@@ -116,7 +118,7 @@ def _universe(sb, base_df, mcfg, hist, watch):
     if "Sector" not in u.columns:
         u["Sector"] = np.nan
     u["Sector"] = u["Sector"].where(u["Sector"].notna() & (u["Sector"] != "Unknown"), u["Symbol"].map(sec))
-    for c in ("Adr", "_avgvol_mln", "_rel_tightness_today", "off_high_21", "off_high_252", "_10madist", "_rel_wk_dist",
+    for c in ("Adr", "Ti65", "_avgvol_mln", "_rel_tightness_today", "off_high_21", "off_high_252", "_10madist", "_rel_wk_dist",
               "_chg_percentclose", "_vol_ratio", "_circuit", "_days_since_bo", "_bo_dollar_vol_mln", "W_Dist10wMA", "_nr4"):
         u[c] = pd.to_numeric(u[c], errors="coerce") if c in u.columns else np.nan
     adr = u["Adr"].replace(0, np.nan)
@@ -196,6 +198,9 @@ def score(u, cfg, focus, bos, tiers=None):
     v = v.rename(columns={"Adr": "ADR", "_rel_tightness_today": "Rel tight", "_off21_adr": "Off 1M (ADR)",
                           "off_high_252": "Off 52W %", "_ma10_adr": "10MA (ADR)", "_rel_wk_dist": "ADRs from 10w",
                           "_avgvol_mln": "Avg vol", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_circuit": "Circuit %"})
+    for c in NUMERIC:
+        if c in v.columns:
+            v[c] = pd.to_numeric(v[c], errors="coerce")
     return v.sort_values(["Score", "Rel tight"], ascending=[False, True], na_position="last")
 
 
@@ -213,7 +218,8 @@ def _c_score(x):
     x = _num(x)
     if not np.isfinite(x):
         return ""
-    return _css("#28a745", "white", True) if x >= 7 else _css("#8ee68e") if x >= 6 else _css("#d4edda") if x >= 5 else ""
+    return _css("#155724", "white", True) if x >= 7 else _css("#28a745", "white", True) if x >= 6 else \
+        _css("#8ee68e") if x >= 5 else _css("#d4edda") if x >= 4 else ""
 
 
 def _c_data(x):
@@ -221,17 +227,45 @@ def _c_data(x):
     return "color:#28a745" if s == "today" else ("color:#b58900;font-style:italic" if s.startswith("as of") else "color:#9aa7ba")
 
 
-def style(v):
-    fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Rel tight": "{:.2f}", "Off 1M (ADR)": "{:.1f}",
-           "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}", "Avg vol": "{:.0f}", "Chg %": "{:+.1f}",
-           "Vol x": "{:.1f}", "Circuit %": "{:.0f}"}
+def _hl(kind):
+    """Highlighter colours for the four key columns: bright yellow = great, pale = fine, red = poor."""
+    return lambda v: gp._card_colour(kind, v, {})
+
+
+def _c_adr_dist(v, good=0.5, ok=1.0, fair=2.0):
+    v = _num(v)
+    if not np.isfinite(v):
+        return ""
+    a = abs(v)
+    return _css("#28a745", "white", True) if a <= good else _css("#8ee68e") if a <= ok else \
+        _css("#d4edda") if a <= fair else _css("#fff3cd", "#664d03")
+
+
+def _c_ma10(v):
+    v = _num(v)
+    if not np.isfinite(v):
+        return ""
+    if v < -0.3:
+        return _css("#f8d7da", "#721c24")
+    return _c_adr_dist(v)
+
+
+def style(v, liq_floor=50.0):
+    fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Ti65": "{:.2f}", "Rel tight": "{:.2f}",
+           "Off 1M (ADR)": "{:.1f}", "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}",
+           "Avg vol": "{:.0f}", "Chg %": "{:+.1f}", "Vol x": "{:.1f}", "Circuit %": "{:.0f}"}
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     rc = [r for r, _ in RULES if r in v.columns]
     if rc:
         sty = sty.map(_c_rule, subset=rc)
-    for c, f in (("Score", _c_score), ("Data", _c_data), ("Circuit %", gp._c_circuit)):
+    for c, f in (("Score", _c_score), ("Data", _c_data), ("Circuit %", gp._c_circuit),
+                 ("ADR", _hl("adr")), ("Ti65", _hl("ti65")), ("Rel tight", _hl("tight")), ("ADRs from 10w", _hl("relwk")),
+                 ("BO vol x", gp._c_vol), ("Vol x", gp._c_vol), ("Chg %", gp._c_chg),
+                 ("Off 1M (ADR)", _c_adr_dist), ("Off 52W %", gp._c_offhigh_long), ("10MA (ADR)", _c_ma10)):
         if c in v.columns:
             sty = sty.map(f, subset=[c])
+    if "Avg vol" in v.columns:
+        sty = sty.apply(lambda col: gp._liq_styles(col, liq_floor), subset=["Avg vol"])
     return sty
 
 
@@ -239,6 +273,10 @@ def _colcfg(st, cfg):
     cc = {r: st.column_config.TextColumn(r, width="small", help=f"{name}: " + RULE_HELP[r].format(**cfg))
           for r, name in RULES}
     cc.update({
+        "ADR": st.column_config.NumberColumn("🖍 ADR", help="Average daily range %. Yellow ≥ 6 · pale ≥ 4.5 · red below", width="small"),
+        "Ti65": st.column_config.NumberColumn("🖍 Ti65", help="Trend intensity (price ÷ 65-day avg). Yellow ≥ 1.25 · pale ≥ 1.1 · red < 1", width="small"),
+        "Rel tight": st.column_config.NumberColumn("🖍 Rel tight", help="Today's NR4 ÷ ADR. Yellow ≤ 0.5 · pale ≤ 0.8 · red > 1.2", width="small"),
+        "ADRs from 10w": st.column_config.NumberColumn("🖍 Rel Wk Dist", help="ADRs from the 10-week MA. Yellow ≤ 2 · pale 2–3 · red > 3", width="small"),
         "Flag": st.column_config.CheckboxColumn("⚑", help="Flag for the shortlist (saved when you press Save flags)", width="small"),
         "Symbol": st.column_config.TextColumn("Symbol", width="small"),
         "Score": st.column_config.NumberColumn("Score", help="Rules passed out of 8 (½ counts half)", width="small"),
@@ -284,7 +322,8 @@ def render_sector_focus_tab(st, sb, base_df, mcfg):
                "Last 5/10/20 count breakouts, Stocks counts different names.")
     c1, c2 = st.columns([3, 2])
     with c1:
-        st.dataframe(t.head(12), hide_index=True, use_container_width=True, height=min(36 * min(len(t), 12) + 40, 470))
+        st.dataframe(gp.style_leadership(t.head(12)), hide_index=True, use_container_width=True,
+                     height=min(36 * min(len(t), 12) + 40, 470))
     with c2:
         key = f"sf_focus_{mkt}"
         if key not in st.session_state:
@@ -323,10 +362,11 @@ def render_sector_focus_tab(st, sb, base_df, mcfg):
         st.info("Nothing in this sector at that score."); return
     cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
     ver = st.session_state.get(f"sf_ver_{mkt}", 0)
-    ed = st.data_editor(style(part[cols].reset_index(drop=True)), hide_index=True, use_container_width=True,
+    ed = st.data_editor(style(part[cols].reset_index(drop=True), cfg["min_liq"]), hide_index=True, use_container_width=True,
                         column_config=_colcfg(st, cfg), disabled=[c for c in cols if c != "Flag"],
                         key=f"sf_ed_{mkt}_{g}_{sd}_{ver}", height=min(36 * len(part) + 40, 560))
     st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}).")
+    gp.render_stock_card(st, sb, mcfg, base_df, part["Symbol"], key=f"sf_card_{mkt}_{g}")
     if st.button(f"Save flags for {g}", type="primary", key=f"sf_save_{mkt}"):
         now = set(ed.loc[ed["Flag"] == True, "Symbol"])  # noqa: E712
         was = set(part.loc[part["Flag"], "Symbol"])
@@ -370,9 +410,8 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
     d["Note"] = d["note"].fillna("")
     d["Unflag"] = False
     d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
-    show = ["Pick", "Rank", "Symbol", "Sector", "Score"] + [r for r, _ in RULES] + \
-           ["BO", "BO vol x", "ADR", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol",
-            "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
+    show = ["Pick", "Rank", "Symbol", "Sector", "Score"] + HIGHLIGHT + [r for r, _ in RULES] + \
+           ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
     show = [c for c in show if c in d.columns]
     n_pick = int(d["Pick"].sum())
     st.caption(f"**{len(d)} flagged · {n_pick} picked** (aim for {cfg['target']}). Tick **Pick** = draw the range and set "
@@ -387,7 +426,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                "Flagged": st.column_config.TextColumn("Flagged", width="small")})
     ver = st.session_state.get(f"sf_fver_{mkt}", 0)
     with st.form(f"sf_flag_form_{mkt}", border=False):
-        ed = st.data_editor(style(d[show].reset_index(drop=True)), hide_index=True, use_container_width=True,
+        ed = st.data_editor(style(d[show].reset_index(drop=True), cfg["min_liq"]), hide_index=True, use_container_width=True,
                             column_config=cc, disabled=[c for c in show if c not in ("Pick", "Rank", "Note", "Unflag")],
                             key=f"sf_fed_{mkt}_{ver}", height=min(36 * len(d) + 40, 520))
         saved = st.form_submit_button("Save shortlist", type="primary")
@@ -410,6 +449,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                 update_flag(sb, mcfg, s, **ch)
         st.session_state[f"sf_fver_{mkt}"] = ver + 1
         st.success("Saved."); st.rerun()
+    gp.render_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), d["Symbol"], key=f"sf_fcard_{mkt}")
     picks = d[d["Pick"]].sort_values("Rank", na_position="last")["Symbol"].tolist()
     if picks:
         gp.copy_area(st, f"Picked {len(picks)} — draw ranges and set alerts (TradingView)",

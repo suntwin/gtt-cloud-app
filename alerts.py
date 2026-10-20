@@ -340,6 +340,8 @@ def render_alerts_tab(st, sb, base_df, mcfg):
                                 "Line": st.column_config.TextColumn(help="Trendline ≈ : today's value is estimated from the line's slope and the bar count"),
                                 "Note": st.column_config.TextColumn(width="medium")})
     st.caption("Trendline prices are estimated for today's bar. Last / To alert % come from today's scan (generate data first).")
+    if scope == mkt:
+        gp.render_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), v["Symbol"], key=f"al_card_{mkt}")
 
     if scope == mkt:
         waiting = set(t.loc[~t["_trig"], "Symbol"].astype(str).str.upper())

@@ -710,6 +710,8 @@ def render_shortlister_tab(st, sb, base_df, saved_prefs, mcfg):
                 column_config=cc, hide_index=True, use_container_width=True,
                 disabled=[c for c in cols if c not in EDIT_COLS], key=f"sl_{mcfg['market']}_{key}_{sd}")
             _copy_box(st, edited[key], mcfg, SETUPS[key], f"sl_copy_{key}")
+    gp.render_stock_card(st, sb, mcfg, base_df, [s for k in lists for s in lists[k]["Symbol"]] if lists else [],
+                         key=f"sl_card_{mcfg.get('market')}")
     c1, c2 = st.columns([1, 3])
     with c1:
         if st.button("Save shortlist", type="primary", disabled=not can_save, key="sl_save"):
