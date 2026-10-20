@@ -68,6 +68,28 @@ CARD_NAMES = {"Last": "Last", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol r
               "Industry": "Industry", "Sector": "Sector", "Entry": "Entry plan", "Pivot": "Pivot", "Stop guide": "Stop guide"}
 
 
+CARD_FIRST = ["Score", "Setup", "🖍 ADR", "🖍 Ti65", "🖍 Rel tight", "🖍 Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
+              "NR4 prev %", "Avg RS", "Sector %ile", "10MA %", "20MA %"]
+
+
+def _tips(cfg):
+    """Header hover text: the rule thresholds and what the key columns mean."""
+    t = {r: RULE_HELP[r].format(**cfg) for r, _ in RULES}
+    t.update({"ADR": "Average daily range %. Yellow ≥ 6 · pale ≥ 4.5 · red below",
+              "Ti65": "Trend intensity (price ÷ 65-day avg). Yellow ≥ 1.25 · pale ≥ 1.1 · red < 1",
+              "Rel tight": "Today's NR4 ÷ ADR — lower is tighter. Yellow ≤ 0.5 · pale ≤ 0.8 · red > 1.2",
+              "ADRs from 10w": "Relative weekly distance: ADRs from the 10-week MA. Yellow ≤ 2 · pale 2–3 · red > 3",
+              "Score": "Rules passed out of 8 (½ counts half)",
+              "Setup": "1-min ORH ready = volume came + tight + within 1 ADR of the pivot · Leader flag on 10MA = extended "
+                       "weekly but resting on the 10MA · Tight at pivot, no volume yet = anticipation",
+              "Flag": "Tick to flag, then Save flags", "Pick": "Build the range + set the alert",
+              "Pivot": "1-month high: starting line for the range", "Stop guide": "Widest stop: pivot − 1 ADR (use the LOD if tighter)",
+              "Off 1M (ADR)": "Below the 1-month high, in ADRs", "10MA (ADR)": "Distance from the 10-day MA, in ADRs",
+              "Source": "Breakout = volume came in recently · P1/P2/P3 = anticipation tier (ADR)",
+              "Data": "today = today's scan · dropped out = not in today's scan (no numbers shown)"})
+    return t
+
+
 def _card_extra(df, shown):
     """Every other attribute of each row for the click card (friendly names, skips internals and empties)."""
     keep = [c for c in df.columns if c not in shown and c not in ("Flag", "_bo_age", "_bo_chg", "Scan_Count", "Missing_Weekly",
@@ -548,29 +570,28 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     if part.empty:
         st.info("Nothing in this sector at that score."); return
     cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
-    ver = st.session_state.get(f"sf_ver_{mkt}", 0)
     pv = part.reset_index(drop=True)
     gv = pv[cols].copy()
-    gv["Flag"] = np.where(gv["Flag"], "⚑", "")
-    gp.card_grid(st, gv, key=f"sf_grid_{mkt}_{g}_{sd}_{ver}", sty=style(gv, cfg["min_liq"]),
-                 extra=_card_extra(pv, cols), labels=LABELS,
-                 height=min(32 * len(pv) + 70, 560), widths={"Symbol": 115, "Setup": 170, "Flags": 200, "Source": 110})
-    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). **Click a ticker** for all its data.")
+    gv["Flag"] = gv["Flag"].astype(bool)
     was = set(part.loc[part["Flag"], "Symbol"])
-    with st.form(f"sf_flagform_{mkt}_{g}_{ver}", border=False):      # nothing is sent until Save
-        c1, c2 = st.columns([5, 1])
-        chosen = c1.multiselect(f"⚑ Flagged in {g} — add or remove, then Save", list(pv["Symbol"]),
-                                default=[x for x in pv["Symbol"] if x in was], key=f"sf_flagsel_{mkt}_{g}_{ver}")
-        c2.write("")
-        save = c2.form_submit_button("Save flags", type="primary", use_container_width=True)
-    if save:
-        now = set(chosen)
+    ed, save = gp.card_grid(st, gv, key=f"sf_grid_{mkt}_{g}_{sd}", sty=style(gv, cfg["min_liq"]),
+                            extra=_card_extra(pv, cols), labels=LABELS, tips=_tips(cfg), card_first=CARD_FIRST,
+                            edit={"Flag": "bool"}, submit=f"Save flags for {g}",
+                            height=min(32 * len(pv) + 70, 560), widths={"Symbol": 115, "Setup": 170, "Flags": 200, "Source": 110})
+    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). **Click a ticker** for all its "
+               "data · tick ⚑ on the rows you like, then **Save flags** (nothing reloads while you tick or sort).")
+    okey = f"sf_order_{mkt}_{g}"
+    if save and ed is not None and "Symbol" in ed.columns:
+        st.session_state[okey] = list(ed["Symbol"])                  # the grid's sort order at Save
+        now = set(ed.loc[ed["Flag"].fillna(False).astype(bool), "Symbol"])
         if now != was:
             add_flags(sb, mcfg, sorted(now - was), sector=g, source=g)
             remove_flags(sb, mcfg, was - now)
-            st.session_state[f"sf_ver_{mkt}"] = ver + 1
             st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
             _rerun(st)
+    order = [x for x in st.session_state.get(okey, []) if x in set(pv["Symbol"])] or list(pv["Symbol"])
+    gp.copy_area(st, f"{g}: {len(order)} tickers in the table's order (sort the table, press Save to refresh) — for TradingView",
+                 ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"sf_copy_sec_{mkt}_{g}")
 
     # ── Step 3: flagged ──
     st.markdown("---")
@@ -632,25 +653,19 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                "Note": st.column_config.TextColumn("Note", width="medium"),
                "Unflag": st.column_config.CheckboxColumn("Unflag", width="small"),
                "Flagged": st.column_config.TextColumn("Flagged", width="small")})
-    ver = st.session_state.get(f"sf_fver_{mkt}", 0)
     dv = d.reset_index(drop=True)
-    shown = [c for c in show if c not in ("Unflag",)]
-    gv = dv[shown].copy()
-    gv["Pick"] = np.where(gv["Pick"], "✓", "")
-    gp.card_grid(st, gv, key=f"sf_fgrid_{mkt}_{ver}", sty=style(gv, cfg["min_liq"]),
-                 extra=_card_extra(dv, shown), labels={**LABELS, "Entry": "Entry plan"},
-                 height=min(32 * len(dv) + 70, 520), widths={"Symbol": 115, "Setup": 170, "Entry": 300, "Flags": 200})
-    st.caption("**Click a ticker** for all its data. Pick / rank / note / unflag in the small table below, then Save.")
-    with st.form(f"sf_fform_{mkt}_{ver}", border=False):            # nothing is sent until Save
-        ed = st.data_editor(dv[["Symbol", "Pick", "Rank", "Note", "Unflag"]], hide_index=True, use_container_width=False,
-                            key=f"sf_fed_{mkt}_{ver}", disabled=["Symbol"],
-                            column_config={"Pick": st.column_config.CheckboxColumn("Pick", help="Build the range + alert"),
-                                           "Rank": st.column_config.NumberColumn("Rank", min_value=1, max_value=99, step=1),
-                                           "Note": st.column_config.TextColumn("Note", width="large"),
-                                           "Unflag": st.column_config.CheckboxColumn("Unflag")})
-        saved = st.form_submit_button("Save shortlist", type="primary")
+    gv = dv[show].copy()
+    for c in ("Pick", "Unflag"):
+        gv[c] = gv[c].fillna(False).astype(bool)
+    ed, saved = gp.card_grid(st, gv, key=f"sf_fgrid_{mkt}", sty=style(gv, cfg["min_liq"]),
+                             extra=_card_extra(dv, show), labels={**LABELS, "Entry": "Entry plan"}, tips=_tips(cfg),
+                             card_first=CARD_FIRST, edit={"Pick": "bool", "Rank": "number", "Note": "text", "Unflag": "bool"},
+                             submit="Save shortlist", height=min(32 * len(dv) + 70, 520),
+                             widths={"Symbol": 115, "Setup": 170, "Entry": 300, "Flags": 200})
+    st.caption("**Click a ticker** for all its data · tick Pick / Unflag, type a Rank or Note on the row, then **Save shortlist**.")
     changed = False
-    if saved and ed is not None:
+    if saved and ed is not None and "Symbol" in ed.columns:
+        st.session_state[f"sf_forder_{mkt}"] = list(ed["Symbol"])     # the grid's sort order at Save
         orig = d.set_index("Symbol")
         for r in ed.to_dict("records"):
             s = r["Symbol"]
@@ -670,11 +685,12 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
             if ch:
                 update_flag(sb, mcfg, s, **ch); changed = True
         if changed:
-            st.session_state[f"sf_fver_{mkt}"] = ver + 1
             st.toast("Saved."); _rerun(st)
     picks = d[d["Pick"]].sort_values("Rank", na_position="last")["Symbol"].tolist()
     if picks:
         gp.copy_area(st, f"Picked {len(picks)} — draw ranges and set alerts (TradingView)",
                      ",".join(gp.tv_symbol(s, mcfg) for s in picks), key=f"sf_copy_pick_{mkt}")
-    gp.copy_area(st, f"All {len(d)} flagged (TradingView)", ",".join(gp.tv_symbol(s, mcfg) for s in d["Symbol"]),
-                 key=f"sf_copy_all_{mkt}")
+    order = [x for x in st.session_state.get(f"sf_forder_{mkt}", []) if x in set(d["Symbol"])]
+    order += [x for x in d["Symbol"] if x not in order]
+    gp.copy_area(st, f"All {len(order)} flagged, in the table's order (sort the table, press Save to refresh) — for TradingView",
+                 ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"sf_copy_all_{mkt}")

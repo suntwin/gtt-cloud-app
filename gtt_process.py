@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20k · Sector Focus: no reload on ticks (read-only grid + Save forms), ticker click card"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20l · Flag on the ticker row (grid inside a form: no reload until Save), card order, rule hovers, copy in sort order"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2483,9 +2483,17 @@ function(params){
     'max-height:96%;overflow:auto;z-index:99999;' +
     'background:#ffffff;color:#111;border:1px solid #bbb;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.35);' +
     'font:12px/1.25 -apple-system,Segoe UI,Roboto,sans-serif;padding:6px 8px;';
-  const skip = ['Keep','CONT','Symbol','Sector_Rank','Sector_Total'];
+  const skip = ['Keep','CONT','Symbol','Sector_Rank','Sector_Total','Flag','Pick','Unflag'];
   let rows = '';
-  params.api.getColumns().forEach(function(c){
+  let cols = params.api.getColumns().slice();
+  const first = (params.context && params.context.cardFirst) ? params.context.cardFirst : [];
+  if(first.length){
+    const pos = function(c){ const h = c.getColDef().headerName || c.getColDef().field; const i = first.indexOf(h);
+                             const j = first.indexOf(c.getColDef().field); const k = (i >= 0 ? i : j); return k >= 0 ? k : 999; };
+    cols = cols.map(function(c, i){ return [pos(c), i, c]; }).sort(function(a, b){ return a[0] - b[0] || a[1] - b[1]; })
+               .map(function(x){ return x[2]; });
+  }
+  cols.forEach(function(c){
     const cd = c.getColDef(); const f = cd.field;
     if(!f || skip.indexOf(f) >= 0 || f.indexOf('__') === 0) return;
     let v = params.data[f];
@@ -2535,12 +2543,18 @@ def live_extra(base_df, symbols):
     return b.reindex(syms).reset_index(drop=True)
 
 
-def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, height=420, widths=None, fmt=None):
+def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, height=420, widths=None, fmt=None,
+              tips=None, card_first=None, submit=None):
     """AgGrid table where clicking a ticker opens the white card with ALL its attributes.
 
-    view   visible columns (in order) · sty: optional pandas Styler of `view` (its colours are reused)
-    extra  more attributes per row (same row order), hidden in the grid but shown in the card
-    edit   kept for compatibility; the grid is always read-only (do edits in an st.form)
+    view       visible columns (in order) · sty: optional pandas Styler of `view` (its colours are reused)
+    extra      more attributes per row (same row order), hidden in the grid but shown in the card
+    tips       {column: header hover text}
+    card_first card fields shown first, in this order (header names or fields); the rest follow
+    edit       {column: "bool" | "number" | "text"} editable cells. The grid then sits inside an st.form: ticking,
+               typing, sorting and filtering send NOTHING until the `submit` button is pressed (tested in a browser —
+               no round trip). Returns (rows as shown — edited, in the grid's current sort/filter order, submitted).
+               Without `edit` the grid is read-only and returns None.
     """
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
     labels, edit, widths, fmt = labels or {}, edit or {}, widths or {}, fmt or {}
@@ -2563,14 +2577,15 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
     data = _grid_safe(data)
     gb = GridOptionsBuilder.from_dataframe(data)
     gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=55, flex=0)
-    gb.configure_grid_options(enableBrowserTooltips=True, onCellClicked=row_card_js(), rowHeight=30,
-                              suppressRowClickSelection=True)
+    gb.configure_grid_options(enableBrowserTooltips=True, tooltipShowDelay=200, onCellClicked=row_card_js(), rowHeight=30,
+                              suppressRowClickSelection=True, context={"cardFirst": list(card_first or [])},
+                              stopEditingWhenCellsLoseFocus=True)
     style_js = JsCode(_CSS_FROM_DATA)
     for c in data.columns:
         if str(c).startswith("__s_") or c in hidden:
             gb.configure_column(c, hide=True)
             continue
-        kw = {"headerName": labels.get(c, c), "headerTooltip": labels.get(c, c)}
+        kw = {"headerName": labels.get(c, c), "headerTooltip": (tips or {}).get(c, labels.get(c, c))}
         if c in widths:
             kw["minWidth"] = widths[c]
         if "__s_" + str(c) in data.columns:
@@ -2587,13 +2602,22 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
         elif kind == "text":
             kw.update(editable=True, cellEditor="agTextCellEditor", minWidth=160)
         gb.configure_column(c, **kw)
-    # Read-only on purpose: update_on=[] so sorting, filtering, clicking a ticker (card) never reruns the app.
-    # (st_aggrid 1.2's "Manual Update" toolbar button is a no-op, and any update_on event reruns on every tick —
-    # so edits are done in a separate st.form next to the grid instead.)
-    AgGrid(data, gridOptions=gb.build(), height=height, width="100%", key=key, allow_unsafe_jscode=True,
-           update_mode=GridUpdateMode.NO_UPDATE, update_on=[], show_toolbar=False,
-           data_return_mode=DataReturnMode.AS_INPUT)
-    return None
+    if not edit:
+        # read-only: update_on=[] so sorting, filtering and clicking a ticker (card) never rerun the app
+        AgGrid(data, gridOptions=gb.build(), height=height, width="100%", key=key, allow_unsafe_jscode=True,
+               update_mode=GridUpdateMode.NO_UPDATE, update_on=[], show_toolbar=False,
+               data_return_mode=DataReturnMode.AS_INPUT)
+        return None
+    # Editable: inside a form, the grid's events are held until Save (st_aggrid's own "Manual Update" button is a
+    # no-op in 1.2, and outside a form every tick would rerun the app).
+    with st.form(f"{key}_form", border=False):
+        resp = AgGrid(data, gridOptions=gb.build(), height=height, width="100%", key=key, allow_unsafe_jscode=True,
+                      update_on=["cellValueChanged", "sortChanged", "filterChanged"], show_toolbar=False,
+                      data_return_mode=DataReturnMode.FILTERED_AND_SORTED)
+        submitted = st.form_submit_button(submit or "Save", type="primary")
+    out = resp["data"] if resp is not None else None
+    out = pd.DataFrame(out) if out is not None else data
+    return out, submitted
 
 
 def _tomorrow_grid(view, cfg, key):
