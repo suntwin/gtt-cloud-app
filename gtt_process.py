@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20e · Sector breakouts: Data column (today / as of / not in scan), – for missing values"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20f · Sector Focus tab (sector → tickers → flagged), watchlist: leadership first"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2669,7 +2669,15 @@ def _saved_groups(wdf, live, hist):
 
 
 def _render_saved_themes(st, v, wdf, hist, base_df, mcfg, sb=None):
-    """Theme counts for the saved breakouts + a filter. Returns the (possibly filtered) table."""
+    """Leadership over time (all recorded breakouts), then theme counts for the saved breakouts + a filter.
+    Returns the (possibly filtered) table."""
+    if hist is not None and not hist.empty:
+        with st.container(border=True):
+            st.markdown("**Leadership over time** · every breakout recorded in your evening batches, saved or skipped (last 20 sessions)")
+            _mine = set(wdf["symbol"].astype(str).str.upper()) if wdf is not None and not wdf.empty and "symbol" in wdf.columns else set()
+            _rows = v[[c for c in ("symbol", "Sector", "Industry", "trigger_date", "last_trigger_date", "trigger_close",
+                           "prev_close", "vol_ratio") if c in v.columns]].copy()
+            render_sector_leadership(st, sb, base_df, mcfg, hist=hist, heading=False, saved_syms=_mine, saved_rows=_rows)
     with st.container(border=True):
         st.markdown("**Themes in your saved breakouts**")
         c1, c2 = st.columns([1, 3])
@@ -2696,12 +2704,6 @@ def _render_saved_themes(st, v, wdf, hist, base_df, mcfg, sb=None):
         pick = st.multiselect(f"Show only these {group.lower()}s in the table below (and in Copy all)", opts,
                               key=f"wl_theme_pick_{group}")
         st.session_state["wl_theme_key"] = f"{group}:{'|'.join(sorted(pick))}"
-        if hist is not None and not hist.empty:
-            with st.expander("Leadership over time · every breakout recorded in your evening batches, saved or skipped (last 20 sessions)"):
-                _mine = set(wdf["symbol"].astype(str).str.upper()) if wdf is not None and not wdf.empty and "symbol" in wdf.columns else set()
-                _rows = v[[c for c in ("symbol", "Sector", "Industry", "trigger_date", "last_trigger_date", "trigger_close",
-                               "prev_close", "vol_ratio") if c in v.columns]].copy()
-                render_sector_leadership(st, sb, base_df, mcfg, hist=hist, heading=False, saved_syms=_mine, saved_rows=_rows)
     return v[g.isin(pick)] if pick else v
 
 
@@ -2725,39 +2727,10 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
     if not wdf.empty:
         wdf["_tags"] = [tags_of(r) for r in watch]
 
-    # ── 1. Generate lists ──
-    st.markdown("#### Generate a list")
-    counts = pd.Series([t for ts in wdf["_tags"] for t in ts]).value_counts().to_dict() if not wdf.empty else {}
-    btns = [("TOMORROW", f"Tomorrow's list ({len(tlist)})")] + [(t, f"{t} ({counts.get(t, 0)})") for t in SETUP_TYPES]
-    if counts.get("UNTAGGED"):
-        btns.append(("UNTAGGED", f"UNTAGGED ({counts['UNTAGGED']})"))
-    for c, (k, label) in zip(st.columns(len(btns)), btns):
-        if c.button(label, key=f"wl_btn_{k}", use_container_width=True):
-            st.session_state["wl_show"] = k
-    min_r = st.radio("Minimum rating for breakout lists", ["Any", "3★+", "4★+", "5★"], horizontal=True, key="wl_minr")
-    min_n = {"Any": 0, "3★+": 3, "4★+": 4, "5★": 5}[min_r]
-    show = st.session_state.get("wl_show")
-    if show:
-        if show == "TOMORROW":
-            syms, ex = tlist, {}
-            st.caption(f"Tomorrow's list saved on {tdate or '—'} — tightest first (rel tightness on the day saved).")
-        else:
-            part = wdf[wdf["_tags"].map(lambda ts: show in ts)] if not wdf.empty else wdf
-            if not part.empty and min_n:
-                part = part[part["rating"].fillna(0) >= min_n]
-            if not part.empty:
-                part = part.assign(_r=part["rating"].fillna(0)).sort_values(["_r", "symbol"], ascending=[False, True])
-            syms = part["symbol"].tolist() if not part.empty else []
-            ex = dict(zip(part["symbol"], part["exchange"])) if not part.empty else {}
-            st.caption(SETUP_NAMES.get(show, show))
-        if syms:
-            st.code(",".join(tv_symbol(s, mcfg, ex.get(s)) for s in syms), language=None)
-            st.caption(f"{len(syms)} symbols — paste into TradingView.")
-        else:
-            st.info("Empty.")
+    # minimum rating (its radio sits in "Generate a list" further down; read here for Copy all)
+    min_n = {"Any": 0, "3★+": 3, "4★+": 4, "5★": 5}.get(st.session_state.get("wl_minr", "Any"), 0)
 
     # ── 2. Active watchlist with today's data ──
-    st.markdown("---"); st.markdown("#### Saved breakouts")
     if wdf.empty:
         st.info("Nothing saved yet. Tag breakouts in the scanner's Post Breakout mode.")
     else:
@@ -2800,6 +2773,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         v.insert(v.columns.get_loc("symbol") + 1, "Sector", v["symbol"].map(sec))
         v.insert(v.columns.get_loc("Sector") + 1, "Industry", v["symbol"].map(ind))
         v = _render_saved_themes(st, v, wdf, _hist, base_df, mcfg, sb)
+        st.markdown("---"); st.markdown("#### Saved breakouts")
         _notes = latest_note_by_symbol(sb, mcfg)
         if _notes:
             v["My note"] = v["symbol"].map(_notes)
@@ -2899,6 +2873,37 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         if st.session_state.get("wl_copy_all_on") and allsyms:
             st.code(",".join(tv_symbol(s_, mcfg, exmap.get(s_)) for s_ in allsyms), language=None)
             st.caption(f"{len(allsyms)} symbols — click the copy icon, then paste into a TradingView watchlist.")
+
+    # ── Generate lists (moved down: rarely used) ──
+    st.markdown("---"); st.markdown("#### Generate a list")
+    counts = pd.Series([t for ts in wdf["_tags"] for t in ts]).value_counts().to_dict() if not wdf.empty else {}
+    btns = [("TOMORROW", f"Tomorrow's list ({len(tlist)})")] + [(t, f"{t} ({counts.get(t, 0)})") for t in SETUP_TYPES]
+    if counts.get("UNTAGGED"):
+        btns.append(("UNTAGGED", f"UNTAGGED ({counts['UNTAGGED']})"))
+    for c, (k, label) in zip(st.columns(len(btns)), btns):
+        if c.button(label, key=f"wl_btn_{k}", use_container_width=True):
+            st.session_state["wl_show"] = k
+    min_r = st.radio("Minimum rating for breakout lists", ["Any", "3★+", "4★+", "5★"], horizontal=True, key="wl_minr")
+    min_n = {"Any": 0, "3★+": 3, "4★+": 4, "5★": 5}[min_r]
+    show = st.session_state.get("wl_show")
+    if show:
+        if show == "TOMORROW":
+            syms, ex = tlist, {}
+            st.caption(f"Tomorrow's list saved on {tdate or '—'} — tightest first (rel tightness on the day saved).")
+        else:
+            part = wdf[wdf["_tags"].map(lambda ts: show in ts)] if not wdf.empty else wdf
+            if not part.empty and min_n:
+                part = part[part["rating"].fillna(0) >= min_n]
+            if not part.empty:
+                part = part.assign(_r=part["rating"].fillna(0)).sort_values(["_r", "symbol"], ascending=[False, True])
+            syms = part["symbol"].tolist() if not part.empty else []
+            ex = dict(zip(part["symbol"], part["exchange"])) if not part.empty else {}
+            st.caption(SETUP_NAMES.get(show, show))
+        if syms:
+            st.code(",".join(tv_symbol(s, mcfg, ex.get(s)) for s in syms), language=None)
+            st.caption(f"{len(syms)} symbols — paste into TradingView.")
+        else:
+            st.info("Empty.")
 
     # ── 3. Add manually ──
     with st.container(border=True):

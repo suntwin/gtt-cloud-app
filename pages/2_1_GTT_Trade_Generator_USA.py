@@ -11,6 +11,7 @@ from gtt_process import MARKETS, tv_symbol, breakout_batch_lists, render_rules_t
 from gtt_process import assign_scan_columns, _JS as _GTT_JS
 from shortlister import render_shortlister_tab
 from alerts import render_alerts_tab
+from focus_flow import render_sector_focus_tab
 from gtt_process import auto_record_breakouts
 from gtt_process import render_market_gate, render_quick_note, render_journal_tab, render_breadth_tab, save_auto_breadth, journal_session, remember_scan, restore_scan, row_card_js, render_sector_leadership
 
@@ -566,7 +567,7 @@ def main():
             else:
                 st.error("Failed to retrieve base 1M scan data."); st.session_state.gtt_base_df = None
 
-    tab1, tab7, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Shortlister", "Alert Management", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
+    tab1, tab9, tab7, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Sector Focus", "Shortlister", "Alert Management", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 1: SCANNER (NO SCORING — just computed columns + filters)
@@ -979,6 +980,9 @@ def main():
     # ════════════════════════════════════════════════════════════════════
     with tab7:
         render_shortlister_tab(st, supabase, st.session_state.get('gtt_base_df'), saved_prefs, MARKET_CFG)
+
+    with tab9:
+        render_sector_focus_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
 
     with tab8:
         render_alerts_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)

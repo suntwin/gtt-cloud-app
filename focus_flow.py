@@ -1,0 +1,418 @@
+"""
+Sector Focus — the evening process in one tab, sector by sector:
+
+  1. Sectors   pick 2–3 focus sectors (leadership = breakouts recorded in your evening batches)
+  2. Tickers   work one sector at a time: every stock of that sector (today's scan, recent breakouts, watchlist)
+               with the 8 rules as ✓ / ½ / ✗ and a score — flag the few worth a range
+  3. Flagged   every flagged stock (all sectors, kept across days): rank, note, tick "Build range" → your 5–6
+
+The 8 rules (volume first, tightness last):
+  1 Liquid      avg traded value ≥ floor (NSE ₹50 cr · USA $30M)
+  2 Volume      a breakout in the last 10 sessions on ≥ 2x volume or ≥ ₹100 cr / $50M traded
+  3 Sector      in your focus sectors
+  4 ADR         ≥ 4.5% NSE · ≥ 5% USA
+  5 Pivot       within 1 ADR of the 1-month high and ≤ 15% off the 52-week high
+  6 Tight       rel tight (NR4 ÷ ADR) ≤ 0.8
+  7 10MA        −0.3 to +1 ADR from the 10-day MA
+  8 Weekly      ≤ 2 ADR from the 10-week MA (½ for 2–3, ✗ above 3)
+"""
+from datetime import date, timedelta
+
+import numpy as np
+import pandas as pd
+
+import gtt_process as gp
+
+RULES = [("R1", "Liquid"), ("R2", "Volume"), ("R3", "Sector"), ("R4", "ADR"),
+         ("R5", "Pivot"), ("R6", "Tight"), ("R7", "10MA"), ("R8", "Weekly")]
+CFG = {"min_liq": 50.0, "bo_days": 10, "bo_min_vol": 2.0, "bo_min_value": 100.0, "today_min_chg": 3.0,
+       "min_adr": 4.5, "max_off1m_adr": 1.0, "max_off52": 15.0, "max_reltight": 0.8,
+       "ma10_min_adr": -0.3, "ma10_max_adr": 1.0, "wk_full": 2.0, "wk_half": 3.0, "flag_days": 7, "target": 6}
+MARKET_CFG = {"NSE": {"min_liq": 50.0, "bo_min_value": 100.0, "min_adr": 4.5},
+              "USA": {"min_liq": 30.0, "bo_min_value": 50.0, "min_adr": 5.0}}
+RULE_HELP = {
+    "R1": "Liquid: avg traded value ≥ {min_liq:g}",
+    "R2": "Volume came in: a breakout in the last {bo_days} sessions on ≥ {bo_min_vol:g}x volume or ≥ {bo_min_value:g} traded",
+    "R3": "Sector: in your focus sectors",
+    "R4": "ADR ≥ {min_adr:g}%",
+    "R5": "Near the pivot: within {max_off1m_adr:g} ADR of the 1-month high and ≤ {max_off52:g}% off the 52-week high",
+    "R6": "Tight: rel tight (NR4 ÷ ADR) ≤ {max_reltight:g}",
+    "R7": "On the 10MA: {ma10_min_adr:g} to +{ma10_max_adr:g} ADR from the 10-day MA",
+    "R8": "Weekly: ≤ {wk_full:g} ADR from the 10-week MA (½ for {wk_full:g}–{wk_half:g}, ✗ above)",
+}
+SHOW = ["Flag", "Symbol", "Score", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO", "BO vol x",
+        "ADR", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Chg %", "Vol x",
+        "Circuit %", "Data"]
+
+
+def _num(x):
+    try:
+        v = float(x)
+        return v if np.isfinite(v) else np.nan
+    except Exception:
+        return np.nan
+
+
+def cfg_for(mcfg):
+    return {**CFG, **MARKET_CFG.get(mcfg.get("market"), {})}
+
+
+# ── flags (Supabase table `flags`) ─────────────────────────────────────────
+def load_flags(sb, mcfg):
+    rows = (sb.table("flags").select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
+            .execute().data or [])
+    return {r["symbol"]: r for r in rows}
+
+
+def add_flags(sb, mcfg, syms, sector=None, source=None, sectors=None):
+    rows = [{"user_id": mcfg["user_id"], "market": mcfg["market"], "symbol": s,
+             "sector": (sectors or {}).get(s, sector), "source": source, "flagged_at": date.today().isoformat()}
+            for s in syms]
+    if rows:
+        sb.table("flags").upsert(rows, on_conflict="user_id,market,symbol").execute()
+
+
+def remove_flags(sb, mcfg, syms):
+    syms = list(syms)
+    if syms:
+        sb.table("flags").delete().eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]).in_("symbol", syms).execute()
+
+
+def update_flag(sb, mcfg, sym, **fields):
+    fields["updated_at"] = pd.Timestamp.utcnow().isoformat()
+    sb.table("flags").update(fields).eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]).eq("symbol", sym).execute()
+
+
+# ── data: every stock with the numbers the rules need ──────────────────────
+def _universe(sb, base_df, mcfg, hist, watch):
+    """One row per stock: today's scan + recent breakouts + watchlist, with Sector, live or last-saved numbers."""
+    live = gp.add_derived(base_df).drop_duplicates("Symbol") if base_df is not None and not base_df.empty else pd.DataFrame()
+    if not live.empty:
+        live["Symbol"] = live["Symbol"].astype(str).str.upper()
+        live["Data"] = "today"
+    syms = set(live["Symbol"]) if not live.empty else set()
+    sec = {}
+    if hist is not None and not hist.empty:
+        for r in hist.sort_values("date").itertuples():
+            if isinstance(r.Sector, str) and r.Sector != "Unknown":
+                sec[str(r.Symbol).upper()] = r.Sector
+    for w in watch or []:
+        if isinstance(w.get("sector"), str) and w["sector"]:
+            sec[str(w["symbol"]).upper()] = w["sector"]
+    extra = sorted((set(sec) | {str(w["symbol"]).upper() for w in (watch or [])}) - syms)
+    rows = []
+    if extra and sb is not None:
+        snap = gp._last_snapshots(sb, mcfg, extra)
+        for s in extra:
+            d_, m = snap.get(s, ("", {}))
+            r = {k: v for k, v in (m or {}).items() if k != "setups"}
+            r["Symbol"] = s
+            r["Sector"] = sec.get(s) or r.get("Sector")
+            r["Data"] = f"as of {pd.to_datetime(d_):%d-%b}" if d_ else "not in scan"
+            rows.append(r)
+    u = pd.concat([live, pd.DataFrame(rows)], ignore_index=True) if rows else live.copy()
+    if u.empty:
+        return u
+    if "Sector" not in u.columns:
+        u["Sector"] = np.nan
+    u["Sector"] = u["Sector"].where(u["Sector"].notna() & (u["Sector"] != "Unknown"), u["Symbol"].map(sec))
+    for c in ("Adr", "_avgvol_mln", "_rel_tightness_today", "off_high_21", "off_high_252", "_10madist", "_rel_wk_dist",
+              "_chg_percentclose", "_vol_ratio", "_circuit", "_days_since_bo", "_bo_dollar_vol_mln", "W_Dist10wMA", "_nr4"):
+        u[c] = pd.to_numeric(u[c], errors="coerce") if c in u.columns else np.nan
+    adr = u["Adr"].replace(0, np.nan)
+    u["_rel_tightness_today"] = u["_rel_tightness_today"].fillna((u["_nr4"] / adr).round(2))
+    u["_rel_wk_dist"] = u["_rel_wk_dist"].fillna((u["W_Dist10wMA"].abs() / adr).round(2))
+    u["_off21_adr"] = (u["off_high_21"].abs() / adr).round(2)
+    u["_ma10_adr"] = (u["_10madist"] / adr).round(2)
+    if mcfg.get("market") == "NSE" and sb is not None:
+        try:
+            import nse_bands
+            bands = nse_bands.load_bands(sb)
+            u["_circuit"] = u["Symbol"].map(bands).fillna(u["_circuit"])
+        except Exception:
+            pass
+    return u
+
+
+def _breakouts(u, hist, sd, cfg):
+    """Latest volume breakout per stock in the last bo_days sessions: (label, vol x, value, age)."""
+    out = {}
+    if hist is not None and not hist.empty:
+        sessions = sorted(hist["date"].unique(), reverse=True)
+        pos = {d: i for i, d in enumerate(sessions)}
+        off0 = 0 if sessions and sessions[0] == str(sd) else 1
+        h = hist.sort_values("date", ascending=False).drop_duplicates("Symbol")
+        for r in h.itertuples():
+            age = pos[r.date] + off0 if r.date != str(sd) else 0
+            val = _num(r.vol) * _num(r.avgvol)
+            out[str(r.Symbol).upper()] = (f"{pd.to_datetime(r.date):%d-%b}", _num(r.vol), val, age)
+    for r in u.itertuples():
+        s = r.Symbol
+        dsb, val = _num(getattr(r, "_days_since_bo", np.nan)), _num(getattr(r, "_bo_dollar_vol_mln", np.nan))
+        if np.isfinite(dsb) and dsb <= cfg["bo_days"] and (s not in out or dsb < out[s][3]):
+            out[s] = (f"{int(dsb)}d ago", out.get(s, (None, np.nan))[1], val, dsb)
+        chg, vr = _num(getattr(r, "_chg_percentclose", np.nan)), _num(getattr(r, "_vol_ratio", np.nan))
+        if r.Data == "today" and chg >= cfg["today_min_chg"] and vr >= cfg["bo_min_vol"]:
+            out[s] = ("today", vr, vr * _num(getattr(r, "_avgvol_mln", np.nan)), 0)
+    return out
+
+
+def score(u, cfg, focus, bos, tiers=None):
+    """Adds R1..R8 (✓ / ½ / ✗ / · unknown), Score and display columns."""
+    v = u.copy()
+
+    def mark(ok, known):
+        return np.where(~known, "·", np.where(ok, "✓", "✗"))
+
+    liq = v["_avgvol_mln"]
+    v["R1"] = mark(liq >= cfg["min_liq"], liq.notna())
+    bo = v["Symbol"].map(bos)
+    age = bo.map(lambda x: x[3] if isinstance(x, tuple) else np.nan)
+    bvol = bo.map(lambda x: x[1] if isinstance(x, tuple) else np.nan)
+    bval = bo.map(lambda x: x[2] if isinstance(x, tuple) else np.nan)
+    v["R2"] = np.where((age <= cfg["bo_days"]) & ((bvol >= cfg["bo_min_vol"]) | (bval >= cfg["bo_min_value"])), "✓", "✗")
+    v["R3"] = np.where(v["Sector"].isin(focus), "✓", "✗")
+    v["R4"] = mark(v["Adr"] >= cfg["min_adr"], v["Adr"].notna())
+    o52 = v["off_high_252"].abs()
+    v["R5"] = mark((v["_off21_adr"] <= cfg["max_off1m_adr"]) & ((o52 <= cfg["max_off52"]) | o52.isna()), v["_off21_adr"].notna())
+    v["R6"] = mark(v["_rel_tightness_today"] <= cfg["max_reltight"], v["_rel_tightness_today"].notna())
+    v["R7"] = mark(v["_ma10_adr"].between(cfg["ma10_min_adr"], cfg["ma10_max_adr"]), v["_ma10_adr"].notna())
+    wk = v["_rel_wk_dist"]
+    v["R8"] = np.where(wk.isna(), "·", np.where(wk <= cfg["wk_full"], "✓", np.where(wk <= cfg["wk_half"], "½", "✗")))
+    pts = sum((v[r] == "✓").astype(float) + 0.5 * (v[r] == "½") for r, _ in RULES)
+    v["Score"] = pts
+    v["BO"] = bo.map(lambda x: x[0] if isinstance(x, tuple) else "")
+    v["BO vol x"] = bvol.round(1)
+    src = []
+    tiers = tiers or {}
+    for s, b in zip(v["Symbol"], v["BO"]):
+        parts = []
+        if b:
+            parts.append("Breakout")
+        if tiers.get(s):
+            parts.append(tiers[s])
+        src.append(" · ".join(parts))
+    v["Source"] = src
+    v = v.rename(columns={"Adr": "ADR", "_rel_tightness_today": "Rel tight", "_off21_adr": "Off 1M (ADR)",
+                          "off_high_252": "Off 52W %", "_ma10_adr": "10MA (ADR)", "_rel_wk_dist": "ADRs from 10w",
+                          "_avgvol_mln": "Avg vol", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_circuit": "Circuit %"})
+    return v.sort_values(["Score", "Rel tight"], ascending=[False, True], na_position="last")
+
+
+# ── styling ────────────────────────────────────────────────────────────────
+def _css(bg, fg="black", bold=False):
+    return f"background-color:{bg};color:{fg}" + (";font-weight:bold" if bold else "")
+
+
+def _c_rule(x):
+    return {"✓": _css("#28a745", "white", True), "½": _css("#fff3cd", "#664d03", True),
+            "✗": _css("#f8d7da", "#721c24"), "·": "color:#9aa7ba"}.get(str(x), "")
+
+
+def _c_score(x):
+    x = _num(x)
+    if not np.isfinite(x):
+        return ""
+    return _css("#28a745", "white", True) if x >= 7 else _css("#8ee68e") if x >= 6 else _css("#d4edda") if x >= 5 else ""
+
+
+def _c_data(x):
+    s = str(x)
+    return "color:#28a745" if s == "today" else ("color:#b58900;font-style:italic" if s.startswith("as of") else "color:#9aa7ba")
+
+
+def style(v):
+    fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Rel tight": "{:.2f}", "Off 1M (ADR)": "{:.1f}",
+           "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}", "Avg vol": "{:.0f}", "Chg %": "{:+.1f}",
+           "Vol x": "{:.1f}", "Circuit %": "{:.0f}"}
+    sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
+    rc = [r for r, _ in RULES if r in v.columns]
+    if rc:
+        sty = sty.map(_c_rule, subset=rc)
+    for c, f in (("Score", _c_score), ("Data", _c_data), ("Circuit %", gp._c_circuit)):
+        if c in v.columns:
+            sty = sty.map(f, subset=[c])
+    return sty
+
+
+def _colcfg(st, cfg):
+    cc = {r: st.column_config.TextColumn(r, width="small", help=f"{name}: " + RULE_HELP[r].format(**cfg))
+          for r, name in RULES}
+    cc.update({
+        "Flag": st.column_config.CheckboxColumn("⚑", help="Flag for the shortlist (saved when you press Save flags)", width="small"),
+        "Symbol": st.column_config.TextColumn("Symbol", width="small"),
+        "Score": st.column_config.NumberColumn("Score", help="Rules passed out of 8 (½ counts half)", width="small"),
+        "Source": st.column_config.TextColumn("Source", help="Breakout = volume came in recently · P1/P2/P3 = anticipation tier (ADR)"),
+        "BO": st.column_config.TextColumn("BO", help="Last volume breakout", width="small"),
+        "Data": st.column_config.TextColumn("Data", width="small",
+                                            help="today = today's scan · as of = not in today's scan, last saved numbers"),
+    })
+    return cc
+
+
+# ── tab ────────────────────────────────────────────────────────────────────
+def render_sector_focus_tab(st, sb, base_df, mcfg):
+    mkt = mcfg.get("market")
+    cfg = cfg_for(mcfg)
+    st.subheader("Sector Focus · sector → tickers → flagged → 5–6 names")
+    if base_df is None or getattr(base_df, "empty", True):
+        st.info("Generate data first (GTT Scanner tab)."); return
+    if sb is None:
+        st.error("Database not connected."); return
+    sd, _, _ = gp.effective_session(base_df, mcfg, sb)
+    try:
+        hist = gp.load_breakout_history(sb, mcfg)
+    except Exception:
+        hist = pd.DataFrame()
+    try:
+        watch = gp.load_active_watchlist(sb, mcfg)
+    except Exception:
+        watch = []
+    try:
+        flags = load_flags(sb, mcfg)
+    except Exception as e:
+        st.error(f"Run supabase_flags.sql once in Supabase (creates the flags table). ({e})"); return
+
+    # ── Step 1: sectors ──
+    st.markdown("#### 1 · Pick your focus sectors")
+    t, _ = gp.sector_leadership(hist, base_df, "Sector")
+    if t.empty:
+        st.info("No breakouts recorded yet — sectors appear after a few evening scans."); return
+    healthy = t[(t["Trend"] != "↓") & (pd.to_numeric(t["Holding %"], errors="coerce").fillna(0) >= 60)]
+    default = list(healthy["Sector"].head(3))
+    st.caption("Leading = most breakouts recently, trend ↑ or →, Holding % ≥ 60 (breakouts still above their breakout day). "
+               "Last 5/10/20 count breakouts, Stocks counts different names.")
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        st.dataframe(t.head(12), hide_index=True, use_container_width=True, height=min(36 * min(len(t), 12) + 40, 470))
+    with c2:
+        key = f"sf_focus_{mkt}"
+        if key not in st.session_state:
+            st.session_state[key] = default
+        focus = st.multiselect("Focus sectors (2–3)", list(t["Sector"]), key=key)
+        if len(focus) > 3:
+            st.warning("More than 3 sectors dilutes the focus.")
+        st.caption("Suggested: " + ", ".join(default) if default else "No sector is clearly leading — be very selective.")
+
+    u = _universe(sb, base_df, mcfg, hist, watch)
+    if u.empty:
+        st.info("No stocks to show."); return
+    tier_cfg = gp.TIER_DEFAULTS.get(mkt, {"tier1_adr": 7.0, "tier2_adr": 5.0})
+    tl = gp.adr_tier(u["Adr"], tier_cfg)
+    tiers = {s: t_ for s, t_, d_ in zip(u["Symbol"], tl, u["Data"]) if t_ and d_ == "today"}
+    bos = _breakouts(u, hist, sd, cfg)
+    v = score(u, cfg, focus, bos, tiers)
+    v["Flag"] = v["Symbol"].isin(flags)
+
+    # ── Step 2: one sector at a time ──
+    st.markdown("#### 2 · Go through each sector and flag the best few")
+    if not focus:
+        st.info("Pick at least one focus sector above."); return
+    counts = {g: int((v["Sector"] == g).sum()) for g in focus}
+    flagged_in = {g: int(((v["Sector"] == g) & v["Flag"]).sum()) for g in focus}
+    g = st.radio("Sector", focus, horizontal=True, key=f"sf_sector_{mkt}",
+                 format_func=lambda x: f"{x} ({counts.get(x, 0)} · ⚑{flagged_in.get(x, 0)})")
+    c1, c2 = st.columns([1, 3])
+    min_score = c1.slider("Min score", 0.0, 8.0, 4.0, 0.5, key=f"sf_min_{mkt}",
+                          help="Hide stocks passing fewer rules. Flagged stocks always show.")
+    c2.caption("Rules: " + " · ".join(f"**{r}** {n}" for r, n in RULES) +
+               ". ✓ pass · ½ half · ✗ fail · · no data. Hover a rule header for its threshold. "
+               "Volume (R2) and sector (R3) first — tightness (R6) is only the entry.")
+    part = v[(v["Sector"] == g) & ((v["Score"] >= min_score) | v["Flag"])]
+    if part.empty:
+        st.info("Nothing in this sector at that score."); return
+    cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
+    ver = st.session_state.get(f"sf_ver_{mkt}", 0)
+    ed = st.data_editor(style(part[cols].reset_index(drop=True)), hide_index=True, use_container_width=True,
+                        column_config=_colcfg(st, cfg), disabled=[c for c in cols if c != "Flag"],
+                        key=f"sf_ed_{mkt}_{g}_{sd}_{ver}", height=min(36 * len(part) + 40, 560))
+    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}).")
+    if st.button(f"Save flags for {g}", type="primary", key=f"sf_save_{mkt}"):
+        now = set(ed.loc[ed["Flag"] == True, "Symbol"])  # noqa: E712
+        was = set(part.loc[part["Flag"], "Symbol"])
+        add_flags(sb, mcfg, sorted(now - was), sector=g, source=g)
+        remove_flags(sb, mcfg, was - now)
+        st.session_state[f"sf_ver_{mkt}"] = ver + 1
+        st.success(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
+        st.rerun()
+
+    # ── Step 3: flagged ──
+    st.markdown("---")
+    render_flagged(st, sb, mcfg, v, flags, cfg)
+
+
+def render_flagged(st, sb, mcfg, v, flags, cfg):
+    mkt = mcfg.get("market")
+    st.markdown("#### 3 · Flagged — pick your 5–6")
+    with st.expander("⚑ Flag tickers by hand (from any screen or copy box)"):
+        txt = st.text_input("Symbols, comma separated", key=f"sf_manual_{mkt}", placeholder="e.g. SUNTV, NSE:TIPSMUSIC")
+        if st.button("Flag them", key=f"sf_manual_btn_{mkt}") and txt.strip():
+            syms = [s.strip().upper().split(":")[-1] for s in txt.replace("\n", ",").split(",") if s.strip()]
+            secmap = dict(zip(v["Symbol"], v["Sector"]))
+            add_flags(sb, mcfg, syms, source="manual", sectors=secmap)
+            st.success(f"Flagged {len(syms)}."); st.rerun()
+    if not flags:
+        st.caption("Nothing flagged yet."); return
+    cutoff = date.today() - timedelta(days=cfg["flag_days"])
+    fl = pd.DataFrame(flags.values())
+    fl["flagged_at"] = pd.to_datetime(fl["flagged_at"]).dt.date
+    old = fl[(fl["flagged_at"] < cutoff) & (~fl["build_range"].fillna(False))]
+    if not old.empty:
+        remove_flags(sb, mcfg, old["symbol"])            # flags fade after a week unless picked
+        fl = fl[~fl["symbol"].isin(old["symbol"])]
+        st.caption(f"Unflagged {len(old)} older than {cfg['flag_days']} days that weren't picked: {', '.join(old['symbol'])}.")
+    d = fl.merge(v.drop(columns=["Flag"]), left_on="symbol", right_on="Symbol", how="left")
+    d["Symbol"] = d["symbol"]
+    d["Sector"] = d["Sector"].fillna(d["sector"])
+    d["Flagged"] = pd.to_datetime(d["flagged_at"]).dt.strftime("%d-%b")
+    d["Pick"] = d["build_range"].fillna(False).astype(bool)
+    d["Rank"] = pd.to_numeric(d["rank"], errors="coerce")
+    d["Note"] = d["note"].fillna("")
+    d["Unflag"] = False
+    d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
+    show = ["Pick", "Rank", "Symbol", "Sector", "Score"] + [r for r, _ in RULES] + \
+           ["BO", "BO vol x", "ADR", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol",
+            "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
+    show = [c for c in show if c in d.columns]
+    n_pick = int(d["Pick"].sum())
+    st.caption(f"**{len(d)} flagged · {n_pick} picked** (aim for {cfg['target']}). Tick **Pick** = draw the range and set "
+               f"the alert. Rank 1 = best. Unflagged automatically after {cfg['flag_days']} days unless picked.")
+    if n_pick > cfg["target"]:
+        st.warning(f"{n_pick} picked — cut to {cfg['target']} or fewer. Be very selective.")
+    cc = _colcfg(st, cfg)
+    cc.update({"Pick": st.column_config.CheckboxColumn("Pick", help="Build the range + alert", width="small"),
+               "Rank": st.column_config.NumberColumn("Rank", min_value=1, max_value=99, step=1, width="small"),
+               "Note": st.column_config.TextColumn("Note", width="medium"),
+               "Unflag": st.column_config.CheckboxColumn("Unflag", width="small"),
+               "Flagged": st.column_config.TextColumn("Flagged", width="small")})
+    ver = st.session_state.get(f"sf_fver_{mkt}", 0)
+    with st.form(f"sf_flag_form_{mkt}", border=False):
+        ed = st.data_editor(style(d[show].reset_index(drop=True)), hide_index=True, use_container_width=True,
+                            column_config=cc, disabled=[c for c in show if c not in ("Pick", "Rank", "Note", "Unflag")],
+                            key=f"sf_fed_{mkt}_{ver}", height=min(36 * len(d) + 40, 520))
+        saved = st.form_submit_button("Save shortlist", type="primary")
+    if saved:
+        orig = d.set_index("Symbol")
+        for r in ed.to_dict("records"):
+            s = r["Symbol"]
+            if r.get("Unflag"):
+                remove_flags(sb, mcfg, [s]); continue
+            o = orig.loc[s]
+            rk = _num(r.get("Rank"))
+            ch = {}
+            if bool(r.get("Pick")) != bool(o["Pick"]):
+                ch["build_range"] = bool(r.get("Pick"))
+            if (rk if np.isfinite(rk) else None) != (o["Rank"] if np.isfinite(_num(o["Rank"])) else None):
+                ch["rank"] = int(rk) if np.isfinite(rk) else None
+            if str(r.get("Note") or "") != str(o["Note"] or ""):
+                ch["note"] = str(r.get("Note") or "")
+            if ch:
+                update_flag(sb, mcfg, s, **ch)
+        st.session_state[f"sf_fver_{mkt}"] = ver + 1
+        st.success("Saved."); st.rerun()
+    picks = d[d["Pick"]].sort_values("Rank", na_position="last")["Symbol"].tolist()
+    if picks:
+        gp.copy_area(st, f"Picked {len(picks)} — draw ranges and set alerts (TradingView)",
+                     ",".join(gp.tv_symbol(s, mcfg) for s in picks), key=f"sf_copy_pick_{mkt}")
+    gp.copy_area(st, f"All {len(d)} flagged (TradingView)", ",".join(gp.tv_symbol(s, mcfg) for s in d["Symbol"]),
+                 key=f"sf_copy_all_{mkt}")
