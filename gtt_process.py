@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20d · Sector breakouts: last saved values for names not in today's scan (Data = as of)"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20e · Sector breakouts: Data column (today / as of / not in scan), – for missing values"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1728,9 +1728,11 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
                         v.loc[i, c] = val
                 if d_:
                     v.at[i, "Data"] = f"as of {pd.to_datetime(d_):%d-%b}"
-            if any(str(x).startswith("as of") for x in v["Data"]):
-                st.caption("Rows marked *as of* aren't in today's scan (they no longer pass the MarketInOut screens) — "
-                           "their numbers are the last ones saved for them.")
+        v["Data"] = v["Data"].replace("", "not in scan" if _live is not None else "scan not run")
+        if any(str(x).startswith("as of") for x in v["Data"]) or (v["Data"] == "not in scan").any():
+            st.caption("**Data**: *today* = from today's scan · *as of dd-Mon* = not in today's scan (no longer passes the "
+                       "MarketInOut screens), last saved numbers · *not in scan* = dropped out and nothing saved for it · "
+                       "– = no value (Day vol and % since BO need today's price).")
         v = v.sort_values("_rel_tightness_today", na_position="last") if "_rel_tightness_today" in v.columns else v
         sty = style_table(v)
         for c, f in (("chg", _c_chg), ("vol", _c_vol)):
@@ -1745,13 +1747,18 @@ def render_sector_leadership(st, sb, base_df, mcfg, hist=None, heading=True, sav
                "_avgvol_mln": "%.0f", "dvol": "%.0f", "Adr": "%.1f", "_circuit": "%.0f", "Ti65": "%.1f", "_rel_tightness_today": "%.2f",
                "_nr4": "%.2f", "_rel_wk_dist": "%.1f", "_10madist": "%.1f", "_20madist": "%.1f",
                "off_high_21": "%.1f", "off_high_252": "%.1f"}
-        sty = sty.format({c: (lambda f: (lambda x: "" if pd.isna(x) else f % x))(f) for c, f in _dp.items() if c in v.columns})
+        sty = sty.format({c: (lambda f: (lambda x: "–" if pd.isna(x) else f % x))(f) for c, f in _dp.items() if c in v.columns})
+        if "Data" in v.columns:
+            sty = sty.map(lambda x: "color:#28a745" if x == "today" else (
+                "color:#b58900;font-style:italic" if str(x).startswith("as of") else "color:#9aa7ba;font-style:italic"),
+                subset=["Data"])
         cc = {c: st.column_config.NumberColumn(_LABELS.get(c, c), format=_dp[c], width="small")
               for c in v.columns if c in _dp}
         cc["Symbol"] = st.column_config.TextColumn("Symbol", width="small")
         cc["date"] = st.column_config.TextColumn("Broke out", width="small")
         cc["Data"] = st.column_config.TextColumn("Data", width="small",
-                                                 help="today = from today's scan · as of = not in today's scan, last saved values")
+                                                 help="today = from today's scan · as of = not in today's scan, last saved values · "
+                                                      "not in scan = dropped out of the MarketInOut screens, nothing saved")
         cc["Saved?"] = st.column_config.TextColumn("Saved?", width="small",
                                                    help="✓ Saved = on your watchlist · ✓ Saved (manual) = on your watchlist but no evening "
                                                         "breakout record (saved by hand, or before the history starts) · Skipped = recorded in "
