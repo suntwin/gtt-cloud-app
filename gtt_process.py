@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-20g · Sector Focus colours + highlighter (ADR, Ti65, Rel tight, Rel Wk Dist), stock card under every table"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-20h · Sector Focus fast (fragment + form + cached prep), setup/entry/pivot/flags commentary, Shortlister retired"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -1676,6 +1676,11 @@ def render_stock_card(st, sb, mcfg, base_df, symbols, key):
     pick = st.selectbox("🔍 Stock card", ["—"] + syms, key=key, help="All data points for one ticker, colour coded")
     if pick == "—":
         return
+    show_stock_card(st, sb, mcfg, base_df, pick)
+
+
+def show_stock_card(st, sb, mcfg, base_df, pick):
+    pick = str(pick).upper().split(":")[-1]
     row, src = card_row(sb, mcfg, base_df, pick)
     if row is None:
         st.caption(f"No data for {pick}."); return

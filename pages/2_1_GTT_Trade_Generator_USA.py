@@ -567,7 +567,7 @@ def main():
             else:
                 st.error("Failed to retrieve base 1M scan data."); st.session_state.gtt_base_df = None
 
-    tab1, tab9, tab7, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Sector Focus", "Shortlister", "Alert Management", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
+    tab1, tab9, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Sector Focus", "Alert Management", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 1: SCANNER (NO SCORING — just computed columns + filters)
@@ -978,8 +978,7 @@ def main():
     # ════════════════════════════════════════════════════════════════════
     # TAB 3: WATCHLIST — generate lists, update, clean up, history
     # ════════════════════════════════════════════════════════════════════
-    with tab7:
-        render_shortlister_tab(st, supabase, st.session_state.get('gtt_base_df'), saved_prefs, MARKET_CFG)
+    # Shortlister retired (its setup labels, entry plan, pivot/stop and flags now live in Sector Focus)
 
     with tab9:
         render_sector_focus_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)

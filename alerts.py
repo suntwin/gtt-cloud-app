@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover
     ZoneInfo = None
 
 SESSION_MIN = {"NSE": 375, "USA": 390, "CRYPTO": 1440}       # minutes per session, for counting intraday bars
-LIST_LABELS = {"FOCUS": "Focus", "ACTION": "Action", "RECENT": "BO→tight", "3WTC": "3WTC", "HTF": "HTF"}
+LIST_LABELS = {"FOCUS": "Picked", "FLAGGED": "Flagged", "ACTION": "Action", "RECENT": "BO→tight", "3WTC": "3WTC", "HTF": "HTF"}
 TZ = {"NSE": "Asia/Kolkata", "USA": "America/New_York", "CRYPTO": "UTC"}
 TV_LIMIT = 100                      # TradingView plan: max active alerts (all markets together)
 FOCUS_TARGET = 15                   # suggested waiting alerts per market: only the best breakout candidates
@@ -206,10 +206,10 @@ def build_table(df, base_df, lists, market_filter=None):
             p = ("Delete · triggered", 9)
         elif not lists:
             p = ("—", 5)
-        elif "Focus" in ls and (not np.isfinite(da) or da <= 1):
+        elif "Picked" in ls and (not np.isfinite(da) or da <= 1):
             p = ("A · keep", 1)
         elif ls:
-            p = ("B · keep", 2) if "Focus" in ls or (np.isfinite(da) and da <= 2) else ("B · far", 3)
+            p = ("B · keep", 2) if "Picked" in ls or (np.isfinite(da) and da <= 2) else ("B · far", 3)
         else:
             p = ("C · cut?", 4)
         pr.append(p[0]); rank.append(p[1])
@@ -248,7 +248,7 @@ def style_alerts(v, adr):
 
     def lists(x):
         s = str(x)
-        return _css("#28a745", "white", True) if "Focus" in s else (_css("#d4edda") if s else "")
+        return _css("#28a745", "white", True) if "Picked" in s else (_css("#d4edda") if s else "")
 
     if "To alert %" in v.columns:
         sty = sty.apply(dist, subset=["To alert %"])
@@ -307,8 +307,8 @@ def render_alerts_tab(st, sb, base_df, mcfg):
     if total >= 0.8 * TV_LIMIT:
         st.warning(f"{total} of {TV_LIMIT} alerts used. Delete triggered and C-priority alerts before adding new ones.")
     st.info(f"**Fewer alerts, better focus.** The limit is {TV_LIMIT}, but aim for about {FOCUS_TARGET} waiting per market: "
-            "only names with the highest odds of breaking out — on Focus, within 1 ADR of the pivot, volume already "
-            "came in. Priority **A** = on Focus and within 1 ADR (keep) · **B** = on a list (keep if close) · "
+            "only names with the highest odds of breaking out — your Picks in Sector Focus, within 1 ADR of the pivot, volume "
+            "already came in. Priority **A** = Picked and within 1 ADR (keep) · **B** = Flagged (keep if close) · "
             "**C** = on no list today (cut unless you hold it) · **Delete** = already triggered.")
     lists = st.session_state.get(f"sl_lists_{mkt}", {})
     opts = [mkt] + [m for m in ("NSE", "USA") if m != mkt] + ["Crypto", "All markets"]   # this page's market first
@@ -351,16 +351,16 @@ def render_alerts_tab(st, sb, base_df, mcfg):
         stale = sorted(set(t.loc[(~t["_trig"]) & (t["Lists"] == ""), "Symbol"].astype(str)))
         a, b = st.columns(2)
         with a:
-            st.markdown("**On Focus, no alert yet**")
+            st.markdown("**Picked in Sector Focus, no alert yet**")
             if not lists:
-                st.caption("Open the Shortlister tab first (it builds tonight's lists).")
+                st.caption("Open Sector Focus first (it loads your flags and picks).")
             elif missing:
                 gp.copy_area(st, "Set these in TradingView", ",".join(gp.tv_symbol(s, mcfg) for s in missing), height=68,
                              key=f"al_missing_{mkt}")
             else:
-                st.caption("Every Focus name has an alert. ✓")
+                st.caption("Every pick has an alert. ✓")
         with b:
-            st.markdown("**Waiting alerts on names that are on no list today**")
+            st.markdown("**Waiting alerts on names you haven't flagged or picked**")
             if lists and stale:
                 st.caption("Still a valid plan (holding, your own idea)? Keep it. Otherwise delete it in TradingView.")
                 gp.copy_area(st, "Review / delete", ",".join(gp.tv_symbol(s, mcfg) for s in stale), height=68,

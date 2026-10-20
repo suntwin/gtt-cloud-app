@@ -41,8 +41,8 @@ RULE_HELP = {
     "R8": "Weekly: ≤ {wk_full:g} ADR from the 10-week MA (½ for {wk_full:g}–{wk_half:g}, ✗ above)",
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
-SHOW = ["Flag", "Symbol", "Score"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
-        "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x", "Circuit %", "Data"]
+SHOW = ["Flag", "Symbol", "Score", "Setup"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
+        "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x", "Circuit %", "Flags", "Data"]
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
            "Avg vol", "Chg %", "Vol x", "Circuit %"]
 
@@ -147,15 +147,16 @@ def _breakouts(u, hist, sd, cfg):
         for r in h.itertuples():
             age = pos[r.date] + off0 if r.date != str(sd) else 0
             val = _num(r.vol) * _num(r.avgvol)
-            out[str(r.Symbol).upper()] = (f"{pd.to_datetime(r.date):%d-%b}", _num(r.vol), val, age)
+            out[str(r.Symbol).upper()] = (f"{pd.to_datetime(r.date):%d-%b}", _num(r.vol), val, age, _num(r.chg))
     for r in u.itertuples():
         s = r.Symbol
         dsb, val = _num(getattr(r, "_days_since_bo", np.nan)), _num(getattr(r, "_bo_dollar_vol_mln", np.nan))
         if np.isfinite(dsb) and dsb <= cfg["bo_days"] and (s not in out or dsb < out[s][3]):
-            out[s] = (f"{int(dsb)}d ago", out.get(s, (None, np.nan))[1], val, dsb)
+            prev = out.get(s, (None, np.nan, np.nan, np.nan, np.nan))
+            out[s] = (f"{int(dsb)}d ago", prev[1], val, dsb, prev[4])
         chg, vr = _num(getattr(r, "_chg_percentclose", np.nan)), _num(getattr(r, "_vol_ratio", np.nan))
         if r.Data == "today" and chg >= cfg["today_min_chg"] and vr >= cfg["bo_min_vol"]:
-            out[s] = ("today", vr, vr * _num(getattr(r, "_avgvol_mln", np.nan)), 0)
+            out[s] = ("today", vr, vr * _num(getattr(r, "_avgvol_mln", np.nan)), 0, chg)
     return out
 
 
@@ -184,6 +185,8 @@ def score(u, cfg, focus, bos, tiers=None):
     pts = sum((v[r] == "✓").astype(float) + 0.5 * (v[r] == "½") for r, _ in RULES)
     v["Score"] = pts
     v["BO"] = bo.map(lambda x: x[0] if isinstance(x, tuple) else "")
+    v["_bo_age"] = age
+    v["_bo_chg"] = bo.map(lambda x: x[4] if isinstance(x, tuple) and len(x) > 4 else np.nan)
     v["BO vol x"] = bvol.round(1)
     src = []
     tiers = tiers or {}
@@ -202,6 +205,65 @@ def score(u, cfg, focus, bos, tiers=None):
         if c in v.columns:
             v[c] = pd.to_numeric(v[c], errors="coerce")
     return v.sort_values(["Score", "Rel tight"], ascending=[False, True], na_position="last")
+
+
+# ── commentary: setup, entry plan and warnings (what the Shortlister used to say) ──
+def commentary(v, cfg, mkt):
+    """Adds Setup, Entry, Flags, Pivot, To pivot %, Stop guide. Works on the frame score() returns."""
+    v = v.copy()
+    last = pd.to_numeric(v.get("Last"), errors="coerce") if "Last" in v.columns else pd.Series(np.nan, index=v.index)
+    off = pd.to_numeric(v.get("off_high_21"), errors="coerce").abs() if "off_high_21" in v.columns else pd.Series(np.nan, index=v.index)
+    adr = v["ADR"]
+    piv = (last / (1 - off / 100)).where(off < 100)
+    v["Pivot"] = piv.round(2)
+    v["To pivot %"] = ((piv / last - 1) * 100).round(1)
+    v["Stop guide"] = (piv * (1 - adr / 100)).round(2)
+    setups, entries, flags = [], [], []
+    for r in v.to_dict("records"):
+        ok = {k: r.get(k) == "✓" for k, _ in RULES}
+        age, rwd, ma10 = _num(r.get("_bo_age")), _num(r.get("ADRs from 10w")), _num(r.get("10MA (ADR)"))
+        ti, rt, o1 = _num(r.get("Ti65")), _num(r.get("Rel tight")), _num(r.get("Off 1M (ADR)"))
+        leader = (np.isfinite(rwd) and rwd > cfg["wk_half"] and np.isfinite(ma10) and cfg["ma10_min_adr"] <= ma10 <= cfg["ma10_max_adr"]
+                  and np.isfinite(ti) and ti >= 1.1 and ok["R6"] and np.isfinite(o1) and o1 <= 2)
+        orh = "Alert at the pivot → 1-min ORH on the break, first 30–45 min, Rel vol ≥ 2"
+        if age == 0:
+            s_, e_ = "Broke out today", ("Day 2: 1-min ORH above today's high, first 30–45 min, Rel vol ≥ 2 "
+                                         "(skip if it opens > 1 ADR up or today left a big wick)")
+        elif ok["R2"] and ok["R5"] and ok["R6"]:
+            s_, e_ = "1-min ORH ready", orh
+        elif leader:
+            s_, e_ = "Leader flag on 10MA", orh + " · half size, pivot must clear any climax high (3rd+ step)"
+        elif ok["R5"] and ok["R6"]:
+            s_, e_ = "Tight at pivot, no volume yet", orh + " · needs a volume breakout (≥ 2x)"
+        elif ok["R2"] and not ok["R6"]:
+            s_, e_ = "Volume came, not tight yet", "Wait for a tight day or an hourly flag near the high"
+        elif np.isfinite(o1) and o1 <= 2:
+            s_, e_ = "Near the pivot", "Wait: needs tighter action and/or volume"
+        else:
+            s_, e_ = "Not ready", "Leave it — far from the pivot"
+        f = []
+        if r.get("EP") or (np.isfinite(_num(r.get("_bo_chg"))) and _num(r.get("_bo_chg")) >= 8 and _num(r.get("BO vol x")) >= 4):
+            f.append("EP: check the news")
+        bv = _num(r.get("BO vol x"))
+        if not r.get("BO"):
+            f.append("No recent volume BO")
+        elif np.isfinite(bv) and bv < cfg["bo_min_vol"]:
+            f.append(f"Volume {bv:.1f}x (< {cfg['bo_min_vol']:g}x)")
+        o52 = _num(r.get("Off 52W %"))
+        if np.isfinite(o52) and abs(o52) <= 1:
+            f.append("At 52W high")
+        if np.isfinite(rt) and rt <= 0.5 and age != 0:
+            f.append("Narrow day")
+        if r.get("R1") == "✗":
+            f.append("Thin stock")
+        if np.isfinite(rwd) and rwd > 4:
+            f.append(f"{rwd:.1f} ADR from 10w: count steps / climax high")
+        circ = _num(r.get("Circuit %"))
+        if mkt == "NSE" and np.isfinite(circ) and 0 < circ <= 5:
+            f.append(f"Circuit {circ:g}%: stop may not fill")
+        setups.append(s_); entries.append(e_); flags.append(" · ".join(f))
+    v["Setup"], v["Entry"], v["Flags"] = setups, entries, flags
+    return v
 
 
 # ── styling ────────────────────────────────────────────────────────────────
@@ -253,7 +315,8 @@ def _c_ma10(v):
 def style(v, liq_floor=50.0):
     fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Ti65": "{:.2f}", "Rel tight": "{:.2f}",
            "Off 1M (ADR)": "{:.1f}", "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}",
-           "Avg vol": "{:.0f}", "Chg %": "{:+.1f}", "Vol x": "{:.1f}", "Circuit %": "{:.0f}"}
+           "Avg vol": "{:.0f}", "Chg %": "{:+.1f}", "Vol x": "{:.1f}", "Circuit %": "{:.0f}",
+           "Pivot": "{:g}", "To pivot %": "{:.1f}", "Stop guide": "{:g}"}
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     rc = [r for r, _ in RULES if r in v.columns]
     if rc:
@@ -266,7 +329,33 @@ def style(v, liq_floor=50.0):
             sty = sty.map(f, subset=[c])
     if "Avg vol" in v.columns:
         sty = sty.apply(lambda col: gp._liq_styles(col, liq_floor), subset=["Avg vol"])
+    if "Setup" in v.columns:
+        sty = sty.map(_c_setup, subset=["Setup"])
+    if "Flags" in v.columns:
+        sty = sty.map(_c_flags, subset=["Flags"])
+    if "To pivot %" in v.columns and "ADR" in v.columns:
+        a_ = v["ADR"].tolist()
+        sty = sty.apply(lambda col: [_c_adr_dist(_num(x) / a if np.isfinite(_num(a)) and _num(a) else np.nan)
+                                     for x, a in zip(col, a_)], subset=["To pivot %"])
     return sty
+
+
+def _c_setup(x):
+    return {"1-min ORH ready": _css("#155724", "white", True), "Broke out today": _css("#8c008c", "white", True),
+            "Leader flag on 10MA": _css("#cff4fc", "#055160", True), "Tight at pivot, no volume yet": _css("#d4edda"),
+            "Volume came, not tight yet": _css("#fff3cd", "#664d03"), "Near the pivot": _css("#e2e3e5", "#41464b"),
+            "Not ready": "color:#9aa7ba"}.get(str(x), "")
+
+
+def _c_flags(x):
+    t = str(x)
+    if "EP" in t:
+        return _css("#e2d9f3", "#3d2a73", True)
+    if "Thin" in t or "< 2x" in t or "No recent" in t or "Circuit" in t or "count steps" in t:
+        return _css("#fff3cd", "#664d03")
+    if "52W high" in t or "Narrow day" in t:
+        return _css("#d4edda")
+    return ""
 
 
 def _colcfg(st, cfg):
@@ -277,6 +366,14 @@ def _colcfg(st, cfg):
         "Ti65": st.column_config.NumberColumn("🖍 Ti65", help="Trend intensity (price ÷ 65-day avg). Yellow ≥ 1.25 · pale ≥ 1.1 · red < 1", width="small"),
         "Rel tight": st.column_config.NumberColumn("🖍 Rel tight", help="Today's NR4 ÷ ADR. Yellow ≤ 0.5 · pale ≤ 0.8 · red > 1.2", width="small"),
         "ADRs from 10w": st.column_config.NumberColumn("🖍 Rel Wk Dist", help="ADRs from the 10-week MA. Yellow ≤ 2 · pale 2–3 · red > 3", width="small"),
+        "Setup": st.column_config.TextColumn("Setup", width="medium",
+                                             help="1-min ORH ready = volume came + tight + within 1 ADR of the pivot · Leader flag on 10MA = "
+                                                  "extended weekly but resting on the 10MA · Tight at pivot, no volume yet = anticipation"),
+        "Entry": st.column_config.TextColumn("Entry plan", width="large"),
+        "Flags": st.column_config.TextColumn("Flags", width="medium"),
+        "Pivot": st.column_config.NumberColumn("Pivot", help="1-month high: starting line for the range", width="small"),
+        "To pivot %": st.column_config.NumberColumn("To pivot %", width="small"),
+        "Stop guide": st.column_config.NumberColumn("Stop guide", help="Widest stop: pivot − 1 ADR. Use the LOD if tighter", width="small"),
         "Flag": st.column_config.CheckboxColumn("⚑", help="Flag for the shortlist (saved when you press Save flags)", width="small"),
         "Symbol": st.column_config.TextColumn("Symbol", width="small"),
         "Score": st.column_config.NumberColumn("Score", help="Rules passed out of 8 (½ counts half)", width="small"),
@@ -289,15 +386,23 @@ def _colcfg(st, cfg):
 
 
 # ── tab ────────────────────────────────────────────────────────────────────
-def render_sector_focus_tab(st, sb, base_df, mcfg):
+def _rerun(st):
+    """Rerun only this tab when running as a fragment (much faster), else the page."""
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
+
+
+def _prepared(st, sb, base_df, mcfg, cfg):
+    """Heavy, slow-changing inputs, computed once per scan (kept in the session): breakout history, sector
+    leadership, the stock universe with last-saved numbers, breakouts and tiers."""
     mkt = mcfg.get("market")
-    cfg = cfg_for(mcfg)
-    st.subheader("Sector Focus · sector → tickers → flagged → 5–6 names")
-    if base_df is None or getattr(base_df, "empty", True):
-        st.info("Generate data first (GTT Scanner tab)."); return
-    if sb is None:
-        st.error("Database not connected."); return
     sd, _, _ = gp.effective_session(base_df, mcfg, sb)
+    key = (id(base_df), len(base_df), str(sd))
+    memo = st.session_state.get(f"sf_memo_{mkt}")
+    if memo and memo["key"] == key:
+        return memo
     try:
         hist = gp.load_breakout_history(sb, mcfg)
     except Exception:
@@ -306,14 +411,49 @@ def render_sector_focus_tab(st, sb, base_df, mcfg):
         watch = gp.load_active_watchlist(sb, mcfg)
     except Exception:
         watch = []
+    t, _ = gp.sector_leadership(hist, base_df, "Sector")
+    u = _universe(sb, base_df, mcfg, hist, watch)
+    tiers, bos = {}, {}
+    if not u.empty:
+        tl = gp.adr_tier(u["Adr"], gp.TIER_DEFAULTS.get(mkt, {"tier1_adr": 7.0, "tier2_adr": 5.0}))
+        tiers = {s: t_ for s, t_, d_ in zip(u["Symbol"], tl, u["Data"]) if t_ and d_ == "today"}
+        bos = _breakouts(u, hist, sd, cfg)
+    memo = {"key": key, "sd": sd, "t": t, "u": u, "tiers": tiers, "bos": bos, "scored": {}}
+    st.session_state[f"sf_memo_{mkt}"] = memo
+    return memo
+
+
+def render_sector_focus_tab(st, sb, base_df, mcfg):
+    """Runs as a fragment where Streamlit supports it: flag clicks and sector switches rerun only this tab."""
+    frag = getattr(st, "fragment", None)
+    if frag is None:
+        return _render_sector_focus(st, sb, base_df, mcfg)
+    global _FRAG
+    if _FRAG is None:
+        _FRAG = frag(_render_sector_focus)
+    return _FRAG(st, sb, base_df, mcfg)
+
+
+_FRAG = None
+
+
+def _render_sector_focus(st, sb, base_df, mcfg):
+    mkt = mcfg.get("market")
+    cfg = cfg_for(mcfg)
+    st.subheader("Sector Focus · sector → tickers → flagged → 5–6 names")
+    if base_df is None or getattr(base_df, "empty", True):
+        st.info("Generate data first (GTT Scanner tab)."); return
+    if sb is None:
+        st.error("Database not connected."); return
     try:
         flags = load_flags(sb, mcfg)
     except Exception as e:
         st.error(f"Run supabase_flags.sql once in Supabase (creates the flags table). ({e})"); return
+    memo = _prepared(st, sb, base_df, mcfg, cfg)
+    sd, t, u = memo["sd"], memo["t"], memo["u"]
 
     # ── Step 1: sectors ──
     st.markdown("#### 1 · Pick your focus sectors")
-    t, _ = gp.sector_leadership(hist, base_df, "Sector")
     if t.empty:
         st.info("No breakouts recorded yet — sectors appear after a few evening scans."); return
     healthy = t[(t["Trend"] != "↓") & (pd.to_numeric(t["Holding %"], errors="coerce").fillna(0) >= 60)]
@@ -333,15 +473,16 @@ def render_sector_focus_tab(st, sb, base_df, mcfg):
             st.warning("More than 3 sectors dilutes the focus.")
         st.caption("Suggested: " + ", ".join(default) if default else "No sector is clearly leading — be very selective.")
 
-    u = _universe(sb, base_df, mcfg, hist, watch)
     if u.empty:
         st.info("No stocks to show."); return
-    tier_cfg = gp.TIER_DEFAULTS.get(mkt, {"tier1_adr": 7.0, "tier2_adr": 5.0})
-    tl = gp.adr_tier(u["Adr"], tier_cfg)
-    tiers = {s: t_ for s, t_, d_ in zip(u["Symbol"], tl, u["Data"]) if t_ and d_ == "today"}
-    bos = _breakouts(u, hist, sd, cfg)
-    v = score(u, cfg, focus, bos, tiers)
+    fk = tuple(sorted(focus))
+    if fk not in memo["scored"]:                    # scoring + commentary once per focus-sector set
+        memo["scored"][fk] = commentary(score(u, cfg, focus, memo["bos"], memo["tiers"]), cfg, mkt)
+    v = memo["scored"][fk].copy()
     v["Flag"] = v["Symbol"].isin(flags)
+    # Alert Management uses these for its priorities (Shortlister is retired)
+    picked = [s_ for s_, r_ in flags.items() if r_.get("build_range")]
+    st.session_state[f"sl_lists_{mkt}"] = {"FOCUS": picked, "FLAGGED": [s_ for s_ in flags if s_ not in picked]}
 
     # ── Step 2: one sector at a time ──
     st.markdown("#### 2 · Go through each sector and flag the best few")
@@ -362,19 +503,21 @@ def render_sector_focus_tab(st, sb, base_df, mcfg):
         st.info("Nothing in this sector at that score."); return
     cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
     ver = st.session_state.get(f"sf_ver_{mkt}", 0)
-    ed = st.data_editor(style(part[cols].reset_index(drop=True), cfg["min_liq"]), hide_index=True, use_container_width=True,
-                        column_config=_colcfg(st, cfg), disabled=[c for c in cols if c != "Flag"],
-                        key=f"sf_ed_{mkt}_{g}_{sd}_{ver}", height=min(36 * len(part) + 40, 560))
-    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}).")
+    with st.form(f"sf_form_{mkt}_{g}", border=False):      # ticking doesn't reload anything until Save
+        ed = st.data_editor(style(part[cols].reset_index(drop=True), cfg["min_liq"]), hide_index=True, use_container_width=True,
+                            column_config=_colcfg(st, cfg), disabled=[c for c in cols if c != "Flag"],
+                            key=f"sf_ed_{mkt}_{g}_{sd}_{ver}", height=min(36 * len(part) + 40, 560))
+        save = st.form_submit_button(f"Save flags for {g}", type="primary")
+    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). Tick ⚑, then Save.")
     gp.render_stock_card(st, sb, mcfg, base_df, part["Symbol"], key=f"sf_card_{mkt}_{g}")
-    if st.button(f"Save flags for {g}", type="primary", key=f"sf_save_{mkt}"):
+    if save:
         now = set(ed.loc[ed["Flag"] == True, "Symbol"])  # noqa: E712
         was = set(part.loc[part["Flag"], "Symbol"])
         add_flags(sb, mcfg, sorted(now - was), sector=g, source=g)
         remove_flags(sb, mcfg, was - now)
         st.session_state[f"sf_ver_{mkt}"] = ver + 1
-        st.success(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
-        st.rerun()
+        st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
+        _rerun(st)
 
     # ── Step 3: flagged ──
     st.markdown("---")
@@ -390,7 +533,19 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
             syms = [s.strip().upper().split(":")[-1] for s in txt.replace("\n", ",").split(",") if s.strip()]
             secmap = dict(zip(v["Symbol"], v["Sector"]))
             add_flags(sb, mcfg, syms, source="manual", sectors=secmap)
-            st.success(f"Flagged {len(syms)}."); st.rerun()
+            st.toast(f"Flagged {len(syms)}."); _rerun(st)
+    with st.expander("🔍 Check any ticker — its 8 rules, setup and full card"):
+        q = st.text_input("Symbol", key=f"sf_check_{mkt}", placeholder="e.g. ILMN").strip().upper().split(":")[-1]
+        if q:
+            row = v[v["Symbol"] == q]
+            if row.empty:
+                st.caption(f"{q} isn't in today's scan, recent breakouts or your watchlist.")
+            else:
+                cols = [c for c in ["Symbol", "Sector", "Score", "Setup"] + HIGHLIGHT + [r for r, _ in RULES] +
+                        ["Flags", "Entry"] if c in row.columns]
+                st.dataframe(style(row[cols].reset_index(drop=True), cfg["min_liq"]), hide_index=True,
+                             use_container_width=True, column_config=_colcfg(st, cfg))
+            gp.show_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), q)
     if not flags:
         st.caption("Nothing flagged yet."); return
     cutoff = date.today() - timedelta(days=cfg["flag_days"])
@@ -410,8 +565,8 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
     d["Note"] = d["note"].fillna("")
     d["Unflag"] = False
     d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
-    show = ["Pick", "Rank", "Symbol", "Sector", "Score"] + HIGHLIGHT + [r for r, _ in RULES] + \
-           ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
+    show = ["Pick", "Rank", "Symbol", "Setup", "Entry", "Pivot", "To pivot %", "Stop guide", "Flags", "Sector", "Score"] + \
+           HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
     show = [c for c in show if c in d.columns]
     n_pick = int(d["Pick"].sum())
     st.caption(f"**{len(d)} flagged · {n_pick} picked** (aim for {cfg['target']}). Tick **Pick** = draw the range and set "
@@ -448,7 +603,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
             if ch:
                 update_flag(sb, mcfg, s, **ch)
         st.session_state[f"sf_fver_{mkt}"] = ver + 1
-        st.success("Saved."); st.rerun()
+        st.toast("Saved."); _rerun(st)
     gp.render_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), d["Symbol"], key=f"sf_fcard_{mkt}")
     picks = d[d["Pick"]].sort_values("Rank", na_position="last")["Symbol"].tolist()
     if picks:
