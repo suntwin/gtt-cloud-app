@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-21d · MA hold: HL only when still at the MA and tight, else Bounced off"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-21e · MA hold: HL on 10 & 20MA when both hold"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -105,12 +105,13 @@ def ma_hold_label(hl_pct, low10, low20, hold, adr, ma20dist=np.nan, ma10dist=np.
     h10, h20 = int(h) % 10, int(h) // 10
     higher = np.isfinite(hl) and hl / a >= -0.3
     tight = not np.isfinite(rt) or rt <= 1.0
-    if higher and np.isfinite(l10) and -0.6 <= l10 / a <= 0.5 and h10 >= 3:
-        near = not np.isfinite(d10) or d10 / a <= 1.0
-        return "HL on 10MA" if near and tight else "Bounced off 10MA"
-    if higher and np.isfinite(l20) and -0.6 <= l20 / a <= 0.5 and h20 >= 3:
-        near = not np.isfinite(d20) or d20 / a <= 1.5
-        return "HL on 20MA" if near and tight else "Bounced off 20MA"
+    on10 = higher and np.isfinite(l10) and -0.6 <= l10 / a <= 0.5 and h10 >= 3
+    on20 = higher and np.isfinite(l20) and -0.6 <= l20 / a <= 0.5 and h20 >= 3
+    if on10 or on20:                                  # both can be true (10MA and 20MA together, e.g. ATHERENERG)
+        near10 = on10 and (not np.isfinite(d10) or d10 / a <= 1.0)
+        near20 = on20 and (not np.isfinite(d20) or d20 / a <= 1.5)
+        which = "10 & 20MA" if on10 and on20 else ("10MA" if on10 else "20MA")
+        return f"HL on {which}" if tight and (near10 or near20) else f"Bounced off {which}"
     if h20 <= 2 and (not np.isfinite(d20) or d20 < 0):
         return "Lost MA"
     return "Holding"

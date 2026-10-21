@@ -84,7 +84,7 @@ def _tips(cfg):
               "Score": "Rules passed out of 8 (½ counts half)",
               "MA hold": "HL on 10MA = pullback low held above the previous one (within 0.3 ADR), tagged the 10MA (−0.6 to +0.5 ADR), "
                          "≥ 3 of the last 5 closes above it, and it's STILL there (≤ 1 ADR above the 10MA) and tight (rel ≤ 1.0) · "
-                         "HL on 20MA = same at the 20MA (≤ 1.5 ADR) · Bounced off 10/20MA = the higher low held but it has already "
+                         "HL on 20MA = same at the 20MA (≤ 1.5 ADR) · HL on 10 & 20MA = both averages together (strongest) · Bounced off 10/20MA = the higher low held but it has already "
                          "left the MA or isn't tight (breakout / day-2, not the MA entry) · Holding = above the MAs, no clear "
                          "pullback-and-hold · Lost MA = mostly closing below the 20MA. Information only — not a rule.",
               "Setup": "1-min ORH ready = volume came + tight + within 1 ADR of the pivot · Leader flag on 10MA = extended "
@@ -396,7 +396,8 @@ def style(v, liq_floor=50.0):
     if "Setup" in v.columns:
         sty = sty.map(_c_setup, subset=["Setup"])
     if "MA hold" in v.columns:
-        sty = sty.map(lambda x: _css("#28a745", "white", True) if x == "HL on 10MA" else
+        sty = sty.map(lambda x: _css("#155724", "white", True) if x == "HL on 10 & 20MA" else
+                      _css("#28a745", "white", True) if x == "HL on 10MA" else
                       _css("#8ee68e") if x == "HL on 20MA" else _css("#cff4fc", "#055160") if str(x).startswith("Bounced") else
                       _css("#fff3cd", "#664d03") if x == "Lost MA" else "",
                       subset=["MA hold"])
