@@ -41,7 +41,7 @@ RULE_HELP = {
     "R8": "Weekly: ≤ {wk_full:g} ADR from the 10-week MA (½ for {wk_full:g}–{wk_half:g}, ✗ above)",
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
-SHOW = ["Flag", "Symbol", "Score", "Setup"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
+SHOW = ["Flag", "Symbol", "Score", "Setup", "MA hold"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
         "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Flags", "Data"]
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
            "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %"]
@@ -65,10 +65,12 @@ CARD_NAMES = {"Last": "Last", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol r
               "W_InsideBars": "Wk inside bars", "W_PctOf10wkHigh": "Wk % of 10w high", "Avg_RS": "Avg RS",
               "RS_1M": "RS 1M", "RS_3M": "RS 3M", "RS_6M": "RS 6M", "Sector_Percentile": "Sector %ile",
               "_days_since_bo": "Days since BO", "_bo_dollar_vol_mln": "BO value", "_avg_vol_float_ratio": "Vol / float",
+              "_hl_pct": "Pullback low vs previous %", "_low_10ma": "Pullback low vs 10MA %",
+              "_low_20ma": "Pullback low vs 20MA %", "_hold_ma": "Hold code (20MA×10 + 10MA)",
               "Industry": "Industry", "Sector": "Sector", "Entry": "Entry plan", "Pivot": "Pivot", "Stop guide": "Stop guide"}
 
 
-CARD_FIRST = ["Score", "Setup", "🖍 ADR", "🖍 Ti65", "🖍 Rel tight", "🖍 Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
+CARD_FIRST = ["Score", "Setup", "MA hold", "🖍 ADR", "🖍 Ti65", "🖍 Rel tight", "🖍 Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
               "NR4 prev %", "Avg RS", "Sector %ile", "10MA %", "20MA %"]
 
 
@@ -80,6 +82,9 @@ def _tips(cfg):
               "Rel tight": "Today's NR4 ÷ ADR — lower is tighter. Yellow ≤ 0.5 · pale ≤ 0.8 · red > 1.2",
               "ADRs from 10w": "Relative weekly distance: ADRs from the 10-week MA. Yellow ≤ 2 · pale 2–3 · red > 3",
               "Score": "Rules passed out of 8 (½ counts half)",
+              "MA hold": "HL on 10MA = pullback low held above the previous one (within 0.3 ADR), tagged the 10MA (−0.6 to +0.5 ADR) "
+                         "and ≥ 3 of the last 5 closes above it · HL on 20MA = same at the 20MA · Holding = above the MAs, no clear "
+                         "pullback-and-hold · Lost MA = mostly closing below the 20MA. Information only — not a rule.",
               "Setup": "1-min ORH ready = volume came + tight + within 1 ADR of the pivot · Leader flag on 10MA = extended "
                        "weekly but resting on the 10MA · Tight at pivot, no volume yet = anticipation",
               "Flag": "Tick to flag, then Save flags", "Pick": "Build the range + set the alert",
@@ -163,6 +168,8 @@ def _universe(sb, base_df, mcfg, hist, watch):
     if "Sector" not in u.columns:
         u["Sector"] = np.nan
     u["Sector"] = u["Sector"].where(u["Sector"].notna() & (u["Sector"] != "Unknown"), u["Symbol"].map(sec))
+    for c in ("_hl_pct", "_low_10ma", "_low_20ma", "_hold_ma"):
+        u[c] = pd.to_numeric(u[c], errors="coerce") if c in u.columns else np.nan
     for c in ("Adr", "Ti65", "_avgvol_mln", "_rel_tightness_today", "off_high_21", "off_high_252", "_10madist", "_rel_wk_dist",
               "_chg_percentclose", "_vol_ratio", "_circuit", "_days_since_bo", "_bo_dollar_vol_mln", "W_Dist10wMA", "_nr4"):
         u[c] = pd.to_numeric(u[c], errors="coerce") if c in u.columns else np.nan
@@ -308,6 +315,11 @@ def commentary(v, cfg, mkt):
             f.append(f"Circuit {circ:g}%: stop may not fill")
         setups.append(s_); entries.append(e_); flags.append(" · ".join(f))
     v["Setup"], v["Entry"], v["Flags"] = setups, entries, flags
+    v["MA hold"] = [gp.ma_hold_label(r.get("_hl_pct"), r.get("_low_10ma"), r.get("_low_20ma"), r.get("_hold_ma"),
+                                     r.get("ADR"), r.get("_20madist")) for r in v.to_dict("records")]
+    hold = pd.to_numeric(v.get("_hold_ma"), errors="coerce")
+    v["Above 10MA (of 5)"] = (hold % 10).where(hold.notna())
+    v["Above 20MA (of 5)"] = (hold // 10).where(hold.notna())
     return v
 
 
@@ -380,6 +392,10 @@ def style(v, liq_floor=50.0):
                                      for x, a in zip(col, av)], subset=["Day vol"])
     if "Setup" in v.columns:
         sty = sty.map(_c_setup, subset=["Setup"])
+    if "MA hold" in v.columns:
+        sty = sty.map(lambda x: _css("#28a745", "white", True) if x == "HL on 10MA" else
+                      _css("#8ee68e") if x == "HL on 20MA" else _css("#fff3cd", "#664d03") if x == "Lost MA" else "",
+                      subset=["MA hold"])
     if "Flags" in v.columns:
         sty = sty.map(_c_flags, subset=["Flags"])
     if "To pivot %" in v.columns and "ADR" in v.columns:
@@ -684,7 +700,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
     d["Note"] = d["note"].fillna("")
     d["Unflag"] = False
     d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
-    show = ["Pick", "Rank", "Symbol", "Setup", "Entry", "Pivot", "To pivot %", "Stop guide", "Flags", "Sector", "Score"] + \
+    show = ["Pick", "Rank", "Symbol", "Setup", "MA hold", "Entry", "Pivot", "To pivot %", "Stop guide", "Flags", "Sector", "Score"] + \
            HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
     show = [c for c in show if c in d.columns]
     n_pick = int(d["Pick"].sum())

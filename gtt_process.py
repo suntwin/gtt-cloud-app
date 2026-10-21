@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-21b · Sector Focus: Day vol next to Avg vol"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-21c · MA hold column (HL on 10MA / HL on 20MA) from new MIO columns"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -89,6 +89,27 @@ OFF_HIGH_HELP = {"off_high_21": "% from the 21-day high — the pivot proxy. Col
                  "off_high_252": "% from the 52-week high — leader check: dark green ≤ 5%, green ≤ 15%, light ≤ 25%, red > 40%"}
 
 
+MA_HOLD_COLS = ["_hl_pct", "_low_10ma", "_low_20ma", "_hold_ma"]   # appended after the off-high fields (MIO show())
+
+
+def ma_hold_label(hl_pct, low10, low20, hold, adr, ma20dist=np.nan):
+    """'HL on 10MA' / 'HL on 20MA' / 'Holding' / 'Lost MA' / '' from the MarketInOut MA-hold columns.
+    Generous on purpose (information, not a filter): a pullback low up to 0.3 ADR under the previous one still counts
+    as a higher low; a low up to 0.6 ADR under the MA still counts as holding it if most closes stay above."""
+    hl, l10, l20, h, a = (_num(x) for x in (hl_pct, low10, low20, hold, adr))
+    if not np.isfinite(h) or not np.isfinite(a) or a <= 0:
+        return ""
+    h10, h20 = int(h) % 10, int(h) // 10
+    higher = np.isfinite(hl) and hl / a >= -0.3
+    if higher and np.isfinite(l10) and -0.6 <= l10 / a <= 0.5 and h10 >= 3:
+        return "HL on 10MA"
+    if higher and np.isfinite(l20) and -0.6 <= l20 / a <= 0.5 and h20 >= 3:
+        return "HL on 20MA"
+    if h20 <= 2 and (not np.isfinite(_num(ma20dist)) or _num(ma20dist) < 0):
+        return "Lost MA"
+    return "Holding"
+
+
 def assign_scan_columns(df, base_cols):
     """Name the columns of a MarketInOut GTT screen (it comes without a header).
     base_cols = the fixed leading fields. New layout: base + 3 off-high fields (any order — mapped by size,
@@ -102,6 +123,10 @@ def assign_scan_columns(df, base_cols):
         df = df.rename(columns=dict(zip(order, OFF_HIGH_COLS)))
         for c in OFF_HIGH_COLS:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+        extra = [c for c in df.columns if str(c).startswith("Extra_")]
+        for c, name in zip(extra, MA_HOLD_COLS):                 # newer screens: higher-low / MA-hold columns
+            df = df.rename(columns={c: name})
+            df[name] = pd.to_numeric(df[name], errors="coerce")
     elif n == nb + 1:
         df.columns = list(base_cols) + ["_insideday"]
     elif n < nb:
