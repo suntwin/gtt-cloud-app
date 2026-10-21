@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-21f · Sector Focus step 5: daily snapshot + breakout review + rule check"
+PROCESS_VERSION = "v2026-10-21g · grids: 1-row tables no longer squashed"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2591,6 +2591,7 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
     labels, edit, widths, fmt = labels or {}, edit or {}, widths or {}, fmt or {}
     vis = view.reset_index(drop=True).copy()
+    height = max(height, 30 * len(vis) + 125)   # room for wrapped headers + horizontal scrollbar (1-row tables were squashed)
     data = vis.copy()
     for c in data.columns:                                   # round numbers for display (the card rounds too)
         if c not in edit and pd.api.types.is_float_dtype(data[c]):
