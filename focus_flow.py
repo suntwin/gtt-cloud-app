@@ -82,8 +82,10 @@ def _tips(cfg):
               "Rel tight": "Today's NR4 ÷ ADR — lower is tighter. Yellow ≤ 0.5 · pale ≤ 0.8 · red > 1.2",
               "ADRs from 10w": "Relative weekly distance: ADRs from the 10-week MA. Yellow ≤ 2 · pale 2–3 · red > 3",
               "Score": "Rules passed out of 8 (½ counts half)",
-              "MA hold": "HL on 10MA = pullback low held above the previous one (within 0.3 ADR), tagged the 10MA (−0.6 to +0.5 ADR) "
-                         "and ≥ 3 of the last 5 closes above it · HL on 20MA = same at the 20MA · Holding = above the MAs, no clear "
+              "MA hold": "HL on 10MA = pullback low held above the previous one (within 0.3 ADR), tagged the 10MA (−0.6 to +0.5 ADR), "
+                         "≥ 3 of the last 5 closes above it, and it's STILL there (≤ 1 ADR above the 10MA) and tight (rel ≤ 1.0) · "
+                         "HL on 20MA = same at the 20MA (≤ 1.5 ADR) · Bounced off 10/20MA = the higher low held but it has already "
+                         "left the MA or isn't tight (breakout / day-2, not the MA entry) · Holding = above the MAs, no clear "
                          "pullback-and-hold · Lost MA = mostly closing below the 20MA. Information only — not a rule.",
               "Setup": "1-min ORH ready = volume came + tight + within 1 ADR of the pivot · Leader flag on 10MA = extended "
                        "weekly but resting on the 10MA · Tight at pivot, no volume yet = anticipation",
@@ -316,7 +318,8 @@ def commentary(v, cfg, mkt):
         setups.append(s_); entries.append(e_); flags.append(" · ".join(f))
     v["Setup"], v["Entry"], v["Flags"] = setups, entries, flags
     v["MA hold"] = [gp.ma_hold_label(r.get("_hl_pct"), r.get("_low_10ma"), r.get("_low_20ma"), r.get("_hold_ma"),
-                                     r.get("ADR"), r.get("_20madist")) for r in v.to_dict("records")]
+                                     r.get("ADR"), r.get("_20madist"), r.get("_10madist"), r.get("Rel tight"))
+                    for r in v.to_dict("records")]
     hold = pd.to_numeric(v.get("_hold_ma"), errors="coerce")
     v["Above 10MA (of 5)"] = (hold % 10).where(hold.notna())
     v["Above 20MA (of 5)"] = (hold // 10).where(hold.notna())
@@ -394,7 +397,8 @@ def style(v, liq_floor=50.0):
         sty = sty.map(_c_setup, subset=["Setup"])
     if "MA hold" in v.columns:
         sty = sty.map(lambda x: _css("#28a745", "white", True) if x == "HL on 10MA" else
-                      _css("#8ee68e") if x == "HL on 20MA" else _css("#fff3cd", "#664d03") if x == "Lost MA" else "",
+                      _css("#8ee68e") if x == "HL on 20MA" else _css("#cff4fc", "#055160") if str(x).startswith("Bounced") else
+                      _css("#fff3cd", "#664d03") if x == "Lost MA" else "",
                       subset=["MA hold"])
     if "Flags" in v.columns:
         sty = sty.map(_c_flags, subset=["Flags"])

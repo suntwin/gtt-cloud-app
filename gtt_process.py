@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-21c · MA hold column (HL on 10MA / HL on 20MA) from new MIO columns"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-21d · MA hold: HL only when still at the MA and tight, else Bounced off"   # shown on the page so you can tell which code is running
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -92,20 +92,26 @@ OFF_HIGH_HELP = {"off_high_21": "% from the 21-day high — the pivot proxy. Col
 MA_HOLD_COLS = ["_hl_pct", "_low_10ma", "_low_20ma", "_hold_ma"]   # appended after the off-high fields (MIO show())
 
 
-def ma_hold_label(hl_pct, low10, low20, hold, adr, ma20dist=np.nan):
-    """'HL on 10MA' / 'HL on 20MA' / 'Holding' / 'Lost MA' / '' from the MarketInOut MA-hold columns.
+def ma_hold_label(hl_pct, low10, low20, hold, adr, ma20dist=np.nan, ma10dist=np.nan, reltight=np.nan):
+    """'HL on 10MA' / 'HL on 20MA' (still sitting at the MA and tight = the entry zone) ·
+    'Bounced off 10MA' / 'Bounced off 20MA' (the higher low held but it has already left the MA or isn't tight) ·
+    'Holding' · 'Lost MA' · '' (no data).
     Generous on purpose (information, not a filter): a pullback low up to 0.3 ADR under the previous one still counts
     as a higher low; a low up to 0.6 ADR under the MA still counts as holding it if most closes stay above."""
     hl, l10, l20, h, a = (_num(x) for x in (hl_pct, low10, low20, hold, adr))
+    d10, d20, rt = _num(ma10dist), _num(ma20dist), _num(reltight)
     if not np.isfinite(h) or not np.isfinite(a) or a <= 0:
         return ""
     h10, h20 = int(h) % 10, int(h) // 10
     higher = np.isfinite(hl) and hl / a >= -0.3
+    tight = not np.isfinite(rt) or rt <= 1.0
     if higher and np.isfinite(l10) and -0.6 <= l10 / a <= 0.5 and h10 >= 3:
-        return "HL on 10MA"
+        near = not np.isfinite(d10) or d10 / a <= 1.0
+        return "HL on 10MA" if near and tight else "Bounced off 10MA"
     if higher and np.isfinite(l20) and -0.6 <= l20 / a <= 0.5 and h20 >= 3:
-        return "HL on 20MA"
-    if h20 <= 2 and (not np.isfinite(_num(ma20dist)) or _num(ma20dist) < 0):
+        near = not np.isfinite(d20) or d20 / a <= 1.5
+        return "HL on 20MA" if near and tight else "Bounced off 20MA"
+    if h20 <= 2 and (not np.isfinite(d20) or d20 < 0):
         return "Lost MA"
     return "Holding"
 
