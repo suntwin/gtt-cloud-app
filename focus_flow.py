@@ -548,59 +548,99 @@ def _render_sector_focus(st, sb, base_df, mcfg):
 
     # ── Step 2: one sector at a time ──
     st.markdown("#### 2 · Go through each sector and flag the best few")
-    if not focus:
-        st.info("Pick at least one focus sector above."); return
     live = v[~stale]
-    counts = {g: int((live["Sector"] == g).sum()) for g in focus}
-    flagged_in = {g: int(((v["Sector"] == g) & v["Flag"]).sum()) for g in focus}
-    g = st.radio("Sector", focus, horizontal=True, key=f"sf_sector_{mkt}")      # static labels keep the selection stable
-    st.caption(" · ".join(f"**{x}** {counts.get(x, 0)} stocks, ⚑{flagged_in.get(x, 0)}" for x in focus))
     c1, c2 = st.columns([1, 3])
     min_score = c1.slider("Min score", 0.0, 8.0, 4.0, 0.5, key=f"sf_min_{mkt}",
                           help="Hide stocks passing fewer rules. Flagged stocks always show.")
     c2.caption("Rules: " + " · ".join(f"**{r}** {n}" for r, n in RULES) +
                ". ✓ pass · ½ half · ✗ fail · · no data. Hover a rule header for its threshold. "
                "Volume (R2) and sector (R3) first — tightness (R6) is only the entry.")
-    part = live[(live["Sector"] == g) & ((live["Score"] >= min_score) | live["Flag"])]
-    gone = v[stale & (v["Sector"] == g)]
-    if not gone.empty:
-        st.caption(f"Not shown — dropped out of today's scan (recent breakouts / watchlist names that no longer pass the "
-                   f"screens): {', '.join(gone['Symbol'])}" + (" · ⚑ flagged ones stay in Flagged, marked dropped out"
-                                                               if gone["Flag"].any() else ""))
-    if part.empty:
-        st.info("Nothing in this sector at that score."); return
-    cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
-    pv = part.reset_index(drop=True)
-    gv = pv[cols].copy()
-    gv["Flag"] = gv["Flag"].astype(bool)
-    was = set(part.loc[part["Flag"], "Symbol"])
-    ed, save = gp.card_grid(st, gv, key=f"sf_grid_{mkt}_{g}_{sd}", sty=style(gv, cfg["min_liq"]),
-                            extra=_card_extra(pv, cols), labels=LABELS, tips=_tips(cfg), card_first=CARD_FIRST,
-                            edit={"Flag": "bool"}, submit=f"Save flags for {g}",
-                            height=min(32 * len(pv) + 70, 560), widths={"Symbol": 110, "Score": 58, "Setup": 170, "Flags": 200, "Source": 110})
-    st.caption(f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}). **Click a ticker** for all its "
-               "data · tick ⚑ on the rows you like, then **Save flags** (nothing reloads while you tick or sort).")
-    okey = f"sf_order_{mkt}_{g}"
-    if save and ed is not None and "Symbol" in ed.columns:
-        st.session_state[okey] = list(ed["Symbol"])                  # the grid's sort order at Save
-        now = set(ed.loc[ed["Flag"].fillna(False).astype(bool), "Symbol"])
-        if now != was:
-            add_flags(sb, mcfg, sorted(now - was), sector=g, source=g)
-            remove_flags(sb, mcfg, was - now)
-            st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
-            _rerun(st)
-    order = [x for x in st.session_state.get(okey, []) if x in set(pv["Symbol"])] or list(pv["Symbol"])
-    gp.copy_area(st, f"{g}: {len(order)} tickers in the table's order (sort the table, press Save to refresh) — for TradingView",
-                 ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"sf_copy_sec_{mkt}_{g}")
+    if not focus:
+        st.info("Pick at least one focus sector above.")
+    else:
+        counts = {x: int((live["Sector"] == x).sum()) for x in focus}
+        flagged_in = {x: int(((v["Sector"] == x) & v["Flag"]).sum()) for x in focus}
+        g = st.radio("Sector", focus, horizontal=True, key=f"sf_sector_{mkt}")      # static labels keep the selection stable
+        st.caption(" · ".join(f"**{x}** {counts.get(x, 0)} stocks, ⚑{flagged_in.get(x, 0)}" for x in focus))
+        part = live[(live["Sector"] == g) & ((live["Score"] >= min_score) | live["Flag"])]
+        gone = v[stale & (v["Sector"] == g)]
+        if not gone.empty:
+            st.caption(f"Not shown — dropped out of today's scan (recent breakouts / watchlist names that no longer pass the "
+                       f"screens): {', '.join(gone['Symbol'])}" + (" · ⚑ flagged ones stay in Flagged, marked dropped out"
+                                                                   if gone["Flag"].any() else ""))
+        if part.empty:
+            st.info("Nothing in this sector at that score.")
+        else:
+            _flag_grid(st, sb, mcfg, cfg, part, key=f"sf_grid_{mkt}_{g}_{sd}", submit=f"Save flags for {g}",
+                       okey=f"sf_order_{mkt}_{g}", copy_label=g, copy_key=f"sf_copy_sec_{mkt}_{g}", sector=g,
+                       note=f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}).")
 
-    # ── Step 3: flagged ──
+    # ── Step 3: last stop — the best setups in every other sector ──
+    st.markdown("---")
+    st.markdown("#### 3 · Last stop — best setups outside your focus sectors")
+    st.caption("Only when the focus sectors give you nothing. Every other sector in today's scan, best first. "
+               "R3 (sector) fails here by definition, so 7 is the top score. Be pickier than in your focus sectors.")
+    c1, c2, c3 = st.columns([1, 1, 2])
+    o_min = c1.slider("Min score", 0.0, 8.0, 6.0, 0.5, key=f"sf_omin_{mkt}")
+    o_top = c2.number_input("Show top", 5, 100, 25, 5, key=f"sf_otop_{mkt}")
+    o_setups = c3.multiselect("Setups", SETUP_ORDER, default=SETUP_ORDER[:4], key=f"sf_osetup_{mkt}",
+                              help="Leave the ready-to-trade setups ticked; add others if you want a wider look")
+    others = live[~live["Sector"].isin(focus)]
+    op = others[((others["Score"] >= o_min) & (others["Setup"].isin(o_setups) if o_setups else True)) | others["Flag"]]
+    op = op.assign(_so=op["Setup"].map({x: i for i, x in enumerate(SETUP_ORDER)}).fillna(99)) \
+           .sort_values(["Flag", "Score", "_so", "Rel tight"], ascending=[False, False, True, True], na_position="last") \
+           .drop(columns="_so").head(int(o_top) + int(op["Flag"].sum()))
+    if op.empty:
+        st.info("Nothing outside your focus sectors at that score / setup.")
+    else:
+        by = op.groupby("Sector").size().sort_values(ascending=False)
+        st.caption("By sector: " + " · ".join(f"{k} {n}" for k, n in by.items()))
+        _flag_grid(st, sb, mcfg, cfg, op, key=f"sf_ogrid_{mkt}_{sd}", submit="Save flags (other sectors)",
+                   okey=f"sf_oorder_{mkt}", copy_label="Other sectors", copy_key=f"sf_copy_other_{mkt}", sector=None,
+                   note=f"{len(op)} stocks from {len(by)} other sectors (score ≥ {o_min:g}).", show_sector=True)
+
+    # ── Step 4: flagged ──
     st.markdown("---")
     render_flagged(st, sb, mcfg, v, flags, cfg)
 
 
+SETUP_ORDER = ["1-min ORH ready", "Leader flag on 10MA", "Broke out today", "Tight at pivot, no volume yet",
+               "Volume came, not tight yet", "Near the pivot", "Not ready"]
+
+
+def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key, sector=None, note="", show_sector=False):
+    """One flaggable grid (⚑ on the row, saved with the form button) + a copy box in the table's sort order."""
+    mkt = mcfg.get("market")
+    cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
+    if show_sector and "Sector" in part.columns:
+        cols.insert(cols.index("Setup") + 1, "Sector")
+    pv = part.reset_index(drop=True)
+    gv = pv[cols].copy()
+    gv["Flag"] = gv["Flag"].astype(bool)
+    was = set(part.loc[part["Flag"], "Symbol"])
+    ed, save = gp.card_grid(st, gv, key=key, sty=style(gv, cfg["min_liq"]), extra=_card_extra(pv, cols), labels=LABELS,
+                            tips=_tips(cfg), card_first=CARD_FIRST, edit={"Flag": "bool"}, submit=submit,
+                            height=min(32 * len(pv) + 70, 560),
+                            widths={"Symbol": 110, "Score": 58, "Setup": 170, "Sector": 150, "Flags": 200, "Source": 110})
+    st.caption(f"{note} **Click a ticker** for all its data · tick ⚑ on the rows you like, then **{submit}** "
+               "(nothing reloads while you tick or sort).")
+    if save and ed is not None and "Symbol" in ed.columns:
+        st.session_state[okey] = list(ed["Symbol"])                  # the grid's sort order at Save
+        now = set(ed.loc[ed["Flag"].fillna(False).astype(bool), "Symbol"])
+        if now != was:
+            secmap = dict(zip(pv["Symbol"], pv["Sector"])) if "Sector" in pv.columns else {}
+            add_flags(sb, mcfg, sorted(now - was), sector=sector, source=sector or "other sectors", sectors=None if sector else secmap)
+            remove_flags(sb, mcfg, was - now)
+            st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
+            _rerun(st)
+    order = [x for x in st.session_state.get(okey, []) if x in set(pv["Symbol"])] or list(pv["Symbol"])
+    gp.copy_area(st, f"{copy_label}: {len(order)} tickers in the table's order (sort the table, press Save to refresh) — for TradingView",
+                 ",".join(gp.tv_symbol(x, mcfg) for x in order), key=copy_key)
+
+
 def render_flagged(st, sb, mcfg, v, flags, cfg):
     mkt = mcfg.get("market")
-    st.markdown("#### 3 · Flagged — pick your 5–6")
+    st.markdown("#### 4 · Flagged — pick your 5–6")
     with st.expander("⚑ Flag tickers by hand (from any screen or copy box)"):
         txt = st.text_input("Symbols, comma separated", key=f"sf_manual_{mkt}", placeholder="e.g. SUNTV, NSE:TIPSMUSIC")
         if st.button("Flag them", key=f"sf_manual_btn_{mkt}") and txt.strip():
