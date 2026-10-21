@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-21e · MA hold: HL on 10 & 20MA when both hold"   # shown on the page so you can tell which code is running
+PROCESS_VERSION = "v2026-10-21f · Sector Focus step 5: daily snapshot + breakout review + rule check"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",

@@ -460,6 +460,8 @@ def _colcfg(st, cfg):
 # ── tab ────────────────────────────────────────────────────────────────────
 def _rerun(st):
     """Rerun only this tab when running as a fragment (much faster), else the page."""
+    for k in [k for k in st.session_state.keys() if str(k).startswith("fr_saved_")]:
+        del st.session_state[k]                    # flags changed → re-save today's snapshot on the rerun
     try:
         st.rerun(scope="fragment")
     except Exception:
@@ -628,6 +630,14 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     # ── Step 4: flagged ──
     st.markdown("---")
     render_flagged(st, sb, mcfg, v, flags, cfg)
+
+    # ── Step 5: learning loop (saves today's view, reviews today's breakouts) ──
+    st.markdown("---")
+    try:
+        import focus_review
+        focus_review.render_review(st, sb, mcfg, sd, live, flags)
+    except Exception as e:
+        st.caption(f"Review unavailable ({e}).")
 
 
 SETUP_ORDER = ["1-min ORH ready", "Leader flag on 10MA", "Broke out today", "Tight at pivot, no volume yet",
