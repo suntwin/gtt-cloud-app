@@ -42,9 +42,9 @@ RULE_HELP = {
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
 SHOW = ["Flag", "Symbol", "Score", "Setup"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
-        "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x", "Circuit %", "Flags", "Data"]
+        "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Flags", "Data"]
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
-           "Avg vol", "Chg %", "Vol x", "Circuit %"]
+           "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %"]
 
 
 def _num(x):
@@ -84,7 +84,8 @@ def _tips(cfg):
                        "weekly but resting on the 10MA · Tight at pivot, no volume yet = anticipation",
               "Flag": "Tick to flag, then Save flags", "Pick": "Build the range + set the alert",
               "Pivot": "1-month high: starting line for the range", "Stop guide": "Widest stop: pivot − 1 ADR (use the LOD if tighter)",
-              "Off 1M (ADR)": "Below the 1-month high, in ADRs", "10MA (ADR)": "Distance from the 10-day MA, in ADRs",
+              "Off 1M (ADR)": "Below the 1-month high, in ADRs",
+              "Day vol": "Today's traded value (same units as Avg vol) — coloured by today ÷ average", "10MA (ADR)": "Distance from the 10-day MA, in ADRs",
               "Source": "Breakout = volume came in recently · P1/P2/P3 = anticipation tier (ADR)",
               "Data": "today = today's scan · dropped out = not in today's scan (no numbers shown)"})
     return t
@@ -244,7 +245,7 @@ def score(u, cfg, focus, bos, tiers=None):
     v["Source"] = src
     v = v.rename(columns={"Adr": "ADR", "_rel_tightness_today": "Rel tight", "_off21_adr": "Off 1M (ADR)",
                           "off_high_252": "Off 52W %", "_ma10_adr": "10MA (ADR)", "_rel_wk_dist": "ADRs from 10w",
-                          "_avgvol_mln": "Avg vol", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_circuit": "Circuit %"})
+                          "_avgvol_mln": "Avg vol", "dvol": "Day vol", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_circuit": "Circuit %"})
     for c in NUMERIC:
         if c in v.columns:
             v[c] = pd.to_numeric(v[c], errors="coerce")
@@ -359,7 +360,7 @@ def _c_ma10(v):
 def style(v, liq_floor=50.0):
     fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Ti65": "{:.2f}", "Rel tight": "{:.2f}",
            "Off 1M (ADR)": "{:.1f}", "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}",
-           "Avg vol": "{:.0f}", "Chg %": "{:+.1f}", "Vol x": "{:.1f}", "Circuit %": "{:.0f}",
+           "Avg vol": "{:.0f}", "Day vol": "{:.0f}", "Chg %": "{:+.1f}", "Vol x": "{:.1f}", "Circuit %": "{:.0f}",
            "Pivot": "{:g}", "To pivot %": "{:.1f}", "Stop guide": "{:g}"}
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     rc = [r for r, _ in RULES if r in v.columns]
@@ -373,6 +374,10 @@ def style(v, liq_floor=50.0):
             sty = sty.map(f, subset=[c])
     if "Avg vol" in v.columns:
         sty = sty.apply(lambda col: gp._liq_styles(col, liq_floor), subset=["Avg vol"])
+    if "Day vol" in v.columns and "Avg vol" in v.columns:
+        av = pd.to_numeric(v["Avg vol"], errors="coerce").tolist()
+        sty = sty.apply(lambda col: [gp._c_vol(_num(x) / a) if np.isfinite(_num(a)) and _num(a) else ""
+                                     for x, a in zip(col, av)], subset=["Day vol"])
     if "Setup" in v.columns:
         sty = sty.map(_c_setup, subset=["Setup"])
     if "Flags" in v.columns:
@@ -680,7 +685,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
     d["Unflag"] = False
     d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
     show = ["Pick", "Rank", "Symbol", "Setup", "Entry", "Pivot", "To pivot %", "Stop guide", "Flags", "Sector", "Score"] + \
-           HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
+           HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
     show = [c for c in show if c in d.columns]
     n_pick = int(d["Pick"].sum())
     st.caption(f"**{len(d)} flagged · {n_pick} picked** (aim for {cfg['target']}). Tick **Pick** = draw the range and set "
