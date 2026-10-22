@@ -79,6 +79,7 @@ RULE_HELP = {
                "R7": "Daily closes bunched: ≥ {min_tight_closes} tight closes of the last 4 (½ for one less)"},
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "Rel Wk Dist"]
+HOURLY_RANGE = 0.25      # a typical hourly candle ≈ ¼ of the daily range (ADR) — MA hold's yardstick on the hourly page
 
 
 def mcfg_for(tf):
@@ -220,8 +221,11 @@ def score(df, tf, cfg):
                                                        np.where(tc >= cfg["min_tight_closes"] - 1, "½", "✗")))
         d["_bo_today"] = d["Vol x"] >= cfg["bo_min_vol"]
     d["Day vol"] = pd.to_numeric(d.get("dvol" if tf == "Daily" else "dvoldaily"), errors="coerce")
+    # Hourly: the MA-hold formulas run on hourly candles (3-hour lows, hourly 10/20MA), so measure them in an HOURLY
+    # range, not the daily ADR — otherwise the tolerances are ~4x too loose and almost every coin reads "HL on 10MA".
+    unit = HOURLY_RANGE if tf == "Hourly" else 1.0
     d["MA hold"] = [gp.ma_hold_label(r.get("_hl_pct"), r.get("_low_10ma"), r.get("_low_20ma"), r.get("_hold_ma"),
-                                     r.get("ADR"), r.get("_20madist"), r.get("_10madist"), r.get("Rel tight"))
+                                     _num(r.get("ADR")) * unit, r.get("_20madist"), r.get("_10madist"), r.get("Rel tight"))
                     for r in d.to_dict("records")]
     hold = pd.to_numeric(d["_hold_ma"], errors="coerce") if "_hold_ma" in d.columns else pd.Series(np.nan, index=d.index)
     d["Above 10MA (of 5)"] = (hold % 10).where(hold.notna())
