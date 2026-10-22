@@ -320,7 +320,7 @@ def commentary(v, cfg, mkt):
     v["MA hold"] = [gp.ma_hold_label(r.get("_hl_pct"), r.get("_low_10ma"), r.get("_low_20ma"), r.get("_hold_ma"),
                                      r.get("ADR"), r.get("_20madist"), r.get("_10madist"), r.get("Rel tight"))
                     for r in v.to_dict("records")]
-    hold = pd.to_numeric(v.get("_hold_ma"), errors="coerce")
+    hold = pd.to_numeric(v["_hold_ma"], errors="coerce") if "_hold_ma" in v.columns else pd.Series(np.nan, index=v.index)
     v["Above 10MA (of 5)"] = (hold % 10).where(hold.notna())
     v["Above 20MA (of 5)"] = (hold // 10).where(hold.notna())
     return v

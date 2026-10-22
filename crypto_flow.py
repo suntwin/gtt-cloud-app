@@ -36,6 +36,8 @@ COLUMNS = {
     "Hourly": ['Symbol', 'Last', 'Timestamp', '_chg_percentclose_hourly', '_avgvol_mln_hourly', 'cap', 'Adr', 'Ti65',
                '_20madist', '_10madist', '_period_perf', '_wtc', '_nr4', '_nr4_previous', 'dvolhourly', 'dvoldaily'],
 }
+for _c in COLUMNS.values():          # higher-low / MA-hold columns, same 4 formulas as the stock screens (optional)
+    _c += list(gp.MA_HOLD_COLS)
 EXTRA_COLUMNS = {
     "Daily": ['Wema10', 'Dist_wema10_pct', 'Weeklyclose_chg_pct', 'Tightcloses_of4', 'Insidebar_thiswk', 'Insidebars_of8',
               'Weeklycontraction', 'Pricevs2yrlow_ratio', 'Pctof10wkhigh', 'Weeklyvolratio', 'Weeklyrsi'],
@@ -217,6 +219,13 @@ def score(df, tf, cfg):
         d["R7"] = np.where(tc.isna(), "·", np.where(tc >= cfg["min_tight_closes"], "✓",
                                                        np.where(tc >= cfg["min_tight_closes"] - 1, "½", "✗")))
         d["_bo_today"] = d["Vol x"] >= cfg["bo_min_vol"]
+    d["Day vol"] = pd.to_numeric(d.get("dvol" if tf == "Daily" else "dvoldaily"), errors="coerce")
+    d["MA hold"] = [gp.ma_hold_label(r.get("_hl_pct"), r.get("_low_10ma"), r.get("_low_20ma"), r.get("_hold_ma"),
+                                     r.get("ADR"), r.get("_20madist"), r.get("_10madist"), r.get("Rel tight"))
+                    for r in d.to_dict("records")]
+    hold = pd.to_numeric(d["_hold_ma"], errors="coerce") if "_hold_ma" in d.columns else pd.Series(np.nan, index=d.index)
+    d["Above 10MA (of 5)"] = (hold % 10).where(hold.notna())
+    d["Above 20MA (of 5)"] = (hold // 10).where(hold.notna())
     rc = [r for r, _ in RULES[tf]]
     d["Score"] = sum((d[r] == "✓").astype(float) + 0.5 * (d[r] == "½") for r in rc)
     d = _commentary(d, tf)
@@ -268,10 +277,16 @@ def _c_setup(x):
             "Not ready": "color:#9aa7ba"}.get(str(x), "")
 
 
+def _c_mahold(x):
+    return (ff._css("#155724", "white", True) if x == "HL on 10 & 20MA" else ff._css("#28a745", "white", True) if x == "HL on 10MA"
+            else ff._css("#8ee68e") if x == "HL on 20MA" else ff._css("#cff4fc", "#055160") if str(x).startswith("Bounced")
+            else ff._css("#fff3cd", "#664d03") if x == "Lost MA" else "")
+
+
 def style(v, tf, cfg):
     fmt = {"Score": "{:.1f}", "ADR": "{:.1f}", "Ti65": "{:.2f}", "Rel tight": "{:.2f}", "Rel Wk Dist": "{:.1f}",
            "10MA (ADR)": "{:.1f}", "Off 10w (ADR)": "{:.1f}", "Off 10w hi %": "{:.1f}", "D10EMA (ADR)": "{:.1f}",
-           "Avg vol": "{:.1f}", "Vol x": "{:.1f}", "Day vol x": "{:.1f}", "Chg %": "{:+.1f}", "BO value": "{:.0f}",
+           "Avg vol": "{:.1f}", "Day vol": "{:.1f}", "Vol x": "{:.1f}", "Day vol x": "{:.1f}", "Chg %": "{:+.1f}", "BO value": "{:.0f}",
            "Last": "{:g}", "Tight closes": "{:g}"}
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     rc = [r for r, _ in RULES[tf] if r in v.columns]
@@ -280,7 +295,7 @@ def style(v, tf, cfg):
     for c, f in (("Score", ff._c_score), ("ADR", ff._hl("adr")), ("Ti65", ff._hl("ti65")), ("Rel tight", ff._hl("tight")),
                  ("Rel Wk Dist", ff._hl("relwk")), ("Vol x", gp._c_vol), ("Day vol x", gp._c_vol), ("Chg %", gp._c_chg),
                  ("10MA (ADR)", ff._c_ma10), ("D10EMA (ADR)", ff._c_ma10), ("Off 10w (ADR)", ff._c_adr_dist),
-                 ("Setup", _c_setup), ("Flags", ff._c_flags)):
+                 ("Setup", _c_setup), ("MA hold", _c_mahold), ("Flags", ff._c_flags)):
         if c in v.columns:
             sty = sty.map(f, subset=[c])
     if "Avg vol" in v.columns:
@@ -299,24 +314,27 @@ def _tips(tf, cfg):
               "Off 10w (ADR)": "Below the 10-week high in ADRs (crypto pivot proxy — MarketInOut gives no 1-month high here)",
               "Vol x": "Today's volume ÷ average" if tf == "Daily" else "This hour's volume ÷ hourly average",
               "Day vol x": "Today's volume ÷ (24 × hourly average)", "Scans": "How many of the 3 performance screens it's in",
-              "Flag": "Tick to flag, then Save flags", "Pick": "Draw the range + set the alert"})
+              "Flag": "Tick to flag, then Save flags", "Pick": "Draw the range + set the alert",
+              "Day vol": "Today's $ volume (same units as Avg vol)",
+              "MA hold": ff._tips(ff.cfg_for({"market": "USA"})).get("MA hold", "") +
+                         (" On the hourly page the MAs are the HOURLY 10/20MA." if tf == "Hourly" else "")})
     return t
 
 
 LABELS = {"Flag": "⚑", "ADR": "🖍 ADR", "Ti65": "🖍 Ti65", "Rel tight": "🖍 Rel tight", "Rel Wk Dist": "🖍 Rel Wk Dist",
           "Entry": "Entry plan"}
-CARD_FIRST = ["Score", "Setup", "🖍 ADR", "🖍 Ti65", "🖍 Rel tight", "🖍 Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
+CARD_FIRST = ["Score", "Setup", "MA hold", "🖍 ADR", "🖍 Ti65", "🖍 Rel tight", "🖍 Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
               "NR4 prev %", "10MA %", "20MA %"]
 CARD_NAMES = {"dvol": "Day vol", "dvolhourly": "Hour vol", "dvoldaily": "Day vol", "_nr4": "NR4 %", "_nr4_previous": "NR4 prev %",
               "_10madist": "10MA %", "_20madist": "20MA %", "_10wmadist": "10wMA %", "_period_perf": "Period perf %",
               "_days_since_bo": "Days since BO", "_bo_dollar_vol_mln": "BO $ value", "_insideday": "Inside day",
               "_wtc": "Weekly tight closes", "_rs": "RS", "cap": "Market cap", "Timestamp": "Data time"}
-SHOW = {"Daily": ["Flag", "Symbol", "Score", "Setup"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "BO", "BO value",
-                  "Off 10w (ADR)", "Off 10w hi %", "10MA (ADR)", "Avg vol", "Chg %", "Vol x", "Scans", "Flags", "Last"],
-        "Hourly": ["Flag", "Symbol", "Score", "Setup", "ADR", "Ti65", "Rel tight", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "BO",
-                   "D10EMA (ADR)", "10MA (ADR)", "Tight closes", "Avg vol", "Chg %", "Vol x", "Day vol x", "Scans", "Flags", "Last"]}
+SHOW = {"Daily": ["Flag", "Symbol", "Score", "Setup", "MA hold"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "BO", "BO value",
+                  "Off 10w (ADR)", "Off 10w hi %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x", "Scans", "Flags", "Last"],
+        "Hourly": ["Flag", "Symbol", "Score", "Setup", "MA hold", "ADR", "Ti65", "Rel tight", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "BO",
+                   "D10EMA (ADR)", "10MA (ADR)", "Tight closes", "Avg vol", "Day vol", "Chg %", "Vol x", "Day vol x", "Scans", "Flags", "Last"]}
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "Rel Wk Dist", "10MA (ADR)", "Off 10w (ADR)", "Off 10w hi %", "D10EMA (ADR)",
-           "Avg vol", "Vol x", "Day vol x", "Chg %", "BO value", "Last", "Tight closes", "Scans"]
+           "Avg vol", "Day vol", "Vol x", "Day vol x", "Chg %", "BO value", "Last", "Tight closes", "Scans"]
 
 
 def _extra(df, shown):
@@ -383,6 +401,22 @@ def _focus(st, sb, tf, mcfg, cfg, base):
 
 
 def _focus_body(st, sb, tf, mcfg, cfg, base):
+    _focus_main(st, sb, tf, mcfg, cfg, base)
+    if sb is None or f"cr_scored_{tf}" not in st.session_state:
+        return
+    st.markdown("---")                     # ── Step 3: learning loop (same as Sector Focus step 5) ──
+    try:
+        import focus_review
+        live = st.session_state[f"cr_scored_{tf}"][1]
+        flags = st.session_state.get(f"cr_flags_{tf}", {})
+        sd = pd.Timestamp.utcnow().date()          # crypto session = UTC day (daily candle opens 00:00 UTC)
+        focus_review.render_review(st, sb, mcfg, sd, live, flags, step="3", base=base, shown_min=5,
+                                   ready=("Breakout candle ready", "Tight at pivot, no volume yet", "Broke out today", "Breakout now"))
+    except Exception as e:
+        st.caption(f"Review unavailable ({e}).")
+
+
+def _focus_main(st, sb, tf, mcfg, cfg, base):
     mkt = mcfg["market"]
     try:
         flags = ff.load_flags(sb, mcfg) if sb is not None else {}
@@ -398,6 +432,7 @@ def _focus_body(st, sb, tf, mcfg, cfg, base):
         if c in v.columns:
             v[c] = pd.to_numeric(v[c], errors="coerce")
     v["Flag"] = v["Symbol"].isin(flags)
+    st.session_state[f"cr_flags_{tf}"] = flags
     picked = [s for s, r in flags.items() if r.get("build_range")]
     st.session_state[f"sl_lists_{mkt}"] = {"FOCUS": picked, "FLAGGED": [s for s in flags if s not in picked]}
 

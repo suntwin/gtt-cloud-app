@@ -77,7 +77,7 @@ def _prev(sb, mcfg, sd, syms):
     return {r["symbol"]: r for r in rows}, pdate
 
 
-def run_review(sb, mcfg, sd, live):
+def run_review(sb, mcfg, sd, live, shown_min=6, ready=READY):
     """Sort today's breakouts into buckets against the previous snapshot and store them."""
     bo = todays_breakouts(live)
     if bo.empty:
@@ -93,7 +93,7 @@ def run_review(sb, mcfg, sd, live):
             bucket = "Picked"
         elif p.get("flagged"):
             bucket = "Flagged"
-        elif (_num(p.get("score")) >= 6) or (p.get("setup") in READY):
+        elif (_num(p.get("score")) >= shown_min) or (p.get("setup") in ready):
             bucket = "Shown, not flagged"
         else:
             rules = p.get("rules") or {}
@@ -153,6 +153,8 @@ def rule_check(sb, mcfg):
                 res[m].append(broke_later(r.symbol, r.snap_date))
         p_ok = 100 * np.mean(res["✓"]) if res["✓"] else np.nan
         p_no = 100 * np.mean(res["✗"]) if res["✗"] else np.nan
+        if not blocked and not res["✓"] and not res["✗"]:
+            continue                                   # rule not used on this page (crypto has R1–R7)
         rows.append({"Rule": k, "Breakouts held back": blocked,
                      "Broke out within 10 sessions — when ✓ %": round(p_ok, 1) if np.isfinite(p_ok) else np.nan,
                      "— when ✗ %": round(p_no, 1) if np.isfinite(p_no) else np.nan,
@@ -164,21 +166,21 @@ BUCKET_COLOURS = {"Held back by rules": "#fff3cd", "Shown, not flagged": "#cfe2f
                   "Not in the scan before": "#e2e3e5", "No earlier snapshot yet": "#e2e3e5"}
 
 
-def render_review(st, sb, mcfg, sd, live, flags):
+def render_review(st, sb, mcfg, sd, live, flags, step="5", base=None, shown_min=6, ready=READY):
     mkt = mcfg.get("market")
-    st.markdown("#### 5 · Review — today's breakouts vs what Sector Focus said the session before")
+    st.markdown(f"#### {step} · Review — today's breakouts vs what this page said the session before")
     key = f"fr_saved_{mkt}_{sd}"
     try:
         if not st.session_state.get(key):
             save_snapshot(sb, mcfg, sd, live, flags)
-            st.session_state[key] = run_review(sb, mcfg, sd, live)
+            st.session_state[key] = run_review(sb, mcfg, sd, live, shown_min, set(ready))
             st.session_state[key] = True if st.session_state[key] is None else st.session_state[key]
         rv = st.session_state.get(key)
         rv = rv if isinstance(rv, pd.DataFrame) else pd.DataFrame()
     except Exception as e:
         st.caption(f"Review unavailable — run supabase_focus_review.sql once in Supabase. ({e})"); return
     st.caption("Breakout = up ≥ 0.8 ADR and ≥ 3% on ≥ 2x volume today. Each one is compared with the snapshot from the "
-               "previous session you opened Sector Focus. Tune a rule only when it keeps blocking good breakouts "
+               "previous session you opened this page. Tune a rule only when it keeps blocking good breakouts "
                "(about 3+ times) AND the rule check below agrees.")
     if rv.empty:
         st.info("No breakouts in today's scan (or no earlier snapshot yet — it starts filling from today).")
@@ -196,7 +198,11 @@ def render_review(st, sb, mcfg, sd, live, flags):
         sty = view.style.format({"Chg %": "{:+.1f}", "Vol x": "{:.1f}", "ADR": "{:.1f}", "Score then": "{:.1f}"}, na_rep="–") \
             .map(lambda x: f"background-color:{BUCKET_COLOURS.get(str(x), '')};color:{'white' if x == 'Picked' else 'black'}"
                  if str(x) in BUCKET_COLOURS else "", subset=["What happened"])
-        gp.card_grid(st, view, key=f"fr_grid_{mkt}_{sd}", sty=sty, extra=gp.live_extra(st.session_state.get("gtt_base_df"), view["Symbol"]),
+        try:
+            extra = gp.live_extra(base if base is not None else st.session_state.get("gtt_base_df"), view["Symbol"])
+        except Exception:
+            extra = None
+        gp.card_grid(st, view, key=f"fr_grid_{mkt}_{sd}", sty=sty, extra=extra,
                      height=min(32 * len(view) + 60, 420), widths={"Symbol": 110, "What happened": 160, "Setup then": 170,
                                                                     "Rules that held it back": 150})
     with st.expander("Rule check — last ~40 days (both sides of the evidence)"):
