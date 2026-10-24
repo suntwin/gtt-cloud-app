@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-25a · Sector Focus: 👑 leaders per sector by RS (1M/3M/6M/Avg)"
+PROCESS_VERSION = "v2026-10-25b · Leaders: show top N (default 15), tie-breaks, RS columns fixed, rank in Check any ticker"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",

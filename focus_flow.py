@@ -47,7 +47,8 @@ NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Of
            "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Avg RS", "RS 1M", "RS 3M", "RS 6M"]
 # Sector leaders: strength (RS) is separate from readiness (Score) — the best stocks must never be buried by the rules
 LEAD_WIN = {"Avg RS": "Avg_RS", "3M": "RS_3M", "6M": "RS_6M", "1M": "RS_1M"}
-LEAD_BADGE, LEAD_SHOW = 5, 8
+LEAD_DISP = {"Avg RS": "Avg RS", "3M": "RS 3M", "6M": "RS 6M", "1M": "RS 1M"}     # radio choice → display column
+LEAD_BADGE, LEAD_SHOW = 5, 15
 LEAD_COLS = ["Flag", "Symbol", "Leader", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Score", "Setup", "MA hold", "Rel tight",
              "ADR", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Chg %", "Vol x", "Flags"]
 
@@ -392,10 +393,17 @@ def add_leaders(v, win):
     """RS display columns (0 = not in that screen → blank) and a 👑 #rank badge for the top LEAD_BADGE per sector
     (today's scan only), ranked by the chosen RS window."""
     for lab, col in LEAD_WIN.items():
-        v[lab] = pd.to_numeric(v[col], errors="coerce").replace(0, np.nan) if col in v.columns else np.nan
-    rs = v[win] if win in v.columns else pd.Series(np.nan, index=v.index)
+        v[LEAD_DISP[lab]] = pd.to_numeric(v[col], errors="coerce").replace(0, np.nan) if col in v.columns else np.nan
+    rs = v[LEAD_DISP.get(win, "Avg RS")]
     today = (v["Data"] == "today") if "Data" in v.columns else pd.Series(True, index=v.index)
-    rk = rs.where(today).groupby(v["Sector"]).rank(ascending=False, method="first")
+    # RS is 1–99, so many leaders tie at 99. Ties: strong on more screens (1M/3M/6M) first, then closer to the 52-week
+    # high, then the better score.
+    k = pd.DataFrame({"rs": rs, "n": v[["RS 1M", "RS 3M", "RS 6M"]].notna().sum(axis=1),
+                      "o52": pd.to_numeric(v.get("Off 52W %"), errors="coerce").abs() if "Off 52W %" in v.columns else np.nan,
+                      "sc": pd.to_numeric(v.get("Score"), errors="coerce") if "Score" in v.columns else np.nan,
+                      "sec": v["Sector"]})[today & rs.notna()]
+    k = k.sort_values(["rs", "n", "o52", "sc"], ascending=[False, False, True, False], na_position="last")
+    rk = (k.groupby("sec").cumcount() + 1).reindex(v.index)
     v["Leader"] = [f"👑 #{int(k)}" if np.isfinite(_num(k)) and k <= LEAD_BADGE else "" for k in rk]
     v["_lead_rank"] = rk
     return v
@@ -689,8 +697,12 @@ def _leaders_panel(st, sb, mcfg, cfg, live, g, sd):
     win = c1.radio("Rank by RS", list(LEAD_WIN), horizontal=True, key=f"sf_lwin_{mkt}",
                    help="RS 1–99 vs the whole market. Avg RS = average of the screens the stock is in. A blank RS means "
                         "the stock isn't in that screen (not weak). The 👑 badge in the tables follows this choice.")
-    lead = live[(live["Sector"] == g) & live[win].notna()].sort_values([win, "Score"], ascending=[False, False]).head(LEAD_SHOW)
-    c2.caption(f"Top {LEAD_SHOW} in {g} by **{win}**, ignoring the min score. Strength ≠ readiness: a leader with a low score "
+    n_all = int(((live["Sector"] == g) & live["_lead_rank"].notna()).sum())
+    top = int(c1.number_input("Show top", 5, 200, LEAD_SHOW, 5, key=f"sf_ltop_{mkt}",
+                              help="How many of the sector's strongest to list. Ties at the same RS: on more screens first, "
+                                   "then closer to the 52-week high, then higher score."))
+    lead = live[(live["Sector"] == g) & live["_lead_rank"].notna()].sort_values("_lead_rank").head(top)
+    c2.caption(f"Top {min(top, n_all)} of {n_all} in {g} by **{win}**, ignoring the min score. Strength ≠ readiness: a leader with a low score "
                "is a stock to **watch for its next tight setup**, not to buy today. A leader that ALSO scores well is the "
                "best of both — that's where your 5–6 picks should come from.")
     if lead.empty:
@@ -734,7 +746,19 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
 
 
 def _where_it_shows(st, mcfg, v, r):
-    """Explain where a ticker appears in steps 2–3 (or why it doesn't) — same filters as those steps use."""
+    """Where a ticker shows in steps 2–3 (or why not), plus its 👑 strength rank in its sector."""
+    mkt = mcfg.get("market")
+    sec = r.get("Sector")
+    lr, win = _num(r.get("_lead_rank")), st.session_state.get(f"sf_lwin_{mkt}", "Avg RS")
+    n_sec = int(((v["Sector"] == sec) & v["_lead_rank"].notna()).sum()) if "_lead_rank" in v.columns else 0
+    top = int(st.session_state.get(f"sf_ltop_{mkt}", LEAD_SHOW))
+    lead_txt = (f" · 👑 Strength rank **#{int(lr)} of {n_sec}** in {sec} by {win}" +
+                (" — listed in the Leaders panel." if lr <= top else
+                 f" — set 'Show top' to {int(lr)}+ in the Leaders panel to list it.")) if np.isfinite(lr) else ""
+    return _where_core(st, mcfg, v, r) + lead_txt
+
+
+def _where_core(st, mcfg, v, r):
     mkt = mcfg.get("market")
     sec, sc, data = r.get("Sector"), _num(r.get("Score")), r.get("Data")
     if data != "today":
