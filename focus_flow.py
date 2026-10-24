@@ -49,8 +49,8 @@ NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Of
 LEAD_WIN = {"Avg RS": "Avg_RS", "3M": "RS_3M", "6M": "RS_6M", "1M": "RS_1M"}
 LEAD_DISP = {"Avg RS": "Avg RS", "3M": "RS 3M", "6M": "RS 6M", "1M": "RS 1M"}     # radio choice → display column
 LEAD_BADGE, LEAD_SHOW = 5, 15
-LEAD_COLS = ["Flag", "Symbol", "Leader", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Score", "Setup", "MA hold", "Rel tight",
-             "ADR", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Chg %", "Vol x", "Flags"]
+LEAD_COLS = ["Flag", "Symbol", "Leader", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Explosive", "ADR", "Ti65", "Score", "Setup",
+             "MA hold", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Chg %", "Vol x", "Flags"]
 
 
 def _num(x):
@@ -90,6 +90,7 @@ def _tips(cfg):
               "Score": "Rules passed out of 8 (½ counts half)",
               "Leader": "👑 #n = the n-th strongest stock in its sector by the RS window picked in the Leaders panel (top 5 get the badge). Strength, not readiness.",
               "Avg RS": "Average RS (1–99 vs the market) of the screens the stock is in", "RS 1M": "RS on the 1-month screen (blank = not in it)",
+              "Explosive": "ADR × Ti65 — range × trend intensity. Higher = more explosive. Breaks RS ties in the Leaders panel",
               "RS 3M": "RS on the 3-month screen (blank = not in it)", "RS 6M": "RS on the 6-month screen (blank = not in it)",
               "MA hold": "HL on 10MA = pullback low held above the previous one (within 0.3 ADR), tagged the 10MA (−0.6 to +0.5 ADR), "
                          "≥ 3 of the last 5 closes above it, and it's STILL there (≤ 1 ADR above the 10MA) and tight (rel ≤ 1.0) · "
@@ -389,20 +390,24 @@ def _c_rs(x):
         _css("#f8d7da", "#721c24") if x < 70 else ""
 
 
-def add_leaders(v, win):
+def add_leaders(v, win, min_adr=0.0):
     """RS display columns (0 = not in that screen → blank) and a 👑 #rank badge for the top LEAD_BADGE per sector
-    (today's scan only), ranked by the chosen RS window."""
+    (today's scan only). Leaders must be EXPLOSIVE: ADR ≥ min_adr (R4's floor). Ranked by the chosen RS window; ties
+    (RS is 1–99, many sit at 99) go to the more explosive stock = ADR × Ti65."""
     for lab, col in LEAD_WIN.items():
         v[LEAD_DISP[lab]] = pd.to_numeric(v[col], errors="coerce").replace(0, np.nan) if col in v.columns else np.nan
     rs = v[LEAD_DISP.get(win, "Avg RS")]
     today = (v["Data"] == "today") if "Data" in v.columns else pd.Series(True, index=v.index)
-    # RS is 1–99, so many leaders tie at 99. Ties: strong on more screens (1M/3M/6M) first, then closer to the 52-week
-    # high, then the better score.
-    k = pd.DataFrame({"rs": rs, "n": v[["RS 1M", "RS 3M", "RS 6M"]].notna().sum(axis=1),
+    adr = pd.to_numeric(v["ADR"], errors="coerce") if "ADR" in v.columns else pd.Series(np.nan, index=v.index)
+    ti = pd.to_numeric(v["Ti65"], errors="coerce") if "Ti65" in v.columns else pd.Series(np.nan, index=v.index)
+    v["Explosive"] = (adr * ti).round(1)
+    ok = today & rs.notna() & ((adr >= min_adr) if min_adr else True)
+    # Ties at the same RS: more explosive (ADR × Ti65) first, then strong on more screens, then closer to the 52W high.
+    k = pd.DataFrame({"rs": rs, "ex": v["Explosive"], "n": v[["RS 1M", "RS 3M", "RS 6M"]].notna().sum(axis=1),
                       "o52": pd.to_numeric(v.get("Off 52W %"), errors="coerce").abs() if "Off 52W %" in v.columns else np.nan,
                       "sc": pd.to_numeric(v.get("Score"), errors="coerce") if "Score" in v.columns else np.nan,
-                      "sec": v["Sector"]})[today & rs.notna()]
-    k = k.sort_values(["rs", "n", "o52", "sc"], ascending=[False, False, True, False], na_position="last")
+                      "sec": v["Sector"]})[ok]
+    k = k.sort_values(["rs", "ex", "n", "o52", "sc"], ascending=[False, False, False, True, False], na_position="last")
     rk = (k.groupby("sec").cumcount() + 1).reindex(v.index)
     v["Leader"] = [f"👑 #{int(k)}" if np.isfinite(_num(k)) and k <= LEAD_BADGE else "" for k in rk]
     v["_lead_rank"] = rk
@@ -435,6 +440,10 @@ def style(v, liq_floor=50.0):
     rsc = [c for c in ("Avg RS", "RS 1M", "RS 3M", "RS 6M") if c in v.columns]
     if rsc:
         sty = sty.format({c: "{:.0f}" for c in rsc}, na_rep="–").map(_c_rs, subset=rsc)
+    if "Explosive" in v.columns:
+        sty = sty.format({"Explosive": "{:.1f}"}, na_rep="–").map(
+            lambda x: _css("#ffeb3b", "black", True) if _num(x) >= 10 else _css("#fff9c4") if _num(x) >= 7 else
+            _css("#f8d7da", "#721c24") if _num(x) < 5 else "", subset=["Explosive"])
     if "Leader" in v.columns:
         sty = sty.map(lambda x: _css("#ffd700", "black", True) if str(x).startswith("👑") else "", subset=["Leader"])
     if "MA hold" in v.columns:
@@ -613,7 +622,8 @@ def _render_sector_focus(st, sb, base_df, mcfg):
         v.loc[stale, "Flags"] = "Not in today's scan"
         v.loc[stale, "Data"] = "dropped out"
     lead_win = st.session_state.get(f"sf_lwin_{mkt}", "Avg RS")
-    v = add_leaders(v, lead_win)
+    lead_low = st.session_state.get(f"sf_llow_{mkt}", False)
+    v = add_leaders(v, lead_win, 0.0 if lead_low else float(cfg["min_adr"]))
     # Alert Management uses these for its priorities (Shortlister is retired)
     picked = [s_ for s_, r_ in flags.items() if r_.get("build_range")]
     st.session_state[f"sl_lists_{mkt}"] = {"FOCUS": picked, "FLAGGED": [s_ for s_ in flags if s_ not in picked]}
@@ -699,10 +709,14 @@ def _leaders_panel(st, sb, mcfg, cfg, live, g, sd):
                         "the stock isn't in that screen (not weak). The 👑 badge in the tables follows this choice.")
     n_all = int(((live["Sector"] == g) & live["_lead_rank"].notna()).sum())
     top = int(c1.number_input("Show top", 5, 200, LEAD_SHOW, 5, key=f"sf_ltop_{mkt}",
-                              help="How many of the sector's strongest to list. Ties at the same RS: on more screens first, "
-                                   "then closer to the 52-week high, then higher score."))
+                              help="How many of the sector's strongest to list. Ties at the same RS: more explosive "
+                                   "(ADR × Ti65) first, then on more screens, then closer to the 52-week high."))
+    c1.checkbox(f"Include low-ADR stocks (< {cfg['min_adr']:g}%)", key=f"sf_llow_{mkt}",
+                help="Off = leaders must be explosive enough to trade (ADR ≥ the R4 floor). The 👑 badges follow this too.")
     lead = live[(live["Sector"] == g) & live["_lead_rank"].notna()].sort_values("_lead_rank").head(top)
-    c2.caption(f"Top {min(top, n_all)} of {n_all} in {g} by **{win}**, ignoring the min score. Strength ≠ readiness: a leader with a low score "
+    c2.caption(f"Top {min(top, n_all)} of {n_all} in {g} by **{win}**" +
+               ("" if st.session_state.get(f"sf_llow_{mkt}") else f" with ADR ≥ {cfg['min_adr']:g}%") +
+               ", ties → most explosive (ADR × Ti65). Ignores the min score. Strength ≠ readiness: a leader with a low score "
                "is a stock to **watch for its next tight setup**, not to buy today. A leader that ALSO scores well is the "
                "best of both — that's where your 5–6 picks should come from.")
     if lead.empty:
