@@ -674,6 +674,32 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
                  ",".join(gp.tv_symbol(x, mcfg) for x in order), key=copy_key)
 
 
+def _where_it_shows(st, mcfg, v, r):
+    """Explain where a ticker appears in steps 2–3 (or why it doesn't) — same filters as those steps use."""
+    mkt = mcfg.get("market")
+    sec, sc, data = r.get("Sector"), _num(r.get("Score")), r.get("Data")
+    if data != "today":
+        return f"📍 Not in steps 2–3: it isn't in today's scan ({data}). Only today's scan is tradeable."
+    focus = st.session_state.get(f"sf_focus_{mkt}") or []
+    flagged = bool(r.get("Flag"))
+    if sec in focus:
+        mn = float(st.session_state.get(f"sf_min_{mkt}", 4.0))
+        part = v[(v["Data"] == "today") & (v["Sector"] == sec) & ((v["Score"] >= mn) | v["Flag"])]
+        if flagged or sc >= mn:
+            pos = list(part["Symbol"]).index(r["Symbol"]) + 1 if r["Symbol"] in set(part["Symbol"]) else "?"
+            return (f"📍 Shows in step 2 → sector **{sec}** (score {sc:g} ≥ min {mn:g}): row {pos} of {len(part)} in that table, "
+                    "sorted by score then tightness (scroll the table if it's long).")
+        return f"📍 Hidden in step 2 → **{sec}**: score {sc:g} is below your min score {mn:g}. Lower the slider to see it."
+    mn = float(st.session_state.get(f"sf_omin_{mkt}", 6.0))
+    sets = st.session_state.get(f"sf_osetup_{mkt}", SETUP_ORDER[:4])
+    if flagged:
+        return f"📍 {sec} isn't a focus sector → shows in step 3 (Last stop) because it's flagged."
+    why = [w for w, bad in ((f"score {sc:g} < min {mn:g}", sc < mn),
+                            (f"setup “{r.get('Setup')}” isn't ticked", bool(sets) and r.get("Setup") not in sets)) if bad]
+    return (f"📍 {sec} isn't one of your focus sectors → it can only show in step 3 (Last stop)" +
+            (f", hidden there: {' · '.join(why)}." if why else ", within the top-N by score."))
+
+
 def render_flagged(st, sb, mcfg, v, flags, cfg):
     mkt = mcfg.get("market")
     st.markdown("#### 4 · Flagged — pick your 5–6")
@@ -695,6 +721,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                         ["Flags", "Entry"] if c in row.columns]
                 st.dataframe(style(row[cols].reset_index(drop=True), cfg["min_liq"]), hide_index=True,
                              use_container_width=True, column_config=_colcfg(st, cfg))
+                st.caption(_where_it_shows(st, mcfg, v, row.iloc[0]))
             gp.show_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), q)
     if not flags:
         st.caption("Nothing flagged yet."); return
