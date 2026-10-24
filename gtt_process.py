@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-24a · Check any ticker: says where it shows (or why not)"
+PROCESS_VERSION = "v2026-10-25a · Sector Focus: 👑 leaders per sector by RS (1M/3M/6M/Avg)"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2603,6 +2603,7 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
     hidden = []
     if extra is not None and not extra.empty:
         ex = extra.reset_index(drop=True)
+        ex = ex.loc[:, ~pd.Index(ex.columns).duplicated()]      # e.g. raw RS_1M renamed "RS 1M" next to a display "RS 1M"
         for c in ex.columns:
             if c not in data.columns and not str(c).startswith("__"):
                 data[c] = ex[c].values

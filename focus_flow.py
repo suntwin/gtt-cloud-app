@@ -41,10 +41,15 @@ RULE_HELP = {
     "R8": "Weekly: ≤ {wk_full:g} ADR from the 10-week MA (½ for {wk_full:g}–{wk_half:g}, ✗ above)",
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
-SHOW = ["Flag", "Symbol", "Score", "Setup", "MA hold"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
+SHOW = ["Flag", "Symbol", "Leader", "Score", "Setup", "MA hold"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
         "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Flags", "Data"]
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
-           "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %"]
+           "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Avg RS", "RS 1M", "RS 3M", "RS 6M"]
+# Sector leaders: strength (RS) is separate from readiness (Score) — the best stocks must never be buried by the rules
+LEAD_WIN = {"Avg RS": "Avg_RS", "3M": "RS_3M", "6M": "RS_6M", "1M": "RS_1M"}
+LEAD_BADGE, LEAD_SHOW = 5, 8
+LEAD_COLS = ["Flag", "Symbol", "Leader", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Score", "Setup", "MA hold", "Rel tight",
+             "ADR", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Chg %", "Vol x", "Flags"]
 
 
 def _num(x):
@@ -57,7 +62,7 @@ def _num(x):
 
 LABELS = {"Flag": "⚑", "ADR": "🖍 ADR", "Ti65": "🖍 Ti65", "Rel tight": "🖍 Rel tight", "ADRs from 10w": "🖍 Rel Wk Dist",
           "R1": "R1 Liquid", "R2": "R2 Volume", "R3": "R3 Sector", "R4": "R4 ADR", "R5": "R5 Pivot", "R6": "R6 Tight",
-          "R7": "R7 10MA", "R8": "R8 Weekly", "Entry": "Entry plan"}
+          "R7": "R7 10MA", "R8": "R8 Weekly", "Entry": "Entry plan", "Leader": "👑"}
 CARD_NAMES = {"Last": "Last", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol ratio", "dvol": "Day vol",
               "_nr4": "NR4 %", "_nr4_previous": "NR4 prev %", "_rel_tightness_prev": "Rel tight prev",
               "off_high_21": "Off 1M hi %", "off_high_126": "Off 6M hi %", "_10madist": "10MA %", "_20madist": "20MA %",
@@ -70,7 +75,7 @@ CARD_NAMES = {"Last": "Last", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol r
               "Industry": "Industry", "Sector": "Sector", "Entry": "Entry plan", "Pivot": "Pivot", "Stop guide": "Stop guide"}
 
 
-CARD_FIRST = ["Score", "Setup", "MA hold", "🖍 ADR", "🖍 Ti65", "🖍 Rel tight", "🖍 Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
+CARD_FIRST = ["👑", "Score", "Setup", "MA hold", "🖍 ADR", "🖍 Ti65", "🖍 Rel tight", "🖍 Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
               "NR4 prev %", "Avg RS", "Sector %ile", "10MA %", "20MA %"]
 
 
@@ -82,6 +87,9 @@ def _tips(cfg):
               "Rel tight": "Today's NR4 ÷ ADR — lower is tighter. Yellow ≤ 0.5 · pale ≤ 0.8 · red > 1.2",
               "ADRs from 10w": "Relative weekly distance: ADRs from the 10-week MA. Yellow ≤ 2 · pale 2–3 · red > 3",
               "Score": "Rules passed out of 8 (½ counts half)",
+              "Leader": "👑 #n = the n-th strongest stock in its sector by the RS window picked in the Leaders panel (top 5 get the badge). Strength, not readiness.",
+              "Avg RS": "Average RS (1–99 vs the market) of the screens the stock is in", "RS 1M": "RS on the 1-month screen (blank = not in it)",
+              "RS 3M": "RS on the 3-month screen (blank = not in it)", "RS 6M": "RS on the 6-month screen (blank = not in it)",
               "MA hold": "HL on 10MA = pullback low held above the previous one (within 0.3 ADR), tagged the 10MA (−0.6 to +0.5 ADR), "
                          "≥ 3 of the last 5 closes above it, and it's STILL there (≤ 1 ADR above the 10MA) and tight (rel ≤ 1.0) · "
                          "HL on 20MA = same at the 20MA (≤ 1.5 ADR) · HL on 10 & 20MA = both averages together (strongest) · Bounced off 10/20MA = the higher low held but it has already "
@@ -372,6 +380,27 @@ def _c_ma10(v):
     return _c_adr_dist(v)
 
 
+def _c_rs(x):
+    x = _num(x)
+    if not np.isfinite(x):
+        return ""
+    return _css("#28a745", "white", True) if x >= 95 else _css("#8ee68e") if x >= 90 else _css("#d4edda") if x >= 80 else \
+        _css("#f8d7da", "#721c24") if x < 70 else ""
+
+
+def add_leaders(v, win):
+    """RS display columns (0 = not in that screen → blank) and a 👑 #rank badge for the top LEAD_BADGE per sector
+    (today's scan only), ranked by the chosen RS window."""
+    for lab, col in LEAD_WIN.items():
+        v[lab] = pd.to_numeric(v[col], errors="coerce").replace(0, np.nan) if col in v.columns else np.nan
+    rs = v[win] if win in v.columns else pd.Series(np.nan, index=v.index)
+    today = (v["Data"] == "today") if "Data" in v.columns else pd.Series(True, index=v.index)
+    rk = rs.where(today).groupby(v["Sector"]).rank(ascending=False, method="first")
+    v["Leader"] = [f"👑 #{int(k)}" if np.isfinite(_num(k)) and k <= LEAD_BADGE else "" for k in rk]
+    v["_lead_rank"] = rk
+    return v
+
+
 def style(v, liq_floor=50.0):
     fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Ti65": "{:.2f}", "Rel tight": "{:.2f}",
            "Off 1M (ADR)": "{:.1f}", "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}",
@@ -395,6 +424,11 @@ def style(v, liq_floor=50.0):
                                      for x, a in zip(col, av)], subset=["Day vol"])
     if "Setup" in v.columns:
         sty = sty.map(_c_setup, subset=["Setup"])
+    rsc = [c for c in ("Avg RS", "RS 1M", "RS 3M", "RS 6M") if c in v.columns]
+    if rsc:
+        sty = sty.format({c: "{:.0f}" for c in rsc}, na_rep="–").map(_c_rs, subset=rsc)
+    if "Leader" in v.columns:
+        sty = sty.map(lambda x: _css("#ffd700", "black", True) if str(x).startswith("👑") else "", subset=["Leader"])
     if "MA hold" in v.columns:
         sty = sty.map(lambda x: _css("#155724", "white", True) if x == "HL on 10 & 20MA" else
                       _css("#28a745", "white", True) if x == "HL on 10MA" else
@@ -570,6 +604,8 @@ def _render_sector_focus(st, sb, base_df, mcfg):
         v.loc[stale, "Entry"] = "No longer passes the screens — check the chart; unflag unless you hold it"
         v.loc[stale, "Flags"] = "Not in today's scan"
         v.loc[stale, "Data"] = "dropped out"
+    lead_win = st.session_state.get(f"sf_lwin_{mkt}", "Avg RS")
+    v = add_leaders(v, lead_win)
     # Alert Management uses these for its priorities (Shortlister is retired)
     picked = [s_ for s_, r_ in flags.items() if r_.get("build_range")]
     st.session_state[f"sl_lists_{mkt}"] = {"FOCUS": picked, "FLAGGED": [s_ for s_ in flags if s_ not in picked]}
@@ -590,6 +626,7 @@ def _render_sector_focus(st, sb, base_df, mcfg):
         flagged_in = {x: int(((v["Sector"] == x) & v["Flag"]).sum()) for x in focus}
         g = st.radio("Sector", focus, horizontal=True, key=f"sf_sector_{mkt}")      # static labels keep the selection stable
         st.caption(" · ".join(f"**{x}** {counts.get(x, 0)} stocks, ⚑{flagged_in.get(x, 0)}" for x in focus))
+        _leaders_panel(st, sb, mcfg, cfg, live, g, sd)
         part = live[(live["Sector"] == g) & ((live["Score"] >= min_score) | live["Flag"])]
         gone = v[stale & (v["Sector"] == g)]
         if not gone.empty:
@@ -644,10 +681,32 @@ SETUP_ORDER = ["1-min ORH ready", "Leader flag on 10MA", "Broke out today", "Tig
                "Volume came, not tight yet", "Near the pivot", "Not ready"]
 
 
-def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key, sector=None, note="", show_sector=False):
+def _leaders_panel(st, sb, mcfg, cfg, live, g, sd):
+    """👑 The sector's strongest stocks by RS — shown regardless of score. Watch them for the next setup."""
+    mkt = mcfg.get("market")
+    st.markdown(f"##### 👑 Leaders in {g}")
+    c1, c2 = st.columns([2, 5])
+    win = c1.radio("Rank by RS", list(LEAD_WIN), horizontal=True, key=f"sf_lwin_{mkt}",
+                   help="RS 1–99 vs the whole market. Avg RS = average of the screens the stock is in. A blank RS means "
+                        "the stock isn't in that screen (not weak). The 👑 badge in the tables follows this choice.")
+    lead = live[(live["Sector"] == g) & live[win].notna()].sort_values([win, "Score"], ascending=[False, False]).head(LEAD_SHOW)
+    c2.caption(f"Top {LEAD_SHOW} in {g} by **{win}**, ignoring the min score. Strength ≠ readiness: a leader with a low score "
+               "is a stock to **watch for its next tight setup**, not to buy today. A leader that ALSO scores well is the "
+               "best of both — that's where your 5–6 picks should come from.")
+    if lead.empty:
+        st.caption("No RS data for this sector.")
+        return
+    _flag_grid(st, sb, mcfg, cfg, lead, key=f"sf_lgrid_{mkt}_{g}_{sd}_{win}", submit=f"Save flags (leaders in {g})",
+               okey=f"sf_lorder_{mkt}_{g}", copy_label=f"Leaders in {g}", copy_key=f"sf_copy_lead_{mkt}_{g}", sector=g,
+               note=f"{len(lead)} leaders.", cols=LEAD_COLS)
+    st.markdown(f"##### All of {g}")
+
+
+def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key, sector=None, note="", show_sector=False,
+               cols=None):
     """One flaggable grid (⚑ on the row, saved with the form button) + a copy box in the table's sort order."""
     mkt = mcfg.get("market")
-    cols = [c for c in SHOW if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
+    cols = [c for c in (cols or SHOW) if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
     if show_sector and "Sector" in part.columns:
         cols.insert(cols.index("Setup") + 1, "Sector")
     pv = part.reset_index(drop=True)
@@ -657,7 +716,7 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
     ed, save = gp.card_grid(st, gv, key=key, sty=style(gv, cfg["min_liq"]), extra=_card_extra(pv, cols), labels=LABELS,
                             tips=_tips(cfg), card_first=CARD_FIRST, edit={"Flag": "bool"}, submit=submit,
                             height=min(32 * len(pv) + 70, 560),
-                            widths={"Symbol": 110, "Score": 58, "Setup": 170, "Sector": 150, "Flags": 200, "Source": 110})
+                            widths={"Symbol": 110, "Leader": 72, "Score": 58, "Setup": 170, "Sector": 150, "Flags": 200, "Source": 110})
     st.caption(f"{note} **Click a ticker** for all its data · tick ⚑ on the rows you like, then **{submit}** "
                "(nothing reloads while you tick or sort).")
     if save and ed is not None and "Symbol" in ed.columns:
@@ -742,7 +801,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
     d["Note"] = d["note"].fillna("")
     d["Unflag"] = False
     d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
-    show = ["Pick", "Rank", "Symbol", "Setup", "MA hold", "Entry", "Pivot", "To pivot %", "Stop guide", "Flags", "Sector", "Score"] + \
+    show = ["Pick", "Rank", "Symbol", "Leader", "Setup", "MA hold", "Entry", "Pivot", "To pivot %", "Stop guide", "Flags", "Sector", "Score"] + \
            HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
     show = [c for c in show if c in d.columns]
     n_pick = int(d["Pick"].sum())
