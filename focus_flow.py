@@ -552,14 +552,54 @@ def render_sector_focus_tab(st, sb, base_df, mcfg):
     """Runs as a fragment where Streamlit supports it: flag clicks and sector switches rerun only this tab."""
     frag = getattr(st, "fragment", None)
     if frag is None:
-        return _render_sector_focus(st, sb, base_df, mcfg)
-    global _FRAG
-    if _FRAG is None:
-        _FRAG = frag(_render_sector_focus)
-    return _FRAG(st, sb, base_df, mcfg)
+        _render_sector_focus(st, sb, base_df, mcfg)
+    else:
+        global _FRAG
+        if _FRAG is None:
+            _FRAG = frag(_render_sector_focus)
+        _FRAG(st, sb, base_df, mcfg)
+    try:
+        render_floating_check(st, sb, mcfg)
+    except Exception as e:
+        st.caption(f"Floating ticker check unavailable ({e}).")
 
 
 _FRAG = None
+FAB_SLOT = None          # the page sets this to an st.container() created BEFORE its tabs, so the button shows on every tab
+
+
+def _check_ticker(st, sb, mcfg, cfg, v, q):
+    """Score, setup, the 8 rules, where it shows (📍 + 👑) and the full card for one ticker."""
+    row = v[v["Symbol"] == q] if v is not None and not v.empty else pd.DataFrame()
+    if row.empty:
+        st.caption(f"{q} isn't in today's scan, recent breakouts or your watchlist.")
+    else:
+        cols = [c for c in ["Symbol", "Sector", "Leader", "Score", "Setup", "MA hold"] + HIGHLIGHT + [r for r, _ in RULES] +
+                ["Flags", "Entry"] if c in row.columns]
+        st.dataframe(style(row[cols].reset_index(drop=True), cfg["min_liq"]), hide_index=True,
+                     use_container_width=True, column_config=_colcfg(st, cfg))
+        st.caption(_where_it_shows(st, mcfg, v, row.iloc[0]))
+    gp.show_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), q)
+
+
+def render_floating_check(st, sb, mcfg):
+    """🔍 Check ticker — a button pinned to the bottom-right corner, on every tab and at any scroll position."""
+    mkt = mcfg.get("market")
+    key = f"tkfab_{mkt}"
+    st.markdown(f"<style>.st-key-{key}{{position:fixed;bottom:22px;right:28px;z-index:999990;width:auto!important;}}"
+                f".st-key-{key} button{{box-shadow:0 4px 14px rgba(0,0,0,.35);font-weight:600}}"
+                f"[data-testid='stPopoverBody']{{min-width:min(1100px,92vw);max-height:80vh;overflow:auto}}</style>",
+                unsafe_allow_html=True)
+    slot = FAB_SLOT if FAB_SLOT is not None else st.container()
+    with slot:
+        with st.container(key=key):
+            with st.popover("🔍 Check ticker"):
+                q = st.text_input("Symbol", key=f"fab_q_{mkt}", placeholder="e.g. GRAL or NSE:SUNTV").strip().upper().split(":")[-1]
+                if q:
+                    _check_ticker(st, sb, mcfg, cfg_for(mcfg), st.session_state.get(f"sf_view_{mkt}"), q)
+                else:
+                    st.caption("Type a ticker: its 8 rules, score, setup, 👑 strength rank, where it shows in Sector Focus, "
+                               "and the full card. Works from every tab.")
 
 
 def _render_sector_focus(st, sb, base_df, mcfg):
@@ -624,6 +664,7 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     lead_win = st.session_state.get(f"sf_lwin_{mkt}", "Avg RS")
     lead_low = st.session_state.get(f"sf_llow_{mkt}", False)
     v = add_leaders(v, lead_win, 0.0 if lead_low else float(cfg["min_adr"]))
+    st.session_state[f"sf_view_{mkt}"] = v            # for the floating 🔍 Check ticker (every tab)
     # Alert Management uses these for its priorities (Shortlister is retired)
     picked = [s_ for s_, r_ in flags.items() if r_.get("build_range")]
     st.session_state[f"sl_lists_{mkt}"] = {"FOCUS": picked, "FLAGGED": [s_ for s_ in flags if s_ not in picked]}
@@ -807,19 +848,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
             secmap = dict(zip(v["Symbol"], v["Sector"]))
             add_flags(sb, mcfg, syms, source="manual", sectors=secmap)
             st.toast(f"Flagged {len(syms)}."); _rerun(st)
-    with st.expander("🔍 Check any ticker — its 8 rules, setup and full card"):
-        q = st.text_input("Symbol", key=f"sf_check_{mkt}", placeholder="e.g. ILMN").strip().upper().split(":")[-1]
-        if q:
-            row = v[v["Symbol"] == q]
-            if row.empty:
-                st.caption(f"{q} isn't in today's scan, recent breakouts or your watchlist.")
-            else:
-                cols = [c for c in ["Symbol", "Sector", "Score", "Setup"] + HIGHLIGHT + [r for r, _ in RULES] +
-                        ["Flags", "Entry"] if c in row.columns]
-                st.dataframe(style(row[cols].reset_index(drop=True), cfg["min_liq"]), hide_index=True,
-                             use_container_width=True, column_config=_colcfg(st, cfg))
-                st.caption(_where_it_shows(st, mcfg, v, row.iloc[0]))
-            gp.show_stock_card(st, sb, mcfg, st.session_state.get("gtt_base_df"), q)
+    st.caption("🔍 To check any ticker, use the **Check ticker** button in the bottom-right corner — it works from every tab.")
     if not flags:
         st.caption("Nothing flagged yet."); return
     cutoff = date.today() - timedelta(days=cfg["flag_days"])

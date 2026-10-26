@@ -570,6 +570,8 @@ def main():
             else:
                 st.error("Failed to retrieve base 1M scan data."); st.session_state.gtt_base_df = None
 
+    import focus_flow as _ff
+    _ff.FAB_SLOT = st.container()        # floating 🔍 Check ticker lives here, outside the tabs
     tab1, tab9, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Sector Focus", "Alert Management", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
 
     # ════════════════════════════════════════════════════════════════════
