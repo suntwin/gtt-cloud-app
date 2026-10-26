@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-25c · Leaders: explosive only (ADR ≥ R4 floor), RS ties → ADR × Ti65"
+PROCESS_VERSION = "v2026-10-27a · Watchlist clean-up: bulk remove everything not in today's scan (5★ kept)"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2877,10 +2877,17 @@ def render_cleanup(st, sb, base_df, mcfg, watch):
         st.markdown("**Clean-up** · check each chart by its reason, then Apply")
         c1, c2 = st.columns([1, 3])
         nd = int(c1.number_input("Not in the scan for at least (trading days)", 1, 60, 1, key="wl_c_days"))
-        c2.caption("Rule switched on: **not in the scan**. Every row starts as **Keep** — open the chart, switch the "
-                   "broken ones to Remove, then Apply. Removed stocks stay in the history and can be saved again later.")
-        if base_df is None or base_df.empty:
-            st.info("Generate the scan first for an exact 'in today's scan' check — until then only the last-seen dates are used.")
+        scan_ok = base_df is not None and not base_df.empty
+        bulk = c1.checkbox("Bulk: start every row as Remove", key="wl_c_bulk", disabled=not scan_ok,
+                           help="For a quick clean-out: everything not in today's scan is set to Remove — switch the few you "
+                                "want to keep back to Keep, then Apply. Needs today's scan loaded.")
+        keep5 = c1.checkbox("…but keep 5★-rated ones", value=True, key="wl_c_keep5", disabled=not (scan_ok and bulk))
+        c2.caption("Rule switched on: **not in the scan** — the scanner is the filter: a stock that no longer passes it isn't "
+                   "a setup any more. Every row starts as **Keep** (or **Remove** with Bulk on). Switch rows, then Apply. "
+                   "Removed stocks stay in the history and can be saved again later.")
+        if not scan_ok:
+            st.info("Generate the scan first for an exact 'in today's scan' check — until then only the last-seen dates are used "
+                    "(and Bulk is off).")
         try:
             cands = cleanup_candidates(sb, mcfg, watch, base_df, nd)
         except Exception as e:
@@ -2889,9 +2896,14 @@ def render_cleanup(st, sb, base_df, mcfg, watch):
             st.caption("Nothing to clean up — every saved stock is in the scan.")
             return
         cdf = pd.DataFrame(cands)
-        cdf.insert(0, "Action", "Keep")
+        start = ["Remove" if bulk and scan_ok and not (keep5 and r == "5★") else "Keep" for r in cdf["Rating"]]
+        cdf.insert(0, "Action", start)
+        n_rm = start.count("Remove")
+        if bulk and scan_ok:
+            st.warning(f"Bulk on: {n_rm} of {len(cdf)} set to **Remove**" + (" (5★ kept)" if keep5 else "") +
+                       ". Nothing is removed until you press Apply.")
         with st.form("wl_clean_form", border=False):
-            ed = st.data_editor(cdf, hide_index=True, key="wl_clean_ed", height=min(420, 38 + 35 * len(cdf)),
+            ed = st.data_editor(cdf, hide_index=True, key=f"wl_clean_ed_{int(bool(bulk))}{int(bool(keep5))}", height=min(420, 38 + 35 * len(cdf)),
                                 disabled=[c for c in cdf.columns if c != "Action"],
                                 column_config={"id": None,
                                                "Action": st.column_config.SelectboxColumn("Action", options=["Keep", "Remove"], required=True),
@@ -2905,7 +2917,9 @@ def render_cleanup(st, sb, base_df, mcfg, watch):
                 sb.rpc("remove_from_watchlist", {"p_id": int(r["id"]), "p_reason": "dropped out of scan",
                                                  "p_status": "removed"}).execute()
             st.session_state["wl_clean_msg"] = f"Removed {len(rm)}: {', '.join(rm['Symbol'])}" if len(rm) else "Nothing removed."
-            st.session_state.pop("wl_clean_ed", None)
+            for _k in [k for k in st.session_state if str(k).startswith("wl_clean_ed")]:
+                st.session_state.pop(_k, None)
+            st.session_state.pop("wl_c_bulk", None)          # bulk switches itself off after a clean-out
             st.rerun()
         if st.session_state.get("wl_clean_msg"):
             st.success(st.session_state.pop("wl_clean_msg"))
@@ -3076,6 +3090,11 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         if multi:
             cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more", extra=("UNTAGGED",) if has_untagged else ())
         st.caption("One row per stock. Change tags, rating or Action, then press Apply — nothing is sent until then.")
+        if "In scan" in v.columns:
+            _gone = int((~v["In scan"]).sum())
+            if _gone:
+                st.info(f"🧹 **{_gone} of {len(v)}** saved stocks are not in today's scan (their columns show None). "
+                        "Clear them in one go: **Clean-up** further down this page → tick **Bulk** → Apply.")
         with st.form("wl_form", border=False):
             _vdata = v.style
             if "Circuit %" in v.columns:
