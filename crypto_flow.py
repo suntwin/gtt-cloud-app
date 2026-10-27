@@ -440,102 +440,102 @@ def _focus_main(st, sb, tf, mcfg, cfg, base):
     picked = [s for s, r in flags.items() if r.get("build_range")]
     st.session_state[f"sl_lists_{mkt}"] = {"FOCUS": picked, "FLAGGED": [s for s in flags if s not in picked]}
 
-    st.markdown("#### 1 · Go through the scan and flag the best few")
-    c1, c2 = st.columns([1, 3])
-    min_score = c1.slider("Min score", 0.0, 7.0, 4.0, 0.5, key=f"cr_min_{tf}", help="Flagged coins always show")
-    c2.caption("Rules: " + " · ".join(f"**{r}** {n}" for r, n in RULES[tf]) +
-               ". ✓ pass · ½ half · ✗ fail · · no data. Hover a rule header for its threshold. Volume first — tightness is the entry.")
-    part = v[(v["Score"] >= min_score) | v["Flag"]].reset_index(drop=True)
-    if part.empty:
-        st.info("Nothing at that score."); return
-    cols = [c for c in SHOW[tf] if c in part.columns]
-    gv = part[cols].copy()
-    gv["Flag"] = gv["Flag"].astype(bool)
-    was = set(part.loc[part["Flag"], "Symbol"])
-    ed, save = gp.card_grid(st, gv, key=f"cr_grid_{tf}", sty=style(gv, tf, cfg), extra=_extra(part, cols), labels=LABELS,
-                            tips=_tips(tf, cfg), card_first=CARD_FIRST, edit={"Flag": "bool"}, submit="Save flags",
-                            height=min(32 * len(part) + 70, 600),
-                            widths={"Symbol": 120, "Score": 58, "Setup": 180, "Flags": 200, "BO": 80})
-    st.caption(f"{len(part)} of {len(v)} coins shown (score ≥ {min_score:g}). **Click a ticker** for all its data · tick ⚑ on the "
-               "rows you like, then **Save flags** (nothing reloads while you tick or sort).")
-    okey = f"cr_order_{tf}"
-    if save and ed is not None and "Symbol" in ed.columns:
-        st.session_state[okey] = list(ed["Symbol"])
-        now = set(ed.loc[ed["Flag"].fillna(False).astype(bool), "Symbol"])
-        if now != was:
-            ff.add_flags(sb, mcfg, sorted(now - was), source=tf)
-            ff.remove_flags(sb, mcfg, was - now)
-            st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
-            ff._rerun(st)
-    order = [x for x in st.session_state.get(okey, []) if x in set(part["Symbol"])] or list(part["Symbol"])
-    gp.copy_area(st, f"{len(order)} coins in the table's order (sort the table, press Save to refresh) — for TradingView",
-                 ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"cr_copy_scan_{tf}")
+    with st.expander("1 · Go through the scan and flag the best few"):
+        c1, c2 = st.columns([1, 3])
+        min_score = c1.slider("Min score", 0.0, 7.0, 4.0, 0.5, key=f"cr_min_{tf}", help="Flagged coins always show")
+        c2.caption("Rules: " + " · ".join(f"**{r}** {n}" for r, n in RULES[tf]) +
+                   ". ✓ pass · ½ half · ✗ fail · · no data. Hover a rule header for its threshold. Volume first — tightness is the entry.")
+        part = v[(v["Score"] >= min_score) | v["Flag"]].reset_index(drop=True)
+        if part.empty:
+            st.info("Nothing at that score."); return
+        cols = [c for c in SHOW[tf] if c in part.columns]
+        gv = part[cols].copy()
+        gv["Flag"] = gv["Flag"].astype(bool)
+        was = set(part.loc[part["Flag"], "Symbol"])
+        ed, save = gp.card_grid(st, gv, key=f"cr_grid_{tf}", sty=style(gv, tf, cfg), extra=_extra(part, cols), labels=LABELS,
+                                tips=_tips(tf, cfg), card_first=CARD_FIRST, edit={"Flag": "bool"}, submit="Save flags",
+                                height=min(32 * len(part) + 70, 600),
+                                widths={"Symbol": 120, "Score": 58, "Setup": 180, "Flags": 200, "BO": 80})
+        st.caption(f"{len(part)} of {len(v)} coins shown (score ≥ {min_score:g}). **Click a ticker** for all its data · tick ⚑ on the "
+                   "rows you like, then **Save flags** (nothing reloads while you tick or sort).")
+        okey = f"cr_order_{tf}"
+        if save and ed is not None and "Symbol" in ed.columns:
+            st.session_state[okey] = list(ed["Symbol"])
+            now = set(ed.loc[ed["Flag"].fillna(False).astype(bool), "Symbol"])
+            if now != was:
+                ff.add_flags(sb, mcfg, sorted(now - was), source=tf)
+                ff.remove_flags(sb, mcfg, was - now)
+                st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
+                ff._rerun(st)
+        order = [x for x in st.session_state.get(okey, []) if x in set(part["Symbol"])] or list(part["Symbol"])
+        gp.copy_area(st, f"{len(order)} coins in the table's order (sort the table, press Save to refresh) — for TradingView",
+                     ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"cr_copy_scan_{tf}")
 
-    st.markdown("---")
-    st.markdown("#### 2 · Flagged — pick your 3–5")
-    with st.expander("⚑ Flag coins by hand"):
-        txt = st.text_input("Symbols, comma separated", key=f"cr_manual_{tf}", placeholder="e.g. INJUSDT, BINANCE:TIAUSDT")
-        if st.button("Flag them", key=f"cr_manual_btn_{tf}") and txt.strip():
-            syms = [s.strip().upper().split(":")[-1].replace(".P", "") for s in txt.replace("\n", ",").split(",") if s.strip()]
-            ff.add_flags(sb, mcfg, syms, source="manual")
-            st.toast(f"Flagged {len(syms)}."); ff._rerun(st)
-    if not flags:
-        st.caption("Nothing flagged yet."); return
-    fl = pd.DataFrame(flags.values())
-    d = fl.merge(v.drop(columns=["Flag"]), left_on="symbol", right_on="Symbol", how="left")
-    d["Symbol"] = d["symbol"]
-    gone = d["Score"].isna()
-    if gone.any():                                         # not in the current scan → never show old numbers
-        d.loc[gone, "Setup"] = "Dropped out of the scan"
-        d.loc[gone, "Flags"] = "Not in the current scan"
-        d.loc[gone, "Entry"] = "No longer passes the screens — check the chart; unflag unless you hold it"
-    d["Pick"] = d["build_range"].fillna(False).astype(bool)
-    d["Rank"] = pd.to_numeric(d["rank"], errors="coerce")
-    d["Note"] = d["note"].fillna("")
-    d["Unflag"] = False
-    d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last").reset_index(drop=True)
-    show = ["Pick", "Rank", "Symbol", "Setup", "Entry", "Flags", "Score"] + [c for c in SHOW[tf] if c not in
-            ("Flag", "Symbol", "Score", "Setup", "Flags")] + ["Note", "Unflag"]
-    show = [c for c in show if c in d.columns]
-    n_pick = int(d["Pick"].sum())
-    st.caption(f"**{len(d)} flagged · {n_pick} picked** (aim for {int(cfg['target'])}). Tick **Pick** = draw the range and set the "
-               "alert. Rank 1 = best.")
-    if n_pick > cfg["target"]:
-        st.warning(f"{n_pick} picked — cut to {int(cfg['target'])} or fewer.")
-    gv = d[show].copy()
-    for c in ("Pick", "Unflag"):
-        gv[c] = gv[c].astype(bool)
-    ed, saved = gp.card_grid(st, gv, key=f"cr_fgrid_{tf}", sty=style(gv, tf, cfg), extra=_extra(d, show),
-                             labels=LABELS, tips=_tips(tf, cfg), card_first=CARD_FIRST,
-                             edit={"Pick": "bool", "Rank": "number", "Note": "text", "Unflag": "bool"}, submit="Save shortlist",
-                             height=min(32 * len(d) + 70, 480), widths={"Symbol": 120, "Score": 58, "Setup": 180, "Entry": 300, "Flags": 200})
-    st.caption("**Click a ticker** for all its data · tick Pick / Unflag, type a Rank or Note on the row, then **Save shortlist**.")
-    if saved and ed is not None and "Symbol" in ed.columns:
-        st.session_state[f"cr_forder_{tf}"] = list(ed["Symbol"])
-        orig, changed = d.set_index("Symbol"), False
-        for r in ed.to_dict("records"):
-            s = r["Symbol"]
-            if s not in orig.index:
-                continue
-            if r.get("Unflag"):
-                ff.remove_flags(sb, mcfg, [s]); changed = True; continue
-            o, ch = orig.loc[s], {}
-            rk = _num(r.get("Rank"))
-            if bool(r.get("Pick")) != bool(o["Pick"]):
-                ch["build_range"] = bool(r.get("Pick"))
-            if (rk if np.isfinite(rk) else None) != (o["Rank"] if np.isfinite(_num(o["Rank"])) else None):
-                ch["rank"] = int(rk) if np.isfinite(rk) else None
-            if str(r.get("Note") or "") != str(o["Note"] or ""):
-                ch["note"] = str(r.get("Note") or "")
-            if ch:
-                ff.update_flag(sb, mcfg, s, **ch); changed = True
-        if changed:
-            st.toast("Saved."); ff._rerun(st)
-    picks = d[d["Pick"]].sort_values("Rank", na_position="last")["Symbol"].tolist()
-    if picks:
-        gp.copy_area(st, f"Picked {len(picks)} — draw ranges and set alerts (TradingView)",
-                     ",".join(gp.tv_symbol(s, mcfg) for s in picks), key=f"cr_copy_pick_{tf}")
-    order = [x for x in st.session_state.get(f"cr_forder_{tf}", []) if x in set(d["Symbol"])]
-    order += [x for x in d["Symbol"] if x not in order]
-    gp.copy_area(st, f"All {len(order)} flagged, in the table's order (sort, press Save to refresh) — for TradingView",
-                 ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"cr_copy_all_{tf}")
+        st.markdown("---")
+    with st.expander("2 · Flagged — pick your 3–5"):
+        with st.expander("⚑ Flag coins by hand"):
+            txt = st.text_input("Symbols, comma separated", key=f"cr_manual_{tf}", placeholder="e.g. INJUSDT, BINANCE:TIAUSDT")
+            if st.button("Flag them", key=f"cr_manual_btn_{tf}") and txt.strip():
+                syms = [s.strip().upper().split(":")[-1].replace(".P", "") for s in txt.replace("\n", ",").split(",") if s.strip()]
+                ff.add_flags(sb, mcfg, syms, source="manual")
+                st.toast(f"Flagged {len(syms)}."); ff._rerun(st)
+        if not flags:
+            st.caption("Nothing flagged yet."); return
+        fl = pd.DataFrame(flags.values())
+        d = fl.merge(v.drop(columns=["Flag"]), left_on="symbol", right_on="Symbol", how="left")
+        d["Symbol"] = d["symbol"]
+        gone = d["Score"].isna()
+        if gone.any():                                         # not in the current scan → never show old numbers
+            d.loc[gone, "Setup"] = "Dropped out of the scan"
+            d.loc[gone, "Flags"] = "Not in the current scan"
+            d.loc[gone, "Entry"] = "No longer passes the screens — check the chart; unflag unless you hold it"
+        d["Pick"] = d["build_range"].fillna(False).astype(bool)
+        d["Rank"] = pd.to_numeric(d["rank"], errors="coerce")
+        d["Note"] = d["note"].fillna("")
+        d["Unflag"] = False
+        d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last").reset_index(drop=True)
+        show = ["Pick", "Rank", "Symbol", "Setup", "Entry", "Flags", "Score"] + [c for c in SHOW[tf] if c not in
+                ("Flag", "Symbol", "Score", "Setup", "Flags")] + ["Note", "Unflag"]
+        show = [c for c in show if c in d.columns]
+        n_pick = int(d["Pick"].sum())
+        st.caption(f"**{len(d)} flagged · {n_pick} picked** (aim for {int(cfg['target'])}). Tick **Pick** = draw the range and set the "
+                   "alert. Rank 1 = best.")
+        if n_pick > cfg["target"]:
+            st.warning(f"{n_pick} picked — cut to {int(cfg['target'])} or fewer.")
+        gv = d[show].copy()
+        for c in ("Pick", "Unflag"):
+            gv[c] = gv[c].astype(bool)
+        ed, saved = gp.card_grid(st, gv, key=f"cr_fgrid_{tf}", sty=style(gv, tf, cfg), extra=_extra(d, show),
+                                 labels=LABELS, tips=_tips(tf, cfg), card_first=CARD_FIRST,
+                                 edit={"Pick": "bool", "Rank": "number", "Note": "text", "Unflag": "bool"}, submit="Save shortlist",
+                                 height=min(32 * len(d) + 70, 480), widths={"Symbol": 120, "Score": 58, "Setup": 180, "Entry": 300, "Flags": 200})
+        st.caption("**Click a ticker** for all its data · tick Pick / Unflag, type a Rank or Note on the row, then **Save shortlist**.")
+        if saved and ed is not None and "Symbol" in ed.columns:
+            st.session_state[f"cr_forder_{tf}"] = list(ed["Symbol"])
+            orig, changed = d.set_index("Symbol"), False
+            for r in ed.to_dict("records"):
+                s = r["Symbol"]
+                if s not in orig.index:
+                    continue
+                if r.get("Unflag"):
+                    ff.remove_flags(sb, mcfg, [s]); changed = True; continue
+                o, ch = orig.loc[s], {}
+                rk = _num(r.get("Rank"))
+                if bool(r.get("Pick")) != bool(o["Pick"]):
+                    ch["build_range"] = bool(r.get("Pick"))
+                if (rk if np.isfinite(rk) else None) != (o["Rank"] if np.isfinite(_num(o["Rank"])) else None):
+                    ch["rank"] = int(rk) if np.isfinite(rk) else None
+                if str(r.get("Note") or "") != str(o["Note"] or ""):
+                    ch["note"] = str(r.get("Note") or "")
+                if ch:
+                    ff.update_flag(sb, mcfg, s, **ch); changed = True
+            if changed:
+                st.toast("Saved."); ff._rerun(st)
+        picks = d[d["Pick"]].sort_values("Rank", na_position="last")["Symbol"].tolist()
+        if picks:
+            gp.copy_area(st, f"Picked {len(picks)} — draw ranges and set alerts (TradingView)",
+                         ",".join(gp.tv_symbol(s, mcfg) for s in picks), key=f"cr_copy_pick_{tf}")
+        order = [x for x in st.session_state.get(f"cr_forder_{tf}", []) if x in set(d["Symbol"])]
+        order += [x for x in d["Symbol"] if x not in order]
+        gp.copy_area(st, f"All {len(order)} flagged, in the table's order (sort, press Save to refresh) — for TradingView",
+                     ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"cr_copy_all_{tf}")

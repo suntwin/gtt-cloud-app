@@ -9,6 +9,7 @@ import os, json, time
 from datetime import datetime
 from gtt_process import MARKETS, tv_symbol, breakout_batch_lists, render_rules_tab, render_quick_save, render_tomorrow_panel, render_breakout_panel, render_watchlist_tab, cached_client, clear_db_cache
 from gtt_process import assign_scan_columns, _JS as _GTT_JS
+from gtt_process import AgGrid   # same AgGrid, with the width fix for grids inside collapsible sections
 from shortlister import render_shortlister_tab
 from alerts import render_alerts_tab
 from focus_flow import render_sector_focus_tab
@@ -490,11 +491,11 @@ def main():
                             index=di, key=f"sd_{i}", horizontal=True)
                 sort_levels.append((col, d == 'Low to High'))
 
-    st.subheader("Strategy & Risk Parameters")
-    c1, c2, c3 = st.columns(3)
-    with c1: account_equity = st.number_input("Total Account Equity ($)", min_value=10000, value=100000, step=10000)
-    with c2: risk_pct = st.number_input("Max Risk Per Trade (%)", min_value=0.1, value=1.0, step=0.1)
-    with c3: nr4_threshold = st.number_input("Max Tightness Range (NR4 %)", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
+    with st.expander("⚙️ Strategy & risk parameters"):
+        c1, c2, c3 = st.columns(3)
+        with c1: account_equity = st.number_input("Total Account Equity ($)", min_value=10000, value=100000, step=10000)
+        with c2: risk_pct = st.number_input("Max Risk Per Trade (%)", min_value=0.1, value=1.0, step=0.1)
+        with c3: nr4_threshold = st.number_input("Max Tightness Range (NR4 %)", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
 
     manual_fetch = st.button("Generate GTT Trading Plan", type="primary", disabled=not gate_ok,
                              help=None if gate_ok else "Write today's market note first (top of the page)")
@@ -641,215 +642,216 @@ def main():
                                "stocks beyond row 1,000 are missing from the scan, so some saved stocks can show as "
                                "*Check chart* even though they're fine. Split the screen in MarketInOut (e.g. by price) to fix.")
 
-            fdf = filter_dataframe(ddf, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_wktight,
-                                   vol_bo_min_adr, vol_bo_max_adr, vol_bo_max_rwd,
-                                   coil_min_wktight, coil_max_reltight, coil_max_rwd,
-                                   coil_min_chg, coil_max_chg, coil_min_adr)
+            with st.expander("📊 Scanner table — filters, results, copy to TradingView"):
+                fdf = filter_dataframe(ddf, scan_mode, vol_bo_min_chg, vol_bo_min_vol, vol_bo_min_wktight,
+                                       vol_bo_min_adr, vol_bo_max_adr, vol_bo_max_rwd,
+                                       coil_min_wktight, coil_max_reltight, coil_max_rwd,
+                                       coil_min_chg, coil_max_chg, coil_min_adr)
 
-            st.caption(f"**{len(fdf)} stocks** after filtering.")
+                st.caption(f"**{len(fdf)} stocks** after filtering.")
 
-            # ── Find ticker: searches everything loaded today, ignoring the filters ──
-            _q = st.text_input("Find ticker", key="ticker_search",
-                               placeholder="e.g. VNCE, or several: ICIL SUNFLAG — searches all loaded stocks, ignoring filters")
-            import re as _re
-            _terms = [t for t in _re.split(r"[,\s]+", (_q or "").upper()) if t]
-            if _terms and 'Symbol' in ddf.columns:
-                _sym = ddf['Symbol'].astype(str).str.upper()
-                _res = ddf[_sym.apply(lambda s: any(t in s for t in _terms))].copy()
-                _res['_exact'] = ~_res['Symbol'].astype(str).str.upper().isin(_terms)   # exact matches first
-                _res = _res.sort_values('_exact', kind='stable').drop(columns='_exact')
-                _hidden = _res.loc[~_res['Symbol'].isin(fdf['Symbol']), 'Symbol'].tolist()
-                _missing = [t for t in _terms if not _sym.str.contains(t, regex=False).any()]
-                _msg = [f"**{len(_res)} match{'es' if len(_res) != 1 else ''}** for {', '.join(_terms)}"]
-                if _hidden:
-                    _msg.append(f"hidden by your filters: {', '.join(_hidden[:10])}{' …' if len(_hidden) > 10 else ''}")
-                if _missing:
-                    _msg.append(f"not in today's scan: {', '.join(_missing)} (didn't pass any MarketInOut screen)")
-                (st.warning if _missing and _res.empty else st.info)(" · ".join(_msg) + ". Clear the box to see the full list.")
-                fdf = _res
+                # ── Find ticker: searches everything loaded today, ignoring the filters ──
+                _q = st.text_input("Find ticker", key="ticker_search",
+                                   placeholder="e.g. VNCE, or several: ICIL SUNFLAG — searches all loaded stocks, ignoring filters")
+                import re as _re
+                _terms = [t for t in _re.split(r"[,\s]+", (_q or "").upper()) if t]
+                if _terms and 'Symbol' in ddf.columns:
+                    _sym = ddf['Symbol'].astype(str).str.upper()
+                    _res = ddf[_sym.apply(lambda s: any(t in s for t in _terms))].copy()
+                    _res['_exact'] = ~_res['Symbol'].astype(str).str.upper().isin(_terms)   # exact matches first
+                    _res = _res.sort_values('_exact', kind='stable').drop(columns='_exact')
+                    _hidden = _res.loc[~_res['Symbol'].isin(fdf['Symbol']), 'Symbol'].tolist()
+                    _missing = [t for t in _terms if not _sym.str.contains(t, regex=False).any()]
+                    _msg = [f"**{len(_res)} match{'es' if len(_res) != 1 else ''}** for {', '.join(_terms)}"]
+                    if _hidden:
+                        _msg.append(f"hidden by your filters: {', '.join(_hidden[:10])}{' …' if len(_hidden) > 10 else ''}")
+                    if _missing:
+                        _msg.append(f"not in today's scan: {', '.join(_missing)} (didn't pass any MarketInOut screen)")
+                    (st.warning if _missing and _res.empty else st.info)(" · ".join(_msg) + ". Clear the box to see the full list.")
+                    fdf = _res
 
-            mtdh = ['RS_6M','RS_3M','RS_1M','Industry','_bo_dollar_vol_mln','_avg_vol_float_ratio','_period_perf',
-                    '_10wmadist','off_high_126','_bo_engulfing_cndl','_days_since_bo','_circuit','W_CloseChg_Pct','Timestamp']
-            amc = list(fdf.columns)
-            with st.expander("Choose visible columns (saved as your default)"):
-                # Force key columns to always be visible (fixes old saved prefs)
-                _forced_visible = ['_vol_ratio', '_rel_wk_dist', '_rel_tightness', '_chg_percentclose', 'W_Dist10wMA',
-                                   'W_TightCloses_10w', 'Adr', 'Symbol', 'off_high_21', 'off_high_252']
-                _saved = get_persisted_columns('us_main_table_v2', amc, mtdh)
-                _default = list(set(_saved + [c for c in _forced_visible if c in amc]))
-                smc = st.multiselect("Columns to show", amc, default=_default, key="main_col_sel")
-                if st.button("Save as default", key="save_cols"): save_column_prefs('us_main_table_v2',
-                                                                                    smc); st.success("Saved.")
-            hmc = [c for c in amc if c not in smc]
-            cp = {c: i for i, c in enumerate(columns_to_show) if c in fdf.columns}
-            smc = sorted(smc, key=lambda c: cp.get(c, 9999)); hmc = sorted(hmc, key=lambda c: cp.get(c, 9999))
-            fdf = fdf[smc + hmc]
+                mtdh = ['RS_6M','RS_3M','RS_1M','Industry','_bo_dollar_vol_mln','_avg_vol_float_ratio','_period_perf',
+                        '_10wmadist','off_high_126','_bo_engulfing_cndl','_days_since_bo','_circuit','W_CloseChg_Pct','Timestamp']
+                amc = list(fdf.columns)
+                with st.expander("Choose visible columns (saved as your default)"):
+                    # Force key columns to always be visible (fixes old saved prefs)
+                    _forced_visible = ['_vol_ratio', '_rel_wk_dist', '_rel_tightness', '_chg_percentclose', 'W_Dist10wMA',
+                                       'W_TightCloses_10w', 'Adr', 'Symbol', 'off_high_21', 'off_high_252']
+                    _saved = get_persisted_columns('us_main_table_v2', amc, mtdh)
+                    _default = list(set(_saved + [c for c in _forced_visible if c in amc]))
+                    smc = st.multiselect("Columns to show", amc, default=_default, key="main_col_sel")
+                    if st.button("Save as default", key="save_cols"): save_column_prefs('us_main_table_v2',
+                                                                                        smc); st.success("Saved.")
+                hmc = [c for c in amc if c not in smc]
+                cp = {c: i for i, c in enumerate(columns_to_show) if c in fdf.columns}
+                smc = sorted(smc, key=lambda c: cp.get(c, 9999)); hmc = sorted(hmc, key=lambda c: cp.get(c, 9999))
+                fdf = fdf[smc + hmc]
 
-            gb = GridOptionsBuilder.from_dataframe(fdf)
-            gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
-            gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True, onCellClicked=row_card_js())
-            gb.configure_selection(selection_mode='multiple', use_checkbox=True)
-            for col in fdf.columns: gb.configure_column(col, headerTooltip=col)
+                gb = GridOptionsBuilder.from_dataframe(fdf)
+                gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
+                gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True, onCellClicked=row_card_js())
+                gb.configure_selection(selection_mode='multiple', use_checkbox=True)
+                for col in fdf.columns: gb.configure_column(col, headerTooltip=col)
 
-            abs_comparator = JsCode("""
-                function(a, b, na, nb, inv) {
-                    const x = (a === null || a === undefined || isNaN(a)) ? Infinity : Math.abs(a);
-                    const y = (b === null || b === undefined || isNaN(b)) ? Infinity : Math.abs(b);
-                    return x < y ? -1 : x > y ? 1 : 0;
-                }
-            """)
+                abs_comparator = JsCode("""
+                    function(a, b, na, nb, inv) {
+                        const x = (a === null || a === undefined || isNaN(a)) ? Infinity : Math.abs(a);
+                        const y = (b === null || b === undefined || isNaN(b)) ? Infinity : Math.abs(b);
+                        return x < y ? -1 : x > y ? 1 : 0;
+                    }
+                """)
 
-            # ── Volume Ratio Heatmap (NEW: 2.5x / 3.5x thresholds) ──
-            # ── Volume Ratio Heatmap (1.5x / 2.5x / 3.5x / 6.5x thresholds) ──
-            vol_jscode = JsCode("""
-                function(params) {
-                    const v = params.value;
-                    if (v === null || v === undefined || isNaN(v) || v <= 0) return null;
-                    if (v >= 6.5) return { 'backgroundColor': '#155724', 'color': '#white', 'fontWeight': 'bold', 'fontSize': '14px' };
-                    if (v >= 3.5) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
-                    if (v >= 2.5) return { 'backgroundColor': '#5cb85c', 'color': 'white', 'fontWeight': 'bold' };
-                    if (v >= 1.5) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
-                    if (v >= 1.0) return { 'backgroundColor': '#d4edda', 'color': 'black' };
-                    if (v < 0.5) return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
-                    return null;
-                }
-            """)
-            if '_vol_ratio' in fdf.columns:
-                gb.configure_column('_vol_ratio', minWidth=65, maxWidth=90, headerName='Vol Ratio',
-                                    cellStyle=vol_jscode, pinned='left')
+                # ── Volume Ratio Heatmap (NEW: 2.5x / 3.5x thresholds) ──
+                # ── Volume Ratio Heatmap (1.5x / 2.5x / 3.5x / 6.5x thresholds) ──
+                vol_jscode = JsCode("""
+                    function(params) {
+                        const v = params.value;
+                        if (v === null || v === undefined || isNaN(v) || v <= 0) return null;
+                        if (v >= 6.5) return { 'backgroundColor': '#155724', 'color': '#white', 'fontWeight': 'bold', 'fontSize': '14px' };
+                        if (v >= 3.5) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                        if (v >= 2.5) return { 'backgroundColor': '#5cb85c', 'color': 'white', 'fontWeight': 'bold' };
+                        if (v >= 1.5) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                        if (v >= 1.0) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                        if (v < 0.5) return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
+                        return null;
+                    }
+                """)
+                if '_vol_ratio' in fdf.columns:
+                    gb.configure_column('_vol_ratio', minWidth=65, maxWidth=90, headerName='Vol Ratio',
+                                        cellStyle=vol_jscode, pinned='left')
 
 
-            # ── dvol coloured by today's volume ÷ average (breakout strength); AvgVol by liquidity ──
-            if 'dvol' in fdf.columns and '_avgvol_mln' in fdf.columns:
-                gb.configure_column('dvol', minWidth=60, maxWidth=85, headerName='dvol', cellStyle=DVOL_JS)
-                gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, headerName='AvgVol', cellStyle=liq_js(fdf['_avgvol_mln']))
+                # ── dvol coloured by today's volume ÷ average (breakout strength); AvgVol by liquidity ──
+                if 'dvol' in fdf.columns and '_avgvol_mln' in fdf.columns:
+                    gb.configure_column('dvol', minWidth=60, maxWidth=85, headerName='dvol', cellStyle=DVOL_JS)
+                    gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, headerName='AvgVol', cellStyle=liq_js(fdf['_avgvol_mln']))
 
-            # ── W_Dist10wMA Heatmap ──
-            wk_neg_cutoff = float(saved_prefs.get('wk_neg_cutoff', -3.0))
-            wk_dist_jscode = JsCode(f"""
-                function(params) {{
-                    const val = params.value;
-                    if (val === null || val === undefined || isNaN(val)) return null;
-                    if (val < {wk_neg_cutoff}) return {{ 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' }};
-                    if (val < 0) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
-                    if (val < 2) return {{ 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' }};
-                    if (val < 4) return {{ 'backgroundColor': '#8ee68e', 'color': 'black' }};
-                    if (val < 6) return {{ 'backgroundColor': '#d4edda', 'color': 'black' }};
-                    if (val < 10) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
-                    return null;
-                }}
-            """)
-            if 'W_Dist10wMA' in fdf.columns:
-                gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
+                # ── W_Dist10wMA Heatmap ──
+                wk_neg_cutoff = float(saved_prefs.get('wk_neg_cutoff', -3.0))
+                wk_dist_jscode = JsCode(f"""
+                    function(params) {{
+                        const val = params.value;
+                        if (val === null || val === undefined || isNaN(val)) return null;
+                        if (val < {wk_neg_cutoff}) return {{ 'backgroundColor': '#f8d7da', 'color': '#721c24', 'fontWeight': 'bold' }};
+                        if (val < 0) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
+                        if (val < 2) return {{ 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' }};
+                        if (val < 4) return {{ 'backgroundColor': '#8ee68e', 'color': 'black' }};
+                        if (val < 6) return {{ 'backgroundColor': '#d4edda', 'color': 'black' }};
+                        if (val < 10) return {{ 'backgroundColor': '#fff3cd', 'color': '#664d03' }};
+                        return null;
+                    }}
+                """)
+                if 'W_Dist10wMA' in fdf.columns:
+                    gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
 
-            # ── _rel_wk_dist Heatmap ──
-            rel_wk_dist_jscode = JsCode("""
-                function(params) {
-                    const v = params.value;
-                    if (v === null || v === undefined || isNaN(v)) return null;
-                    if (v < 1.0) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
-                    if (v < 2.0) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
-                    if (v < 3.0) return { 'backgroundColor': '#d4edda', 'color': 'black' };
-                    if (v < 5.0) return { 'backgroundColor': '#fff3cd', 'color': '#664d03' };
-                    return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
-                }
-            """)
-            if '_rel_wk_dist' in fdf.columns:
-                gb.configure_column('_rel_wk_dist', minWidth=70, maxWidth=90, headerName='Rel Wk Dist', cellStyle=rel_wk_dist_jscode, comparator=abs_comparator)
+                # ── _rel_wk_dist Heatmap ──
+                rel_wk_dist_jscode = JsCode("""
+                    function(params) {
+                        const v = params.value;
+                        if (v === null || v === undefined || isNaN(v)) return null;
+                        if (v < 1.0) return { 'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold' };
+                        if (v < 2.0) return { 'backgroundColor': '#8ee68e', 'color': 'black' };
+                        if (v < 3.0) return { 'backgroundColor': '#d4edda', 'color': 'black' };
+                        if (v < 5.0) return { 'backgroundColor': '#fff3cd', 'color': '#664d03' };
+                        return { 'backgroundColor': '#f8d7da', 'color': '#721c24' };
+                    }
+                """)
+                if '_rel_wk_dist' in fdf.columns:
+                    gb.configure_column('_rel_wk_dist', minWidth=70, maxWidth=90, headerName='Rel Wk Dist', cellStyle=rel_wk_dist_jscode, comparator=abs_comparator)
 
-            # ── _rel_tightness Heatmap ──
-            th = JsCode("""function(p){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}""")
-            if '_rel_tightness' in fdf.columns:
-                gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel tight', cellStyle=th, comparator=abs_comparator)
+                # ── _rel_tightness Heatmap ──
+                th = JsCode("""function(p){return{'backgroundColor':'#fff3cd','color':'#664d03','fontWeight':'bold'};}""")
+                if '_rel_tightness' in fdf.columns:
+                    gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel tight', cellStyle=th, comparator=abs_comparator)
 
-            # ── Chg% Heatmap ──
-            if '_chg_percentclose' in fdf.columns:
-                vc2 = fdf[fdf['_chg_percentclose'] > 0]['_chg_percentclose']
-                cmn = float(vc2.min()) if not vc2.empty else 0.0; cmx = float(vc2.max()) if not vc2.empty else 10.0
-                cj = JsCode(f"""function(p){{const v=p.value;if(!v||v<=0)return null;const m={cmn},x={cmx};if(x===m)return{{'backgroundColor':'#ffe6ff','color':'black'}};const r=Math.min((v-m)/(x-m),1.0);const a=Math.round(255-115*r),b=Math.round(220-220*r),c=Math.round(255-115*r);return{{'backgroundColor':'rgb('+a+','+b+','+c+')','color':r>0.5?'white':'black','fontWeight':r>=0.8?'bold':'normal'}}}}""")
-                gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110, cellStyle=cj, filter='agNumberColumnFilter',
-                    filterParams={'filterOptions':['greaterThan','lessThan','equals','inRange'],'defaultOption':'greaterThan','defaultValues':[0]})
+                # ── Chg% Heatmap ──
+                if '_chg_percentclose' in fdf.columns:
+                    vc2 = fdf[fdf['_chg_percentclose'] > 0]['_chg_percentclose']
+                    cmn = float(vc2.min()) if not vc2.empty else 0.0; cmx = float(vc2.max()) if not vc2.empty else 10.0
+                    cj = JsCode(f"""function(p){{const v=p.value;if(!v||v<=0)return null;const m={cmn},x={cmx};if(x===m)return{{'backgroundColor':'#ffe6ff','color':'black'}};const r=Math.min((v-m)/(x-m),1.0);const a=Math.round(255-115*r),b=Math.round(220-220*r),c=Math.round(255-115*r);return{{'backgroundColor':'rgb('+a+','+b+','+c+')','color':r>0.5?'white':'black','fontWeight':r>=0.8?'bold':'normal'}}}}""")
+                    gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110, cellStyle=cj, filter='agNumberColumnFilter',
+                        filterParams={'filterOptions':['greaterThan','lessThan','equals','inRange'],'defaultOption':'greaterThan','defaultValues':[0]})
 
-            # ── RS columns ──
-            for col in ['Avg_RS','RS_6M','RS_3M','RS_1M']:
-                if col not in fdf.columns: continue
-                vd = fdf[fdf[col] > 0][col]
-                cmn = vd.min() if not vd.empty else 0; cmx = vd.max() if not vd.empty else 100
-                dj = JsCode(f"""function(p){{const v=p.value;if(v<=0)return null;const m={cmn},x={cmx};if(x===m)return{{'backgroundColor':'#fff','color':'black'}};const r=(v-m)/(x-m);let a,b,c;if(r<0.5){{const p2=r/0.5;a=255;b=Math.round(100+155*p2);c=Math.round(100+155*p2)}}else{{const p2=(r-0.5)/0.5;a=Math.round(255-155*p2);b=255;c=Math.round(255-155*p2)}}return{{'backgroundColor':'rgb('+a+','+b+','+c+')','color':'black','fontWeight':r>=0.9?'bold':'normal'}}}}""")
-                gb.configure_column(col, minWidth=60 if col == 'Avg_RS' else 50, maxWidth=90 if col == 'Avg_RS' else 80, cellStyle=dj)
+                # ── RS columns ──
+                for col in ['Avg_RS','RS_6M','RS_3M','RS_1M']:
+                    if col not in fdf.columns: continue
+                    vd = fdf[fdf[col] > 0][col]
+                    cmn = vd.min() if not vd.empty else 0; cmx = vd.max() if not vd.empty else 100
+                    dj = JsCode(f"""function(p){{const v=p.value;if(v<=0)return null;const m={cmn},x={cmx};if(x===m)return{{'backgroundColor':'#fff','color':'black'}};const r=(v-m)/(x-m);let a,b,c;if(r<0.5){{const p2=r/0.5;a=255;b=Math.round(100+155*p2);c=Math.round(100+155*p2)}}else{{const p2=(r-0.5)/0.5;a=Math.round(255-155*p2);b=255;c=Math.round(255-155*p2)}}return{{'backgroundColor':'rgb('+a+','+b+','+c+')','color':'black','fontWeight':r>=0.9?'bold':'normal'}}}}""")
+                    gb.configure_column(col, minWidth=60 if col == 'Avg_RS' else 50, maxWidth=90 if col == 'Avg_RS' else 80, cellStyle=dj)
 
-            # ── Other columns ──
-            for col in ['Adr','Ti65','_nr4']:
-                if col in fdf.columns: gb.configure_column(col, minWidth=55, maxWidth=75)
+                # ── Other columns ──
+                for col in ['Adr','Ti65','_nr4']:
+                    if col in fdf.columns: gb.configure_column(col, minWidth=55, maxWidth=75)
 
-            # ── MA Distance heatmaps ──
-            md = JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;const a=Math.abs(v);if(v<-6)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};if(a<2)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(a<4)return{'backgroundColor':'#8ee68e','color':'black'};if(a<6)return{'backgroundColor':'#d4edda','color':'black'};return null}""")
-            if '_20madist' in fdf.columns: gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=md, comparator=abs_comparator)
-            if '_10madist' in fdf.columns: gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=md, comparator=abs_comparator)
+                # ── MA Distance heatmaps ──
+                md = JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;const a=Math.abs(v);if(v<-6)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};if(a<2)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(a<4)return{'backgroundColor':'#8ee68e','color':'black'};if(a<6)return{'backgroundColor':'#d4edda','color':'black'};return null}""")
+                if '_20madist' in fdf.columns: gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=md, comparator=abs_comparator)
+                if '_10madist' in fdf.columns: gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=md, comparator=abs_comparator)
 
-            for col in ['_bo_dollar_vol_mln','_avg_vol_float_ratio']:
-                if col in fdf.columns: gb.configure_column(col, minWidth=70, maxWidth=110)
+                for col in ['_bo_dollar_vol_mln','_avg_vol_float_ratio']:
+                    if col in fdf.columns: gb.configure_column(col, minWidth=70, maxWidth=110)
 
-            # ── Weekly columns ──
-            wp = JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;if(v>=1.0)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v>=0.95)return{'backgroundColor':'#8ee68e','color':'black'};if(v>=0.85)return{'backgroundColor':'#d4edda','color':'black'};return null}""")
-            if 'W_PctOf10wkHigh' in fdf.columns: gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95, maxWidth=120, cellStyle=wp)
-            if 'W_CloseChg_Pct' in fdf.columns: gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90, maxWidth=115)
-            if 'W_TightCloses_10w' in fdf.columns: gb.configure_column('W_TightCloses_10w', headerName='Wk Tight 10w/5', minWidth=85, maxWidth=105)
-            if 'W_InsideBars' in fdf.columns: gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
+                # ── Weekly columns ──
+                wp = JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;if(v>=1.0)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v>=0.95)return{'backgroundColor':'#8ee68e','color':'black'};if(v>=0.85)return{'backgroundColor':'#d4edda','color':'black'};return null}""")
+                if 'W_PctOf10wkHigh' in fdf.columns: gb.configure_column('W_PctOf10wkHigh', headerName='Wk % of 10wHi', minWidth=95, maxWidth=120, cellStyle=wp)
+                if 'W_CloseChg_Pct' in fdf.columns: gb.configure_column('W_CloseChg_Pct', headerName='Wk CloseChg%', minWidth=90, maxWidth=115)
+                if 'W_TightCloses_10w' in fdf.columns: gb.configure_column('W_TightCloses_10w', headerName='Wk Tight 10w/5', minWidth=85, maxWidth=105)
+                if 'W_InsideBars' in fdf.columns: gb.configure_column('W_InsideBars', headerName='Wk InsideB/8', minWidth=85, maxWidth=105)
 
-            # ── Header shortening ──
-            hs = {'_chg_percentclose':'Chg %','_avgvol_mln':'AvgVolcr','_bo_dollar_vol_mln':'BO$Volcr','_avg_vol_float_ratio':'VolFloatR',
-                  '_bo_engulfing_cndl':'BOEngulf','_days_since_bo':'DaysSinceBO','Sector_Percentile':'SectPctile',
-                  '_nr4_previous':'NR4Prev','_period_perf':'PeriodPerf','_10wmadist':'10wMADist','_10madist':'10MADist',
-                  '_20madist':'20MADist','off_high_21':'Off 1M hi %','off_high_126':'Off 6M hi %','off_high_252':'Off 52W hi %','W_Dist10wMA':'Wk 10wMA %','_rel_wk_dist':'Rel Wk Dist',
-                  'W_PctOf10wkHigh':'Wk % of 10wHi','W_CloseChg_Pct':'Wk CloseChg%','W_TightCloses':'Wk TightCl/5',
-                  'W_InsideBars':'Wk InsideB/8','_vol_ratio':'Vol Ratio','_rel_tightness':'Rel Tight'}
-            for rc, sn in hs.items():
-                if rc in fdf.columns: gb.configure_column(rc, headerName=sn)
-            for _oc, _js in (('off_high_21', OFF21_JS), ('off_high_126', OFFLONG_JS), ('off_high_252', OFFLONG_JS)):
-                if _oc in fdf.columns: gb.configure_column(_oc, cellStyle=_js, minWidth=80, maxWidth=100)
+                # ── Header shortening ──
+                hs = {'_chg_percentclose':'Chg %','_avgvol_mln':'AvgVolcr','_bo_dollar_vol_mln':'BO$Volcr','_avg_vol_float_ratio':'VolFloatR',
+                      '_bo_engulfing_cndl':'BOEngulf','_days_since_bo':'DaysSinceBO','Sector_Percentile':'SectPctile',
+                      '_nr4_previous':'NR4Prev','_period_perf':'PeriodPerf','_10wmadist':'10wMADist','_10madist':'10MADist',
+                      '_20madist':'20MADist','off_high_21':'Off 1M hi %','off_high_126':'Off 6M hi %','off_high_252':'Off 52W hi %','W_Dist10wMA':'Wk 10wMA %','_rel_wk_dist':'Rel Wk Dist',
+                      'W_PctOf10wkHigh':'Wk % of 10wHi','W_CloseChg_Pct':'Wk CloseChg%','W_TightCloses':'Wk TightCl/5',
+                      'W_InsideBars':'Wk InsideB/8','_vol_ratio':'Vol Ratio','_rel_tightness':'Rel Tight'}
+                for rc, sn in hs.items():
+                    if rc in fdf.columns: gb.configure_column(rc, headerName=sn)
+                for _oc, _js in (('off_high_21', OFF21_JS), ('off_high_126', OFFLONG_JS), ('off_high_252', OFFLONG_JS)):
+                    if _oc in fdf.columns: gb.configure_column(_oc, cellStyle=_js, minWidth=80, maxWidth=100)
 
-            # ── Symbol renderer ──
-            sr = JsCode("""function(p){const s=p.value;const r=p.data.Sector_Rank;const t=p.data.Sector_Total;if(r&&t&&r>0)return s+' ('+r+'/'+t+')';return s}""")
-            gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left', checkboxSelection=True, headerCheckboxSelection=True)
-            if 'Sector' in fdf.columns: gb.configure_column('Sector', minWidth=120, maxWidth=150)
-            if 'Industry' in fdf.columns: gb.configure_column('Industry', minWidth=120, maxWidth=150)
-            if 'Sector_Rank' in fdf.columns: gb.configure_column('Sector_Rank', hide=True)
-            if 'Sector_Total' in fdf.columns: gb.configure_column('Sector_Total', hide=True)
-            if 'Sector_Percentile' in fdf.columns: gb.configure_column('Sector_Percentile', minWidth=100, maxWidth=120)
-            for col in hmc: gb.configure_column(col, hide=True)
+                # ── Symbol renderer ──
+                sr = JsCode("""function(p){const s=p.value;const r=p.data.Sector_Rank;const t=p.data.Sector_Total;if(r&&t&&r>0)return s+' ('+r+'/'+t+')';return s}""")
+                gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left', checkboxSelection=True, headerCheckboxSelection=True)
+                if 'Sector' in fdf.columns: gb.configure_column('Sector', minWidth=120, maxWidth=150)
+                if 'Industry' in fdf.columns: gb.configure_column('Industry', minWidth=120, maxWidth=150)
+                if 'Sector_Rank' in fdf.columns: gb.configure_column('Sector_Rank', hide=True)
+                if 'Sector_Total' in fdf.columns: gb.configure_column('Sector_Total', hide=True)
+                if 'Sector_Percentile' in fdf.columns: gb.configure_column('Sector_Percentile', minWidth=100, maxWidth=120)
+                for col in hmc: gb.configure_column(col, hide=True)
 
-            go = gb.build()
-            safe_df = clean_df_for_json(fdf)
-            st.caption("Sort, filter and tick rows freely — the page doesn't reload. Press **Update** (under the table) to use your ticks and filters below.")
-            grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%', update_mode=GridUpdateMode.MANUAL, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
+                go = gb.build()
+                safe_df = clean_df_for_json(fdf)
+                st.caption("Sort, filter and tick rows freely — the page doesn't reload. Press **Update** (under the table) to use your ticks and filters below.")
+                grid_response = AgGrid(safe_df, gridOptions=go, height=600, width='100%', update_mode=GridUpdateMode.MANUAL, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
 
-            # ── Copy Symbols to TradingView — right under the table. No buttons: the copy icon is instant ──
-            sdf = grid_response['data'] if (grid_response is not None and grid_response['data'] is not None
-                                            and not grid_response['data'].empty) else fdf
-            if not sdf.empty and 'Symbol' in sdf.columns:
-                al = sdf['Symbol'].dropna().unique().tolist()
-                _tv = lambda xs: ",".join(tv_symbol(x, MARKET_CFG) for x in xs)
-                if scan_mode == "Post Breakout":
-                    _bcfg = st.session_state.get('bo_cfg', saved_prefs.get('breakout_tags', {}))
-                    strong, moderate = breakout_batch_lists(st.session_state.gtt_base_df, MARKET_CFG,
-                                                            vol_bo_min_chg, vol_bo_min_vol, _bcfg)
-                    _sv = float((_bcfg or {}).get('strong_min_vol', 3.5))
-                    groups = [(f"Strong BO (≥{_sv:g}x vol)", strong), (f"Moderate BO ({vol_bo_min_vol:g}–{_sv:g}x)", moderate),
-                              ("All in the table", al)]
-                else:
-                    tightest = (sdf.nsmallest(20, '_rel_tightness', keep='first')['Symbol'].dropna().unique().tolist()
-                                if '_rel_tightness' in sdf.columns and len(sdf) > 20 else al)
-                    groups = [("Top 20 tightest", tightest), ("All in the table", al)]
-                with st.container(border=True):
-                    st.markdown("**Copy to TradingView** — hover a list and click its copy icon")
-                    for _col, (_lab, _xs) in zip(st.columns(len(groups)), groups):
-                        with _col:
-                            st.caption(f"{_lab} · {len(_xs)}")
-                            if _xs:
-                                st.code(_tv(_xs), language=None)
-                            else:
-                                st.caption("—")
+                # ── Copy Symbols to TradingView — right under the table. No buttons: the copy icon is instant ──
+                sdf = grid_response['data'] if (grid_response is not None and grid_response['data'] is not None
+                                                and not grid_response['data'].empty) else fdf
+                if not sdf.empty and 'Symbol' in sdf.columns:
+                    al = sdf['Symbol'].dropna().unique().tolist()
+                    _tv = lambda xs: ",".join(tv_symbol(x, MARKET_CFG) for x in xs)
+                    if scan_mode == "Post Breakout":
+                        _bcfg = st.session_state.get('bo_cfg', saved_prefs.get('breakout_tags', {}))
+                        strong, moderate = breakout_batch_lists(st.session_state.gtt_base_df, MARKET_CFG,
+                                                                vol_bo_min_chg, vol_bo_min_vol, _bcfg)
+                        _sv = float((_bcfg or {}).get('strong_min_vol', 3.5))
+                        groups = [(f"Strong BO (≥{_sv:g}x vol)", strong), (f"Moderate BO ({vol_bo_min_vol:g}–{_sv:g}x)", moderate),
+                                  ("All in the table", al)]
+                    else:
+                        tightest = (sdf.nsmallest(20, '_rel_tightness', keep='first')['Symbol'].dropna().unique().tolist()
+                                    if '_rel_tightness' in sdf.columns and len(sdf) > 20 else al)
+                        groups = [("Top 20 tightest", tightest), ("All in the table", al)]
+                    with st.container(border=True):
+                        st.markdown("**Copy to TradingView** — hover a list and click its copy icon")
+                        for _col, (_lab, _xs) in zip(st.columns(len(groups)), groups):
+                            with _col:
+                                st.caption(f"{_lab} · {len(_xs)}")
+                                if _xs:
+                                    st.code(_tv(_xs), language=None)
+                                else:
+                                    st.caption("—")
 
             # ── Save straight from the table: ticked rows → tomorrow's list / watchlist ──
             _sel = grid_response['selected_rows'] if grid_response is not None else None
@@ -858,29 +860,30 @@ def main():
             else: _sel_syms = [r.get('Symbol') for r in _sel if r]
             render_quick_save(st, supabase, _sel_syms, st.session_state.gtt_base_df, scan_mode, MARKET_CFG)
 
-            # ── Daily process: one save per mode ──
-            if scan_mode == "Anticipation":
-                render_tomorrow_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG,
-                                      shared={'min_adr': coil_min_adr, 'max_reltight': coil_max_reltight,
-                                              'max_rwd': coil_max_rwd, 'min_wktight': coil_min_wktight,
-                                              'min_chg': coil_min_chg, 'max_chg': coil_max_chg,
-                                              'bo_min_chg': vol_bo_min_chg, 'bo_min_vol': vol_bo_min_vol})
-            else:
-                render_breakout_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG,
-                                      shared={'bo_min_chg': vol_bo_min_chg, 'bo_min_vol': vol_bo_min_vol})
+            with st.expander("🗓 Daily process — tomorrow's list / tag breakouts"):
+                # ── Daily process: one save per mode ──
+                if scan_mode == "Anticipation":
+                    render_tomorrow_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG,
+                                          shared={'min_adr': coil_min_adr, 'max_reltight': coil_max_reltight,
+                                                  'max_rwd': coil_max_rwd, 'min_wktight': coil_min_wktight,
+                                                  'min_chg': coil_min_chg, 'max_chg': coil_max_chg,
+                                                  'bo_min_chg': vol_bo_min_chg, 'bo_min_vol': vol_bo_min_vol})
+                else:
+                    render_breakout_panel(st, supabase, st.session_state.gtt_base_df, saved_prefs, MARKET_CFG,
+                                          shared={'bo_min_chg': vol_bo_min_chg, 'bo_min_vol': vol_bo_min_vol})
 
             # ── Export ──
-            st.markdown("---"); st.subheader("Export Scanner Data for Analysis")
-            cd1, cd2 = st.columns(2)
-            with cd1:
-                ef = fdf.copy()
-                st.download_button("Download Filtered Data (CSV)", ef.to_csv(index=False), f"gtt_filtered_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
-                st.caption(f"{len(ef)} rows, {len(ef.columns)} columns")
-            with cd2:
-                if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
-                    efl = st.session_state.gtt_scored_df.copy()
-                    st.download_button("Download Full Dataset (CSV)", efl.to_csv(index=False), f"gtt_full_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
-                    st.caption(f"{len(efl)} rows, {len(efl.columns)} columns")
+            with st.expander("⬇️ Export scanner data for analysis"):
+                cd1, cd2 = st.columns(2)
+                with cd1:
+                    ef = fdf.copy()
+                    st.download_button("Download Filtered Data (CSV)", ef.to_csv(index=False), f"gtt_filtered_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
+                    st.caption(f"{len(ef)} rows, {len(ef.columns)} columns")
+                with cd2:
+                    if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
+                        efl = st.session_state.gtt_scored_df.copy()
+                        st.download_button("Download Full Dataset (CSV)", efl.to_csv(index=False), f"gtt_full_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
+                        st.caption(f"{len(efl)} rows, {len(efl.columns)} columns")
         else:
             st.info("Click 'Generate GTT Trading Plan' to load data.")
 
@@ -901,75 +904,75 @@ def main():
                         Avg_Adr=('Adr','mean'),
                     ).round(2).sort_values('Count', ascending=False).reset_index()
 
-                    st.subheader("Sector Concentration (stocks with Vol ≥ 1.0x)")
-                    sgb = GridOptionsBuilder.from_dataframe(ss); sgb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
-                    sgb.configure_side_bar(); sgb.configure_grid_options(enableBrowserTooltips=True)
-                    for c in ss.columns: sgb.configure_column(c, headerTooltip=c)
-                    if 'Avg_Vol_Ratio' in ss.columns:
-                        sgb.configure_column('Avg_Vol_Ratio', minWidth=90, maxWidth=120, headerName='Avg Vol Ratio',
-                            cellStyle=JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v)||v<=0)return null;if(v>=3.5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v>=2.5)return{'backgroundColor':'#8ee68e','color':'black','fontWeight':'bold'};if(v>=1.5)return{'backgroundColor':'#d4edda','color':'black'};return null}"""))
-                    sgb.configure_column('Sector', minWidth=140, maxWidth=200, pinned='left')
-                    AgGrid(ss, gridOptions=sgb.build(), height=400, width='100%', update_mode=GridUpdateMode.NO_UPDATE, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
+                    with st.expander("🔥 Sector concentration — stocks with Vol ≥ 1.0x"):
+                        sgb = GridOptionsBuilder.from_dataframe(ss); sgb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
+                        sgb.configure_side_bar(); sgb.configure_grid_options(enableBrowserTooltips=True)
+                        for c in ss.columns: sgb.configure_column(c, headerTooltip=c)
+                        if 'Avg_Vol_Ratio' in ss.columns:
+                            sgb.configure_column('Avg_Vol_Ratio', minWidth=90, maxWidth=120, headerName='Avg Vol Ratio',
+                                cellStyle=JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v)||v<=0)return null;if(v>=3.5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(v>=2.5)return{'backgroundColor':'#8ee68e','color':'black','fontWeight':'bold'};if(v>=1.5)return{'backgroundColor':'#d4edda','color':'black'};return null}"""))
+                        sgb.configure_column('Sector', minWidth=140, maxWidth=200, pinned='left')
+                        AgGrid(ss, gridOptions=sgb.build(), height=400, width='100%', update_mode=GridUpdateMode.NO_UPDATE, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
 
-                    st.subheader("Top Setups by Sector")
-                    st.caption("Every scanned stock in each hot sector (not only the ones with volume today), "
-                               "tightest first — a coil is usually quiet. Rel tight = today's NR4 ÷ ADR. "
-                               "Saved = already in your Saved breakouts (with its tags).")
-                    try:
-                        from gtt_process import load_active_watchlist, tags_of
-                        _wl = {str(r["symbol"]).upper(): "✓ " + (" + ".join(tags_of(r)) or "saved")
-                               for r in (load_active_watchlist(supabase, MARKET_CFG) if supabase is not None else [])}
-                    except Exception:
-                        _wl = {}
-                    for sec in ss.head(10)['Sector'].tolist():
-                        ss2 = sdf[sdf['Sector']==sec].copy()
-                        ss2['Saved'] = ss2['Symbol'].astype(str).str.upper().map(_wl).fillna('')
-                        if '_nr4' in ss2.columns and 'Adr' in ss2.columns:
-                            ss2['_rel_tightness'] = (ss2['_nr4'] / ss2['Adr'].replace(0, np.nan)).round(2)
-                        if 'W_Dist10wMA' in ss2.columns and 'Adr' in ss2.columns:
-                            ss2['_rel_wk_dist'] = (ss2['W_Dist10wMA'].abs() / ss2['Adr'].replace(0, np.nan)).round(2)
-                        n_vol = int((ss2['_vol_ratio'].fillna(0) >= 1.0).sum())
-                        ss2 = ss2.sort_values('_rel_tightness' if '_rel_tightness' in ss2.columns else '_vol_ratio',
-                                              ascending='_rel_tightness' in ss2.columns, na_position='last').head(15)
-                        dc = [c for c in ['Symbol','Saved','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr'] + (['_circuit'] if MARKET_CFG.get('market') == 'NSE' else []) + ['Ti65','_nr4','_rel_tightness','_rel_wk_dist','off_high_21','off_high_252','_10madist','_20madist','Industry'] if c in ss2.columns]
-                        sd = ss2[dc].copy()
-                        with st.expander(f"{sec} — tightest {len(ss2)} of {int((sdf['Sector']==sec).sum())} scanned · {n_vol} with volume today"):
-                            gb = GridOptionsBuilder.from_dataframe(sd); gb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
-                            gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True)
-                            for c in sd.columns: gb.configure_column(c, headerTooltip=c)
-                            if '_vol_ratio' in sd.columns: gb.configure_column('_vol_ratio', minWidth=60, maxWidth=85, headerName='Vol Ratio', cellStyle=vol_jscode if '_vol_ratio' in fdf.columns else None)
-                            if 'dvol' in sd.columns and '_avgvol_mln' in sd.columns:
-                                gb.configure_column('dvol', minWidth=60, maxWidth=85, cellStyle=DVOL_JS)
-                                gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, cellStyle=liq_js(sd['_avgvol_mln']))
-                            if '_rel_tightness' in sd.columns: gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel tight', cellStyle=th, comparator=abs_comparator)
-                            if '_rel_wk_dist' in sd.columns: gb.configure_column('_rel_wk_dist', minWidth=70, maxWidth=100, headerName='ADRs from 10w', cellStyle=rel_wk_dist_jscode, comparator=abs_comparator)
-                            if '_chg_percentclose' in sd.columns:
-                                vc2=sd[sd['_chg_percentclose']>0]['_chg_percentclose']; cmn=float(vc2.min()) if not vc2.empty else 0; cmx=float(vc2.max()) if not vc2.empty else 10
-                                gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110, cellStyle=JsCode(f"""function(p){{const v=p.value;if(!v||v<=0)return null;const m={cmn},x={cmx};if(x===m)return{{'backgroundColor':'#ffe6ff','color':'black'}};const r=Math.min((v-m)/(x-m),1.0);const a=Math.round(255-115*r),b=Math.round(220-220*r),c=Math.round(255-115*r);return{{'backgroundColor':'rgb('+a+','+b+','+c+')','color':r>0.5?'white':'black','fontWeight':r>=0.8?'bold':'normal'}}}}"""), filter='agNumberColumnFilter', filterParams={'filterOptions':['greaterThan','lessThan','equals','inRange'],'defaultOption':'greaterThan','defaultValues':[0]})
-                            for col in ['Adr','Ti65','_nr4']:
-                                if col in sd.columns: gb.configure_column(col, minWidth=55, maxWidth=75)
-                            md2=JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;const a=Math.abs(v);if(v<-6)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};if(a<2)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(a<4)return{'backgroundColor':'#8ee68e','color':'black'};if(a<6)return{'backgroundColor':'#d4edda','color':'black'};return null}""")
-                            if '_20madist' in sd.columns: gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
-                            if '_10madist' in sd.columns: gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
-                            if 'W_Dist10wMA' in sd.columns: gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
-                            hs2={'_chg_percentclose':'Chg %','_avgvol_mln':'Avg vol','dvol':'Day vol','Adr':'ADR','_nr4':'NR4 %','_nr4_previous':'NR4 % (prev)','_10madist':'10MA dist','_20madist':'20MA dist','_rel_wk_dist':'ADRs from 10w','_vol_ratio':'Vol x','off_high_21':'Off 1M hi %','off_high_252':'Off 52W hi %'}
-                            for _oc, _js in (('off_high_21', OFF21_JS), ('off_high_252', OFFLONG_JS)):
-                                if _oc in sd.columns: gb.configure_column(_oc, cellStyle=_js, minWidth=80, maxWidth=100)
-                            for rc,sn in hs2.items():
-                                if rc in sd.columns: gb.configure_column(rc, headerName=sn)
-                            if 'Symbol' in sd.columns: gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')
-                            if '_circuit' in sd.columns:
-                                sd['_circuit'] = pd.to_numeric(sd['_circuit'], errors='coerce')
-                                gb.configure_column('_circuit', headerName='Circuit %', minWidth=70, maxWidth=90, headerTooltip='NSE price band: 20 free · 10 caution · ≤5 can lock in circuit',
-                                    cellStyle=JsCode("function(p){const v=p.value;if(v===null||v===undefined||isNaN(v)||v<=0)return null;if(v<=5)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};if(v<=10)return{'backgroundColor':'#fff3cd','color':'#664d03'};return null}"))
-                            if 'Saved' in sd.columns: gb.configure_column('Saved', pinned='left', minWidth=110, maxWidth=200, headerTooltip='Already in your Saved breakouts (tags)',
-                                cellStyle=JsCode("function(p){return p.value?{'color':'#28a745','fontWeight':'bold'}:null}"))
-                            if 'Sector_Rank' in sd.columns: gb.configure_column('Sector_Rank', hide=True)
-                            if 'Sector_Total' in sd.columns: gb.configure_column('Sector_Total', hide=True)
-                            if 'Sector_Percentile' in sd.columns: gb.configure_column('Sector_Percentile', minWidth=100, maxWidth=120)
-                            if 'Sector' in sd.columns: gb.configure_column('Sector', minWidth=120, maxWidth=150)
-                            if 'Industry' in sd.columns: gb.configure_column('Industry', minWidth=120, maxWidth=150)
-                            AgGrid(clean_df_for_json(sd), gridOptions=gb.build(), height=400, width='100%', update_mode=GridUpdateMode.NO_UPDATE, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
+                    with st.expander("🏆 Top setups by sector"):
+                        st.caption("Every scanned stock in each hot sector (not only the ones with volume today), "
+                                   "tightest first — a coil is usually quiet. Rel tight = today's NR4 ÷ ADR. "
+                                   "Saved = already in your Saved breakouts (with its tags).")
+                        try:
+                            from gtt_process import load_active_watchlist, tags_of
+                            _wl = {str(r["symbol"]).upper(): "✓ " + (" + ".join(tags_of(r)) or "saved")
+                                   for r in (load_active_watchlist(supabase, MARKET_CFG) if supabase is not None else [])}
+                        except Exception:
+                            _wl = {}
+                        for sec in ss.head(10)['Sector'].tolist():
+                            ss2 = sdf[sdf['Sector']==sec].copy()
+                            ss2['Saved'] = ss2['Symbol'].astype(str).str.upper().map(_wl).fillna('')
+                            if '_nr4' in ss2.columns and 'Adr' in ss2.columns:
+                                ss2['_rel_tightness'] = (ss2['_nr4'] / ss2['Adr'].replace(0, np.nan)).round(2)
+                            if 'W_Dist10wMA' in ss2.columns and 'Adr' in ss2.columns:
+                                ss2['_rel_wk_dist'] = (ss2['W_Dist10wMA'].abs() / ss2['Adr'].replace(0, np.nan)).round(2)
+                            n_vol = int((ss2['_vol_ratio'].fillna(0) >= 1.0).sum())
+                            ss2 = ss2.sort_values('_rel_tightness' if '_rel_tightness' in ss2.columns else '_vol_ratio',
+                                                  ascending='_rel_tightness' in ss2.columns, na_position='last').head(15)
+                            dc = [c for c in ['Symbol','Saved','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr'] + (['_circuit'] if MARKET_CFG.get('market') == 'NSE' else []) + ['Ti65','_nr4','_rel_tightness','_rel_wk_dist','off_high_21','off_high_252','_10madist','_20madist','Industry'] if c in ss2.columns]
+                            sd = ss2[dc].copy()
+                            with st.expander(f"{sec} — tightest {len(ss2)} of {int((sdf['Sector']==sec).sum())} scanned · {n_vol} with volume today"):
+                                gb = GridOptionsBuilder.from_dataframe(sd); gb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
+                                gb.configure_side_bar(); gb.configure_grid_options(enableBrowserTooltips=True)
+                                for c in sd.columns: gb.configure_column(c, headerTooltip=c)
+                                if '_vol_ratio' in sd.columns: gb.configure_column('_vol_ratio', minWidth=60, maxWidth=85, headerName='Vol Ratio', cellStyle=vol_jscode if '_vol_ratio' in fdf.columns else None)
+                                if 'dvol' in sd.columns and '_avgvol_mln' in sd.columns:
+                                    gb.configure_column('dvol', minWidth=60, maxWidth=85, cellStyle=DVOL_JS)
+                                    gb.configure_column('_avgvol_mln', minWidth=60, maxWidth=85, cellStyle=liq_js(sd['_avgvol_mln']))
+                                if '_rel_tightness' in sd.columns: gb.configure_column('_rel_tightness', minWidth=70, maxWidth=90, headerName='Rel tight', cellStyle=th, comparator=abs_comparator)
+                                if '_rel_wk_dist' in sd.columns: gb.configure_column('_rel_wk_dist', minWidth=70, maxWidth=100, headerName='ADRs from 10w', cellStyle=rel_wk_dist_jscode, comparator=abs_comparator)
+                                if '_chg_percentclose' in sd.columns:
+                                    vc2=sd[sd['_chg_percentclose']>0]['_chg_percentclose']; cmn=float(vc2.min()) if not vc2.empty else 0; cmx=float(vc2.max()) if not vc2.empty else 10
+                                    gb.configure_column('_chg_percentclose', minWidth=80, maxWidth=110, cellStyle=JsCode(f"""function(p){{const v=p.value;if(!v||v<=0)return null;const m={cmn},x={cmx};if(x===m)return{{'backgroundColor':'#ffe6ff','color':'black'}};const r=Math.min((v-m)/(x-m),1.0);const a=Math.round(255-115*r),b=Math.round(220-220*r),c=Math.round(255-115*r);return{{'backgroundColor':'rgb('+a+','+b+','+c+')','color':r>0.5?'white':'black','fontWeight':r>=0.8?'bold':'normal'}}}}"""), filter='agNumberColumnFilter', filterParams={'filterOptions':['greaterThan','lessThan','equals','inRange'],'defaultOption':'greaterThan','defaultValues':[0]})
+                                for col in ['Adr','Ti65','_nr4']:
+                                    if col in sd.columns: gb.configure_column(col, minWidth=55, maxWidth=75)
+                                md2=JsCode("""function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;const a=Math.abs(v);if(v<-6)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};if(a<2)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(a<4)return{'backgroundColor':'#8ee68e','color':'black'};if(a<6)return{'backgroundColor':'#d4edda','color':'black'};return null}""")
+                                if '_20madist' in sd.columns: gb.configure_column('_20madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
+                                if '_10madist' in sd.columns: gb.configure_column('_10madist', minWidth=70, maxWidth=90, cellStyle=md2, comparator=abs_comparator)
+                                if 'W_Dist10wMA' in sd.columns: gb.configure_column('W_Dist10wMA', minWidth=80, maxWidth=110, headerName='Wk 10wMA %', cellStyle=wk_dist_jscode, comparator=abs_comparator)
+                                hs2={'_chg_percentclose':'Chg %','_avgvol_mln':'Avg vol','dvol':'Day vol','Adr':'ADR','_nr4':'NR4 %','_nr4_previous':'NR4 % (prev)','_10madist':'10MA dist','_20madist':'20MA dist','_rel_wk_dist':'ADRs from 10w','_vol_ratio':'Vol x','off_high_21':'Off 1M hi %','off_high_252':'Off 52W hi %'}
+                                for _oc, _js in (('off_high_21', OFF21_JS), ('off_high_252', OFFLONG_JS)):
+                                    if _oc in sd.columns: gb.configure_column(_oc, cellStyle=_js, minWidth=80, maxWidth=100)
+                                for rc,sn in hs2.items():
+                                    if rc in sd.columns: gb.configure_column(rc, headerName=sn)
+                                if 'Symbol' in sd.columns: gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')
+                                if '_circuit' in sd.columns:
+                                    sd['_circuit'] = pd.to_numeric(sd['_circuit'], errors='coerce')
+                                    gb.configure_column('_circuit', headerName='Circuit %', minWidth=70, maxWidth=90, headerTooltip='NSE price band: 20 free · 10 caution · ≤5 can lock in circuit',
+                                        cellStyle=JsCode("function(p){const v=p.value;if(v===null||v===undefined||isNaN(v)||v<=0)return null;if(v<=5)return{'backgroundColor':'#f8d7da','color':'#721c24','fontWeight':'bold'};if(v<=10)return{'backgroundColor':'#fff3cd','color':'#664d03'};return null}"))
+                                if 'Saved' in sd.columns: gb.configure_column('Saved', pinned='left', minWidth=110, maxWidth=200, headerTooltip='Already in your Saved breakouts (tags)',
+                                    cellStyle=JsCode("function(p){return p.value?{'color':'#28a745','fontWeight':'bold'}:null}"))
+                                if 'Sector_Rank' in sd.columns: gb.configure_column('Sector_Rank', hide=True)
+                                if 'Sector_Total' in sd.columns: gb.configure_column('Sector_Total', hide=True)
+                                if 'Sector_Percentile' in sd.columns: gb.configure_column('Sector_Percentile', minWidth=100, maxWidth=120)
+                                if 'Sector' in sd.columns: gb.configure_column('Sector', minWidth=120, maxWidth=150)
+                                if 'Industry' in sd.columns: gb.configure_column('Industry', minWidth=120, maxWidth=150)
+                                AgGrid(clean_df_for_json(sd), gridOptions=gb.build(), height=400, width='100%', update_mode=GridUpdateMode.NO_UPDATE, data_return_mode=DataReturnMode.FILTERED_AND_SORTED, allow_unsafe_jscode=True)
                 else:
                     st.info("No stocks with volume above average found.")
             else:

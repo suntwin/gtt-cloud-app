@@ -26,6 +26,24 @@ except Exception:  # pragma: no cover
 
 import market_calendar as mcal   # NSE / USA exchange holidays, early closes, last completed session
 
+# ── AgGrid inside collapsible sections ──
+# st_aggrid fixes its container width when it first renders. A grid that renders inside a collapsed st.expander gets
+# width 0 and stays blank when the section is opened. Forcing the container to 100% fixes it. Every AgGrid call in the
+# app goes through this wrapper (the pages import AgGrid from here).
+try:
+    import st_aggrid as _sta
+    _AGGRID_ORIG = getattr(_sta, "_aggrid_orig", None) or _sta.AgGrid
+    _sta._aggrid_orig = _AGGRID_ORIG
+    _FIX_CSS = {"#gridContainer": {"width": "100% !important"}}
+
+    def AgGrid(*a, **k):
+        css = dict(_FIX_CSS)
+        css.update(k.pop("custom_css", None) or {})
+        return _AGGRID_ORIG(*a, custom_css=css, **k)
+    _sta.AgGrid = AgGrid
+except Exception:                                    # st_aggrid missing: nothing to patch
+    pass
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # Market settings — NSE page uses MARKETS["NSE"], USA page uses MARKETS["USA"]
@@ -38,7 +56,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-27k · Performance as colour-coded tiles"
+PROCESS_VERSION = "v2026-10-28a · Collapsible sections everywhere (collapsed by default); logic unchanged"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2047,7 +2065,7 @@ def render_journal_tab(st, sb, mcfg):
 # ════════════════════════════════════════════════════════════════════════════
 def render_quick_save(st, sb, selected, base_df, scan_mode, mcfg):
     """Right under the scanner table: save ticked rows (or typed symbols) in one click."""
-    with st.container(border=True):
+    with st.expander("💾 Save from the scanner — tick rows above or type symbols"):
         st.markdown("**Save from the scanner** — tick rows in the table above, or type any other symbol you spotted")
         c1, c2 = st.columns([2, 3])
         typed = c1.text_input("Other symbols (comma separated)", key=f"qs_typed_{scan_mode}",
@@ -2881,7 +2899,7 @@ def cleanup_candidates(sb, mcfg, watch, base_df=None, min_days=1):
 
 
 def render_cleanup(st, sb, base_df, mcfg, watch):
-    with st.container(border=True):
+    with st.expander("🧹 Clean-up — saved stocks no longer in the scan"):
         st.markdown("**Clean-up** · check each chart by its reason, then Apply")
         c1, c2 = st.columns([1, 3])
         nd = int(c1.number_input("Not in the scan for at least (trading days)", 1, 60, 1, key="wl_c_days"))
@@ -2962,13 +2980,13 @@ def _render_saved_themes(st, v, wdf, hist, base_df, mcfg, sb=None):
     """Leadership over time (all recorded breakouts), then theme counts for the saved breakouts + a filter.
     Returns the (possibly filtered) table."""
     if hist is not None and not hist.empty:
-        with st.container(border=True):
+        with st.expander("📈 Leadership over time — every recorded breakout"):
             st.markdown("**Leadership over time** · every breakout recorded in your evening batches, saved or skipped (last 20 sessions)")
             _mine = set(wdf["symbol"].astype(str).str.upper()) if wdf is not None and not wdf.empty and "symbol" in wdf.columns else set()
             _rows = v[[c for c in ("symbol", "Sector", "Industry", "trigger_date", "last_trigger_date", "trigger_close",
                            "prev_close", "vol_ratio") if c in v.columns]].copy()
             render_sector_leadership(st, sb, base_df, mcfg, hist=hist, heading=False, saved_syms=_mine, saved_rows=_rows)
-    with st.container(border=True):
+    with st.expander("🧭 Themes in your saved breakouts"):
         st.markdown("**Themes in your saved breakouts**")
         c1, c2 = st.columns([1, 3])
         group = c1.radio("Group by", ["Sector", "Industry"], horizontal=True, key="wl_theme_group")
@@ -3063,60 +3081,60 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
         v.insert(v.columns.get_loc("symbol") + 1, "Sector", v["symbol"].map(sec))
         v.insert(v.columns.get_loc("Sector") + 1, "Industry", v["symbol"].map(ind))
         v = _render_saved_themes(st, v, wdf, _hist, base_df, mcfg, sb)
-        st.markdown("---"); st.markdown("#### Saved breakouts")
-        _notes = latest_note_by_symbol(sb, mcfg)
-        if _notes:
-            v["My note"] = v["symbol"].map(_notes)
-        v.insert(0, "Action", "keep")
-        v = v.assign(_r=v["id"].map(dict(zip(wdf["id"], wdf["rating"].fillna(0))))).sort_values(["_r", "symbol"], ascending=[False, True]).drop(columns="_r")
-        editable = ["Action", "Rating"] + tagcols
-        cfgcols = {
-            "id": None,
-            "Action": st.column_config.SelectboxColumn("Action", options=["keep", "traded", "remove"], required=True),
-            "UNTAGGED": st.column_config.CheckboxColumn("Untagged", help="Old saved stock — tick its real tag(s)"),
-            "CONTINUATION": st.column_config.CheckboxColumn("CONT"),
-            "last_trigger_date": "Latest BO",
-            "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True),
-            "trigger_date": "Breakout day", "trigger_close": "BO close", "prev_close": "Fail level",
-            "vol_ratio": st.column_config.NumberColumn("BO vol x", format="%.1f"),
-            "tags": "Notes",
-            "Chg %": st.column_config.NumberColumn("Chg %", format="%.1f"),
-            "Vol x": st.column_config.NumberColumn("Vol x", format="%.1f"),
-            "Avg vol": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
-            "Day vol": st.column_config.NumberColumn("Day vol", format="%.0f", help="Today's volume, same units as Avg vol"),
-            "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
-            "Rel tight": st.column_config.NumberColumn("Rel tight", format="%.2f", help="Today's NR4 ÷ ADR — lower is tighter"),
-            "Circuit %": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
-            "Off 1M hi %": st.column_config.NumberColumn("Off 1M hi %", format="%.1f", help=OFF_HIGH_HELP["off_high_21"]),
-            "Off 52W hi %": st.column_config.NumberColumn("Off 52W hi %", format="%.1f", help=OFF_HIGH_HELP["off_high_252"]),
-            "NR4 %": st.column_config.NumberColumn("NR4 %", format="%.2f", help="Today's 4-day range %"),
-            "ADRs from 10w": st.column_config.NumberColumn("ADRs from 10w", format="%.1f",
-                                                           help="Distance from the 10-week line in ADRs: ≤2 buy · 2–3 half size · >3 no new buy"),
-            "10MA %": st.column_config.NumberColumn("10MA %", format="%.1f"),
-            "20MA %": st.column_config.NumberColumn("20MA %", format="%.1f"),
-        }
-        if multi:
-            cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more", extra=("UNTAGGED",) if has_untagged else ())
-        st.caption("One row per stock. Change tags, rating or Action, then press Apply — nothing is sent until then.")
-        if "In scan" in v.columns:
-            _gone = int((~v["In scan"]).sum())
-            if _gone:
-                st.info(f"🧹 **{_gone} of {len(v)}** saved stocks are not in today's scan (their columns show None). "
-                        "Clear them in one go: **Clean-up** further down this page → tick **Bulk** → Apply.")
-        with st.form("wl_form", border=False):
-            _vdata = v.style
-            if "Circuit %" in v.columns:
-                _vdata = _vdata.map(_c_circuit, subset=["Circuit %"])
-            if "Off 1M hi %" in v.columns and "ADR" in v.columns:
-                _a = pd.to_numeric(v["ADR"], errors="coerce")
-                _vdata = _vdata.apply(lambda col: [_c_off21_adr(abs(_num(x)) / a if a and np.isfinite(a) else np.nan)
-                                                   for x, a in zip(col, _a)], subset=["Off 1M hi %"])
-            if "Off 52W hi %" in v.columns:
-                _vdata = _vdata.map(_c_offhigh_long, subset=["Off 52W hi %"])
-            ed = st.data_editor(_vdata, hide_index=True, height=420, key=f"wl_editor_{st.session_state.get('wl_theme_key', '')}",
-                                disabled=[c for c in v.columns if c not in editable], column_config=cfgcols)
-            applied = st.form_submit_button("Apply changes")
-        render_stock_card(st, sb, mcfg, base_df, v["symbol"], key=f"wl_card_{mcfg.get('market')}")
+        with st.expander("⭐ Saved breakouts — your watchlist with today's data"):
+            _notes = latest_note_by_symbol(sb, mcfg)
+            if _notes:
+                v["My note"] = v["symbol"].map(_notes)
+            v.insert(0, "Action", "keep")
+            v = v.assign(_r=v["id"].map(dict(zip(wdf["id"], wdf["rating"].fillna(0))))).sort_values(["_r", "symbol"], ascending=[False, True]).drop(columns="_r")
+            editable = ["Action", "Rating"] + tagcols
+            cfgcols = {
+                "id": None,
+                "Action": st.column_config.SelectboxColumn("Action", options=["keep", "traded", "remove"], required=True),
+                "UNTAGGED": st.column_config.CheckboxColumn("Untagged", help="Old saved stock — tick its real tag(s)"),
+                "CONTINUATION": st.column_config.CheckboxColumn("CONT"),
+                "last_trigger_date": "Latest BO",
+                "Rating": st.column_config.SelectboxColumn("Rating", options=RATINGS, required=True),
+                "trigger_date": "Breakout day", "trigger_close": "BO close", "prev_close": "Fail level",
+                "vol_ratio": st.column_config.NumberColumn("BO vol x", format="%.1f"),
+                "tags": "Notes",
+                "Chg %": st.column_config.NumberColumn("Chg %", format="%.1f"),
+                "Vol x": st.column_config.NumberColumn("Vol x", format="%.1f"),
+                "Avg vol": st.column_config.NumberColumn("Avg vol", format="%.0f", help=LIQ_HELP),
+                "Day vol": st.column_config.NumberColumn("Day vol", format="%.0f", help="Today's volume, same units as Avg vol"),
+                "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
+                "Rel tight": st.column_config.NumberColumn("Rel tight", format="%.2f", help="Today's NR4 ÷ ADR — lower is tighter"),
+                "Circuit %": st.column_config.NumberColumn("Circuit %", format="%.0f", help=CIRCUIT_HELP),
+                "Off 1M hi %": st.column_config.NumberColumn("Off 1M hi %", format="%.1f", help=OFF_HIGH_HELP["off_high_21"]),
+                "Off 52W hi %": st.column_config.NumberColumn("Off 52W hi %", format="%.1f", help=OFF_HIGH_HELP["off_high_252"]),
+                "NR4 %": st.column_config.NumberColumn("NR4 %", format="%.2f", help="Today's 4-day range %"),
+                "ADRs from 10w": st.column_config.NumberColumn("ADRs from 10w", format="%.1f",
+                                                               help="Distance from the 10-week line in ADRs: ≤2 buy · 2–3 half size · >3 no new buy"),
+                "10MA %": st.column_config.NumberColumn("10MA %", format="%.1f"),
+                "20MA %": st.column_config.NumberColumn("20MA %", format="%.1f"),
+            }
+            if multi:
+                cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more", extra=("UNTAGGED",) if has_untagged else ())
+            st.caption("One row per stock. Change tags, rating or Action, then press Apply — nothing is sent until then.")
+            if "In scan" in v.columns:
+                _gone = int((~v["In scan"]).sum())
+                if _gone:
+                    st.info(f"🧹 **{_gone} of {len(v)}** saved stocks are not in today's scan (their columns show None). "
+                            "Clear them in one go: **Clean-up** further down this page → tick **Bulk** → Apply.")
+            with st.form("wl_form", border=False):
+                _vdata = v.style
+                if "Circuit %" in v.columns:
+                    _vdata = _vdata.map(_c_circuit, subset=["Circuit %"])
+                if "Off 1M hi %" in v.columns and "ADR" in v.columns:
+                    _a = pd.to_numeric(v["ADR"], errors="coerce")
+                    _vdata = _vdata.apply(lambda col: [_c_off21_adr(abs(_num(x)) / a if a and np.isfinite(a) else np.nan)
+                                                       for x, a in zip(col, _a)], subset=["Off 1M hi %"])
+                if "Off 52W hi %" in v.columns:
+                    _vdata = _vdata.map(_c_offhigh_long, subset=["Off 52W hi %"])
+                ed = st.data_editor(_vdata, hide_index=True, height=420, key=f"wl_editor_{st.session_state.get('wl_theme_key', '')}",
+                                    disabled=[c for c in v.columns if c not in editable], column_config=cfgcols)
+                applied = st.form_submit_button("Apply changes")
+            render_stock_card(st, sb, mcfg, base_df, v["symbol"], key=f"wl_card_{mcfg.get('market')}")
 
         def tagset(r):
             if multi:
@@ -3171,38 +3189,38 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             st.caption(f"{len(allsyms)} symbols — click the copy icon, then paste into a TradingView watchlist.")
 
     # ── Generate lists (moved down: rarely used) ──
-    st.markdown("---"); st.markdown("#### Generate a list")
-    counts = pd.Series([t for ts in wdf["_tags"] for t in ts]).value_counts().to_dict() if not wdf.empty else {}
-    btns = [("TOMORROW", f"Tomorrow's list ({len(tlist)})")] + [(t, f"{t} ({counts.get(t, 0)})") for t in SETUP_TYPES]
-    if counts.get("UNTAGGED"):
-        btns.append(("UNTAGGED", f"UNTAGGED ({counts['UNTAGGED']})"))
-    for c, (k, label) in zip(st.columns(len(btns)), btns):
-        if c.button(label, key=f"wl_btn_{k}", use_container_width=True):
-            st.session_state["wl_show"] = k
-    min_r = st.radio("Minimum rating for breakout lists", ["Any", "3★+", "4★+", "5★"], horizontal=True, key="wl_minr")
-    min_n = {"Any": 0, "3★+": 3, "4★+": 4, "5★": 5}[min_r]
-    show = st.session_state.get("wl_show")
-    if show:
-        if show == "TOMORROW":
-            syms, ex = tlist, {}
-            st.caption(f"Tomorrow's list saved on {tdate or '—'} — tightest first (rel tightness on the day saved).")
-        else:
-            part = wdf[wdf["_tags"].map(lambda ts: show in ts)] if not wdf.empty else wdf
-            if not part.empty and min_n:
-                part = part[part["rating"].fillna(0) >= min_n]
-            if not part.empty:
-                part = part.assign(_r=part["rating"].fillna(0)).sort_values(["_r", "symbol"], ascending=[False, True])
-            syms = part["symbol"].tolist() if not part.empty else []
-            ex = dict(zip(part["symbol"], part["exchange"])) if not part.empty else {}
-            st.caption(SETUP_NAMES.get(show, show))
-        if syms:
-            st.code(",".join(tv_symbol(s, mcfg, ex.get(s)) for s in syms), language=None)
-            st.caption(f"{len(syms)} symbols — paste into TradingView.")
-        else:
-            st.info("Empty.")
+    with st.expander("🧾 Generate a list"):
+        counts = pd.Series([t for ts in wdf["_tags"] for t in ts]).value_counts().to_dict() if not wdf.empty else {}
+        btns = [("TOMORROW", f"Tomorrow's list ({len(tlist)})")] + [(t, f"{t} ({counts.get(t, 0)})") for t in SETUP_TYPES]
+        if counts.get("UNTAGGED"):
+            btns.append(("UNTAGGED", f"UNTAGGED ({counts['UNTAGGED']})"))
+        for c, (k, label) in zip(st.columns(len(btns)), btns):
+            if c.button(label, key=f"wl_btn_{k}", use_container_width=True):
+                st.session_state["wl_show"] = k
+        min_r = st.radio("Minimum rating for breakout lists", ["Any", "3★+", "4★+", "5★"], horizontal=True, key="wl_minr")
+        min_n = {"Any": 0, "3★+": 3, "4★+": 4, "5★": 5}[min_r]
+        show = st.session_state.get("wl_show")
+        if show:
+            if show == "TOMORROW":
+                syms, ex = tlist, {}
+                st.caption(f"Tomorrow's list saved on {tdate or '—'} — tightest first (rel tightness on the day saved).")
+            else:
+                part = wdf[wdf["_tags"].map(lambda ts: show in ts)] if not wdf.empty else wdf
+                if not part.empty and min_n:
+                    part = part[part["rating"].fillna(0) >= min_n]
+                if not part.empty:
+                    part = part.assign(_r=part["rating"].fillna(0)).sort_values(["_r", "symbol"], ascending=[False, True])
+                syms = part["symbol"].tolist() if not part.empty else []
+                ex = dict(zip(part["symbol"], part["exchange"])) if not part.empty else {}
+                st.caption(SETUP_NAMES.get(show, show))
+            if syms:
+                st.code(",".join(tv_symbol(s, mcfg, ex.get(s)) for s in syms), language=None)
+                st.caption(f"{len(syms)} symbols — paste into TradingView.")
+            else:
+                st.info("Empty.")
 
     # ── 3. Add manually ──
-    with st.container(border=True):
+    with st.expander("➕ Add a stock manually"):
         st.markdown("**Add a stock manually**")
         c1, c2, c3 = st.columns([2, 2, 1])
         sym = c1.text_input("Symbols (comma separated)", key="wl_add_sym")
@@ -3224,7 +3242,7 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
     render_cleanup(st, sb, base_df, mcfg, watch)
 
     # ── 5. History ──
-    with st.container(border=True):
+    with st.expander("🗂 History — daily snapshots"):
         st.markdown("**History** · daily snapshots")
         try:
             dates = sorted({x["snap_date"] for x in sb.table("daily_snapshots").select("snap_date")

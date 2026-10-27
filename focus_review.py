@@ -176,55 +176,55 @@ BUCKET_COLOURS = {"Hidden by you": "#f5c2c7", "Held back by rules": "#fff3cd", "
 
 def render_review(st, sb, mcfg, sd, live, flags, step="5", base=None, shown_min=6, ready=READY):
     mkt = mcfg.get("market")
-    st.markdown(f"#### {step} · Review — today's breakouts vs what this page said the session before")
-    key = f"fr_saved_{mkt}_{sd}"
-    try:
-        if not st.session_state.get(key):
-            save_snapshot(sb, mcfg, sd, live, flags)
-            st.session_state[key] = run_review(sb, mcfg, sd, live, shown_min, set(ready))
-            st.session_state[key] = True if st.session_state[key] is None else st.session_state[key]
-        rv = st.session_state.get(key)
-        rv = rv if isinstance(rv, pd.DataFrame) else pd.DataFrame()
-    except Exception as e:
-        st.caption(f"Review unavailable — run supabase_focus_review.sql once in Supabase. ({e})"); return
-    st.caption("Breakout = up ≥ 0.8 ADR and ≥ 3% on ≥ 2x volume today. Each one is compared with the snapshot from the "
-               "previous session you opened this page. Tune a rule only when it keeps blocking good breakouts "
-               "(about 3+ times) AND the rule check below agrees.")
-    if rv.empty:
-        st.info("No breakouts in today's scan (or no earlier snapshot yet — it starts filling from today).")
-    else:
-        view = rv[["symbol", "sector", "chg", "vol_x", "adr", "bucket", "prev_date", "prev_score", "prev_setup",
-                   "prev_ma_hold", "failed_rules"]].rename(columns={
-            "symbol": "Symbol", "sector": "Sector", "chg": "Chg %", "vol_x": "Vol x", "adr": "ADR", "bucket": "What happened",
-            "prev_date": "We looked on", "prev_score": "Score then", "prev_setup": "Setup then", "prev_ma_hold": "MA hold then",
-            "failed_rules": "Rules that held it back"})
-        order = {"Hidden by you": 0, "Held back by rules": 1, "Shown, not flagged": 2, "Flagged": 3, "Picked": 4}
-        view = view.assign(_o=view["What happened"].map(order).fillna(9)).sort_values(["_o", "Chg %"], ascending=[True, False]) \
-                   .drop(columns="_o").reset_index(drop=True)
-        counts = view["What happened"].value_counts()
-        st.caption(" · ".join(f"**{k}** {v}" for k, v in counts.items()))
-        sty = view.style.format({"Chg %": "{:+.1f}", "Vol x": "{:.1f}", "ADR": "{:.1f}", "Score then": "{:.1f}"}, na_rep="–") \
-            .map(lambda x: f"background-color:{BUCKET_COLOURS.get(str(x), '')};color:{'white' if x == 'Picked' else 'black'}"
-                 if str(x) in BUCKET_COLOURS else "", subset=["What happened"])
+    with st.expander(f"{step} · Review — today's breakouts vs what this page said the session before"):
+        key = f"fr_saved_{mkt}_{sd}"
         try:
-            extra = gp.live_extra(base if base is not None else st.session_state.get("gtt_base_df"), view["Symbol"])
-        except Exception:
-            extra = None
-        gp.card_grid(st, view, key=f"fr_grid_{mkt}_{sd}", sty=sty, extra=extra,
-                     height=min(32 * len(view) + 60, 420), widths={"Symbol": 110, "What happened": 160, "Setup then": 170,
-                                                                    "Rules that held it back": 150})
-    with st.expander("Rule check — last ~40 days (both sides of the evidence)"):
-        try:
-            rc, rev = rule_check(sb, mcfg)
+            if not st.session_state.get(key):
+                save_snapshot(sb, mcfg, sd, live, flags)
+                st.session_state[key] = run_review(sb, mcfg, sd, live, shown_min, set(ready))
+                st.session_state[key] = True if st.session_state[key] is None else st.session_state[key]
+            rv = st.session_state.get(key)
+            rv = rv if isinstance(rv, pd.DataFrame) else pd.DataFrame()
         except Exception as e:
-            st.caption(f"Rule check unavailable ({e})."); return
-        if rc.empty:
-            st.caption("Needs a few sessions of snapshots and breakouts — check back in a week or two.")
-            return
-        st.caption("Breakouts held back = later breakouts where this rule was ✗ or ½ the session before. "
-                   "Broke out within 10 sessions = of all stocks where the rule passed (✓) or failed (✗), how many broke out "
-                   "in the next 10 sessions. A rule earns its place when ✓ clearly beats ✗. If ✗ breaks out as often as ✓ "
-                   "and it keeps holding back breakouts, it's a candidate to loosen.")
-        st.dataframe(rc, hide_index=True, use_container_width=True)
-        if not rev.empty:
-            st.caption("Breakouts reviewed so far: " + " · ".join(f"{k} {v}" for k, v in rev["bucket"].value_counts().items()))
+            st.caption(f"Review unavailable — run supabase_focus_review.sql once in Supabase. ({e})"); return
+        st.caption("Breakout = up ≥ 0.8 ADR and ≥ 3% on ≥ 2x volume today. Each one is compared with the snapshot from the "
+                   "previous session you opened this page. Tune a rule only when it keeps blocking good breakouts "
+                   "(about 3+ times) AND the rule check below agrees.")
+        if rv.empty:
+            st.info("No breakouts in today's scan (or no earlier snapshot yet — it starts filling from today).")
+        else:
+            view = rv[["symbol", "sector", "chg", "vol_x", "adr", "bucket", "prev_date", "prev_score", "prev_setup",
+                       "prev_ma_hold", "failed_rules"]].rename(columns={
+                "symbol": "Symbol", "sector": "Sector", "chg": "Chg %", "vol_x": "Vol x", "adr": "ADR", "bucket": "What happened",
+                "prev_date": "We looked on", "prev_score": "Score then", "prev_setup": "Setup then", "prev_ma_hold": "MA hold then",
+                "failed_rules": "Rules that held it back"})
+            order = {"Hidden by you": 0, "Held back by rules": 1, "Shown, not flagged": 2, "Flagged": 3, "Picked": 4}
+            view = view.assign(_o=view["What happened"].map(order).fillna(9)).sort_values(["_o", "Chg %"], ascending=[True, False]) \
+                       .drop(columns="_o").reset_index(drop=True)
+            counts = view["What happened"].value_counts()
+            st.caption(" · ".join(f"**{k}** {v}" for k, v in counts.items()))
+            sty = view.style.format({"Chg %": "{:+.1f}", "Vol x": "{:.1f}", "ADR": "{:.1f}", "Score then": "{:.1f}"}, na_rep="–") \
+                .map(lambda x: f"background-color:{BUCKET_COLOURS.get(str(x), '')};color:{'white' if x == 'Picked' else 'black'}"
+                     if str(x) in BUCKET_COLOURS else "", subset=["What happened"])
+            try:
+                extra = gp.live_extra(base if base is not None else st.session_state.get("gtt_base_df"), view["Symbol"])
+            except Exception:
+                extra = None
+            gp.card_grid(st, view, key=f"fr_grid_{mkt}_{sd}", sty=sty, extra=extra,
+                         height=min(32 * len(view) + 60, 420), widths={"Symbol": 110, "What happened": 160, "Setup then": 170,
+                                                                        "Rules that held it back": 150})
+        with st.expander("Rule check — last ~40 days (both sides of the evidence)"):
+            try:
+                rc, rev = rule_check(sb, mcfg)
+            except Exception as e:
+                st.caption(f"Rule check unavailable ({e})."); return
+            if rc.empty:
+                st.caption("Needs a few sessions of snapshots and breakouts — check back in a week or two.")
+                return
+            st.caption("Breakouts held back = later breakouts where this rule was ✗ or ½ the session before. "
+                       "Broke out within 10 sessions = of all stocks where the rule passed (✓) or failed (✗), how many broke out "
+                       "in the next 10 sessions. A rule earns its place when ✓ clearly beats ✗. If ✗ breaks out as often as ✓ "
+                       "and it keeps holding back breakouts, it's a candidate to loosen.")
+            st.dataframe(rc, hide_index=True, use_container_width=True)
+            if not rev.empty:
+                st.caption("Breakouts reviewed so far: " + " · ".join(f"{k} {v}" for k, v in rev["bucket"].value_counts().items()))

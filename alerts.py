@@ -299,100 +299,103 @@ def render_alerts_tab(st, sb, base_df, mcfg):
             else:
                 st.caption(f"Last synced **{when}** · {s0.get('n_alerts')} alerts in TradingView")
 
-    total = len(df)
-    by_m = df["market"].value_counts().to_dict() if total and "market" in df.columns else {}
-    n_trig_all = sum(1 for r in df.to_dict("records") if is_triggered(r)) if total else 0
-    st.progress(min(total / TV_LIMIT, 1.0),
-                text=f"{total} / {TV_LIMIT} alerts used (TradingView limit, all markets) · "
-                     + " · ".join(f"{k} {v}" for k, v in sorted(by_m.items()))
-                     + (f" · {n_trig_all} already triggered — delete them" if n_trig_all else ""))
-    if total >= 0.8 * TV_LIMIT:
-        st.warning(f"{total} of {TV_LIMIT} alerts used. Delete triggered and C-priority alerts before adding new ones.")
-    st.info(f"**Fewer alerts, better focus.** The limit is {TV_LIMIT}, but aim for about {FOCUS_TARGET} waiting per market: "
-            "only names with the highest odds of breaking out — your Picks in Sector Focus, within 1 ADR of the pivot, volume "
-            "already came in. Priority **A** = Picked and within 1 ADR (keep) · **B** = Flagged (keep if close) · "
-            "**C** = on no list today (cut unless you hold it) · **Delete** = already triggered.")
+    with st.expander("📏 Alert limit — 100 max, keep only the best few"):
+        total = len(df)
+        by_m = df["market"].value_counts().to_dict() if total and "market" in df.columns else {}
+        n_trig_all = sum(1 for r in df.to_dict("records") if is_triggered(r)) if total else 0
+        st.progress(min(total / TV_LIMIT, 1.0),
+                    text=f"{total} / {TV_LIMIT} alerts used (TradingView limit, all markets) · "
+                         + " · ".join(f"{k} {v}" for k, v in sorted(by_m.items()))
+                         + (f" · {n_trig_all} already triggered — delete them" if n_trig_all else ""))
+        if total >= 0.8 * TV_LIMIT:
+            st.warning(f"{total} of {TV_LIMIT} alerts used. Delete triggered and C-priority alerts before adding new ones.")
+        st.info(f"**Fewer alerts, better focus.** The limit is {TV_LIMIT}, but aim for about {FOCUS_TARGET} waiting per market: "
+                "only names with the highest odds of breaking out — your Picks in Sector Focus, within 1 ADR of the pivot, volume "
+                "already came in. Priority **A** = Picked and within 1 ADR (keep) · **B** = Flagged (keep if close) · "
+                "**C** = on no list today (cut unless you hold it) · **Delete** = already triggered.")
     lists = st.session_state.get(f"sl_lists_{mkt}", {})
     crypto = str(mkt).startswith("CRYPTO")
     own = "Crypto" if crypto else mkt                       # the scope that matches this page's scan
     opts = ["Crypto", "NSE", "USA", "All markets"] if crypto else \
         [mkt] + [m for m in ("NSE", "USA") if m != mkt] + ["Crypto", "All markets"]   # this page's market first
-    scope = st.radio("Show", opts, horizontal=True, key=f"al_scope_{mkt}")
-    mf = {"NSE": ["NSE"], "USA": ["USA"], "Crypto": ["CRYPTO"], "All markets": None}[scope]
-    if scope != own:
-        base_df, lists = None, {}          # Last / lists come from this page's scan only
-    t = build_table(df, base_df, lists, mf)
-    if t.empty:
-        st.info("No alerts here."); return
-    n_w, n_t = int((~t["_trig"]).sum()), int(t["_trig"].sum())
-    near = int((pd.to_numeric(t["To alert %"], errors="coerce").abs() <= 2).sum())
-    exp5 = int((pd.to_numeric(t["Expires in d"], errors="coerce") <= 5).sum())
-    if scope == own and n_w > FOCUS_TARGET:
-        st.warning(f"{n_w} waiting {scope} alerts — about {n_w - FOCUS_TARGET} more than the ~{FOCUS_TARGET} that keep you focused. "
-                   "Start cutting from the bottom of the table (C, then B · far).")
-    st.caption(f"**{n_w} waiting** · {n_t} triggered (delete them in TradingView) · {near} within 2% of the close"
-               + (f" · ⚠️ {exp5} expire within 5 days" if exp5 else ""))
-    view = st.radio("Status", ["Waiting", "Triggered", "All"], horizontal=True, key=f"al_view_{mkt}")
-    v = t[~t["_trig"]] if view == "Waiting" else t[t["_trig"]] if view == "Triggered" else t
-    cols = [c for c in SHOW if c in v.columns]
-    v = v.copy()
-    for c in ("Alert at", "Last", "To alert %", "Set d ago", "Expires in d"):
-        if c in v.columns:
-            v[c] = pd.to_numeric(v[c], errors="coerce")
-    vv = v[cols].reset_index(drop=True)
-    extra = gp.live_extra(base_df, v["Symbol"]) if scope == own else None
-    if extra is not None:
-        extra = extra.loc[:, [c for c in extra.columns if extra[c].notna().any()]]
-    gp.card_grid(st, vv, key=f"al_grid_{mkt}_{scope}_{view}", sty=style_alerts(vv, v["_adr"].tolist()), extra=extra,
-                 height=min(32 * len(vv) + 60, 520), widths={"Note": 220, "Status": 130, "Lists": 110})
-    st.caption("Click a ticker for all its data. Trendline prices are estimated for today's bar. "
-               "Last / To alert % come from today's scan (generate data first).")
+    with st.expander("🔔 Your alerts — priority, distance to the line"):
+        scope = st.radio("Show", opts, horizontal=True, key=f"al_scope_{mkt}")
+        mf = {"NSE": ["NSE"], "USA": ["USA"], "Crypto": ["CRYPTO"], "All markets": None}[scope]
+        if scope != own:
+            base_df, lists = None, {}          # Last / lists come from this page's scan only
+        t = build_table(df, base_df, lists, mf)
+        if t.empty:
+            st.info("No alerts here."); return
+        n_w, n_t = int((~t["_trig"]).sum()), int(t["_trig"].sum())
+        near = int((pd.to_numeric(t["To alert %"], errors="coerce").abs() <= 2).sum())
+        exp5 = int((pd.to_numeric(t["Expires in d"], errors="coerce") <= 5).sum())
+        if scope == own and n_w > FOCUS_TARGET:
+            st.warning(f"{n_w} waiting {scope} alerts — about {n_w - FOCUS_TARGET} more than the ~{FOCUS_TARGET} that keep you focused. "
+                       "Start cutting from the bottom of the table (C, then B · far).")
+        st.caption(f"**{n_w} waiting** · {n_t} triggered (delete them in TradingView) · {near} within 2% of the close"
+                   + (f" · ⚠️ {exp5} expire within 5 days" if exp5 else ""))
+        view = st.radio("Status", ["Waiting", "Triggered", "All"], horizontal=True, key=f"al_view_{mkt}")
+        v = t[~t["_trig"]] if view == "Waiting" else t[t["_trig"]] if view == "Triggered" else t
+        cols = [c for c in SHOW if c in v.columns]
+        v = v.copy()
+        for c in ("Alert at", "Last", "To alert %", "Set d ago", "Expires in d"):
+            if c in v.columns:
+                v[c] = pd.to_numeric(v[c], errors="coerce")
+        vv = v[cols].reset_index(drop=True)
+        extra = gp.live_extra(base_df, v["Symbol"]) if scope == own else None
+        if extra is not None:
+            extra = extra.loc[:, [c for c in extra.columns if extra[c].notna().any()]]
+        gp.card_grid(st, vv, key=f"al_grid_{mkt}_{scope}_{view}", sty=style_alerts(vv, v["_adr"].tolist()), extra=extra,
+                     height=min(32 * len(vv) + 60, 520), widths={"Note": 220, "Status": 130, "Lists": 110})
+        st.caption("Click a ticker for all its data. Trendline prices are estimated for today's bar. "
+                   "Last / To alert % come from today's scan (generate data first).")
 
-    if scope == own:
-        waiting = set(t.loc[~t["_trig"], "Symbol"].astype(str).str.upper())
-        focus = [str(s).upper() for s in lists.get("FOCUS", [])]
-        missing = [s for s in focus if s not in waiting]
-        listed = {str(s).upper() for syms in lists.values() for s in syms}
-        stale = sorted(set(t.loc[(~t["_trig"]) & (t["Lists"] == ""), "Symbol"].astype(str)))
-        a, b = st.columns(2)
-        with a:
-            st.markdown("**Picked in Sector Focus, no alert yet**")
-            if not lists:
-                st.caption("Open Sector Focus first (it loads your flags and picks).")
-            elif missing:
-                gp.copy_area(st, "Set these in TradingView", ",".join(gp.tv_symbol(s, mcfg) for s in missing), height=68,
-                             key=f"al_missing_{mkt}")
-            else:
-                st.caption("Every pick has an alert. ✓")
-        with b:
-            st.markdown("**Waiting alerts on names you haven't flagged or picked**")
-            if lists and stale:
-                st.caption("Still a valid plan (holding, your own idea)? Keep it. Otherwise delete it in TradingView.")
-                gp.copy_area(st, "Review / delete", ",".join(gp.tv_symbol(s, mcfg) for s in stale), height=68,
-                             key=f"al_stale_{mkt}")
-            elif lists:
-                st.caption("None — every waiting alert is on tonight's lists. ✓")
-    cut = t[t["Priority"].isin(["Delete · triggered", "C · cut?"])]
-    if not cut.empty:
-        gp.copy_area(st, f"Suggested deletes in TradingView ({len(cut)}: triggered + on no list)",
-                     ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
-                                            for tv, m in zip(cut["_tv"], cut["_mkt"]))),
-                     height=68, key=f"al_cut_{mkt}_{scope}")
-    st.markdown("**Grab the alerts in this view** (the ranges you've marked to focus on)")
-    syms = ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
-                                  for tv, m in zip(v["_tv"], v["_mkt"])))
-    gp.copy_area(st, f"{len(v)} alerts · {scope} · {view} — symbols for TradingView",
-                 syms, height=68, key=f"al_copy_{mkt}_{scope}_{view}")
-    lines = [f"{r['Symbol']} | {r['TF']} | {r['Line']} | alert {r['Alert at']:g} | last "
-             + (f"{r['Last']:g}" if np.isfinite(_num(r['Last'])) else "-")
-             + (f" | {r['To alert %']:+.1f}%" if np.isfinite(_num(r['To alert %'])) else "")
-             + f" | {r['Status']}" + (f" | {r['Lists']}" if r['Lists'] else "")
-             for r in v.to_dict("records") if np.isfinite(_num(r["Alert at"]))]
-    gp.copy_area(st, "Same alerts with their levels — paste to Claude or your notes", "\n".join(lines),
-                 height=150, key=f"al_lines_{mkt}_{scope}_{view}")
-    out = v[[c for c in SHOW if c in v.columns]].copy()
-    out.insert(1, "TradingView", v["_tv"].values)
-    out["Alert ID"] = v["_id"].values
-    st.download_button(f"Download {len(v)} alerts (CSV)", out.to_csv(index=False).encode(),
-                       file_name=f"tv_alerts_{scope.replace(' ', '_').lower()}_{view.lower()}_{dt.date.today()}.csv",
-                       mime="text/csv", key=f"al_dl_{mkt}_{scope}_{view}")
+    with st.expander("🧹 Missing / stale alerts, deletes and grab lists"):
+        if scope == own:
+            waiting = set(t.loc[~t["_trig"], "Symbol"].astype(str).str.upper())
+            focus = [str(s).upper() for s in lists.get("FOCUS", [])]
+            missing = [s for s in focus if s not in waiting]
+            listed = {str(s).upper() for syms in lists.values() for s in syms}
+            stale = sorted(set(t.loc[(~t["_trig"]) & (t["Lists"] == ""), "Symbol"].astype(str)))
+            a, b = st.columns(2)
+            with a:
+                st.markdown("**Picked in Sector Focus, no alert yet**")
+                if not lists:
+                    st.caption("Open Sector Focus first (it loads your flags and picks).")
+                elif missing:
+                    gp.copy_area(st, "Set these in TradingView", ",".join(gp.tv_symbol(s, mcfg) for s in missing), height=68,
+                                 key=f"al_missing_{mkt}")
+                else:
+                    st.caption("Every pick has an alert. ✓")
+            with b:
+                st.markdown("**Waiting alerts on names you haven't flagged or picked**")
+                if lists and stale:
+                    st.caption("Still a valid plan (holding, your own idea)? Keep it. Otherwise delete it in TradingView.")
+                    gp.copy_area(st, "Review / delete", ",".join(gp.tv_symbol(s, mcfg) for s in stale), height=68,
+                                 key=f"al_stale_{mkt}")
+                elif lists:
+                    st.caption("None — every waiting alert is on tonight's lists. ✓")
+        cut = t[t["Priority"].isin(["Delete · triggered", "C · cut?"])]
+        if not cut.empty:
+            gp.copy_area(st, f"Suggested deletes in TradingView ({len(cut)}: triggered + on no list)",
+                         ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
+                                                for tv, m in zip(cut["_tv"], cut["_mkt"]))),
+                         height=68, key=f"al_cut_{mkt}_{scope}")
+        st.markdown("**Grab the alerts in this view** (the ranges you've marked to focus on)")
+        syms = ",".join(dict.fromkeys(str(tv).split(":", 1)[-1] if m == "USA" else str(tv)
+                                      for tv, m in zip(v["_tv"], v["_mkt"])))
+        gp.copy_area(st, f"{len(v)} alerts · {scope} · {view} — symbols for TradingView",
+                     syms, height=68, key=f"al_copy_{mkt}_{scope}_{view}")
+        lines = [f"{r['Symbol']} | {r['TF']} | {r['Line']} | alert {r['Alert at']:g} | last "
+                 + (f"{r['Last']:g}" if np.isfinite(_num(r['Last'])) else "-")
+                 + (f" | {r['To alert %']:+.1f}%" if np.isfinite(_num(r['To alert %'])) else "")
+                 + f" | {r['Status']}" + (f" | {r['Lists']}" if r['Lists'] else "")
+                 for r in v.to_dict("records") if np.isfinite(_num(r["Alert at"]))]
+        gp.copy_area(st, "Same alerts with their levels — paste to Claude or your notes", "\n".join(lines),
+                     height=150, key=f"al_lines_{mkt}_{scope}_{view}")
+        out = v[[c for c in SHOW if c in v.columns]].copy()
+        out.insert(1, "TradingView", v["_tv"].values)
+        out["Alert ID"] = v["_id"].values
+        st.download_button(f"Download {len(v)} alerts (CSV)", out.to_csv(index=False).encode(),
+                           file_name=f"tv_alerts_{scope.replace(' ', '_').lower()}_{view.lower()}_{dt.date.today()}.csv",
+                           mime="text/csv", key=f"al_dl_{mkt}_{scope}_{view}")

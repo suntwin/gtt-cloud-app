@@ -328,125 +328,129 @@ def render_positions_tab(st, sb, base_df, mcfg):
     v = v.assign(_o=v["Status"].str[:1].map(LEVEL)).sort_values(["_o", "Return %"], ascending=[True, False]).drop(columns="_o") \
          .reset_index(drop=True)
 
-    # ── summary ──
-    eq = _equity(st, sb, mcfg)
-    n_red = int(v["Status"].str.startswith("🔴").sum()); n_or = int(v["Status"].str.startswith("🟠").sum())
-    has_qty = bool(pd.to_numeric(v["Qty open"], errors="coerce").fillna(0).sum())
-    cost, opnl = float(np.nansum(v["_cost"])), float(np.nansum(v["_pnl"]))
-    value, risk = cost + opnl, float(np.nansum(v["_risk"]))          # a row without a price counts at cost
-    booked = float(v["_realised"].sum()) + _booked_closed(sb, mcfg)
-    pct = lambda x: f"{100 * x / eq:.1f}% of account" if eq else None
-    c = st.columns(5)
-    c[0].metric("Open", len(v), help="Open positions")
-    c[1].metric("🔴 Act now", n_red)
-    c[2].metric("🟠 Tighten / trim", n_or)
-    c[3].metric("Avg return", f"{pd.to_numeric(v['Return %'], errors='coerce').mean():+.1f}%")
-    c[4].metric("Locked in", f"{int((pd.to_numeric(v['Stop'], errors='coerce') >= v['Avg']).sum())} of {len(v)}",
-                help="Positions whose stop is at or above your average price — can't turn into a loss")
-    if has_qty:
+    _red = v.loc[v["Status"].str.startswith("🔴"), "Symbol"].tolist()
+    st.markdown(f"**{len(v)} open** · 🔴 {len(_red)} · 🟠 {int(v['Status'].str.startswith('🟠').sum())}"
+                + (f" — **act now: {', '.join(_red)}**" if _red else ""))
+    with st.expander("📋 Open positions — summary, warnings, table"):
+        # ── summary ──
+        eq = _equity(st, sb, mcfg)
+        n_red = int(v["Status"].str.startswith("🔴").sum()); n_or = int(v["Status"].str.startswith("🟠").sum())
+        has_qty = bool(pd.to_numeric(v["Qty open"], errors="coerce").fillna(0).sum())
+        cost, opnl = float(np.nansum(v["_cost"])), float(np.nansum(v["_pnl"]))
+        value, risk = cost + opnl, float(np.nansum(v["_risk"]))          # a row without a price counts at cost
+        booked = float(v["_realised"].sum()) + _booked_closed(sb, mcfg)
+        pct = lambda x: f"{100 * x / eq:.1f}% of account" if eq else None
         c = st.columns(5)
-        c[0].metric("Exposure (cost)", f"{cost:,.0f}", pct(cost), delta_color="off",
-                    help="Total cost basis of open positions = average price × shares still held")
-        c[1].metric("Market value", f"{value:,.0f}", pct(value), delta_color="off")
-        c[2].metric("Open P&L", f"{opnl:+,.0f}", f"{100 * opnl / cost:+.1f}%" if cost else None)
-        c[3].metric("Open risk to stops", f"{risk:,.0f}", pct(risk), delta_color="off",
-                    help="What you'd give back if every position hit its current stop (from the last price). "
-                         "Positions without a stop aren't counted.")
-        c[4].metric("Booked P&L", f"{booked:+,.0f}", help="Partial sells on open positions + all closed trades")
-        if eq:
-            if value > eq:
-                st.warning(f"Invested {100 * value / eq:.0f}% of the account — above 100% (margin).")
-            if risk / eq > 0.06:
-                st.warning(f"Open risk is {100 * risk / eq:.1f}% of the account — above 6%. Tighten stops or trim before adding.")
-        sec = v.assign(_s=v["Sector"].fillna("Unknown")).groupby("_s")["_cost"].sum().sort_values(ascending=False)
-        sec = sec[sec > 0]
-        known = sec.drop("Unknown", errors="ignore")
-        if len(sec) and cost:
-            st.caption("Exposure by sector: " + " · ".join(f"**{k}** {100 * x / cost:.0f}%" for k, x in sec.items()))
-            if len(known) and known.iloc[0] / cost > 0.4 and len(v) > 2:
-                st.warning(f"{100 * known.iloc[0] / cost:.0f}% of your exposure is in {known.index[0]} — one bad day for the "
-                           "sector hits most of the book.")
-        v["Cost"], v["Value"], v["P&L"] = v["_cost"], v["_value"], v["_pnl"]
-        v["Weight %"] = 100 * v["_value"] / eq if eq else np.nan
-        v["Risk to stop"] = v["_risk"]
-    else:
-        st.caption("Add quantities to your positions to see exposure, market value, P&L, open risk and sector weights.")
-    if not url:
-        st.info(f"No MarketInOut positions screen set for {mkt} yet — positions use today's scan only (those that dropped "
-                "out show 'No data'). Send the screen's API link to add it.")
-    elif pos_df is None:
-        st.warning("Couldn't read your MarketInOut positions screen — using today's scan where possible.")
-    if missing:
-        st.warning(f"No data for {', '.join(missing)} — not in your MarketInOut positions screen or today's scan. "
-                   "Add them to the positions watchlist in MarketInOut.")
-    for _, r in v[v["Status"].str.startswith("🔴")].iterrows():
-        st.error(f"**{r['Symbol']}** — {r['Warnings']}")
+        c[0].metric("Open", len(v), help="Open positions")
+        c[1].metric("🔴 Act now", n_red)
+        c[2].metric("🟠 Tighten / trim", n_or)
+        c[3].metric("Avg return", f"{pd.to_numeric(v['Return %'], errors='coerce').mean():+.1f}%")
+        c[4].metric("Locked in", f"{int((pd.to_numeric(v['Stop'], errors='coerce') >= v['Avg']).sum())} of {len(v)}",
+                    help="Positions whose stop is at or above your average price — can't turn into a loss")
+        if has_qty:
+            c = st.columns(5)
+            c[0].metric("Exposure (cost)", f"{cost:,.0f}", pct(cost), delta_color="off",
+                        help="Total cost basis of open positions = average price × shares still held")
+            c[1].metric("Market value", f"{value:,.0f}", pct(value), delta_color="off")
+            c[2].metric("Open P&L", f"{opnl:+,.0f}", f"{100 * opnl / cost:+.1f}%" if cost else None)
+            c[3].metric("Open risk to stops", f"{risk:,.0f}", pct(risk), delta_color="off",
+                        help="What you'd give back if every position hit its current stop (from the last price). "
+                             "Positions without a stop aren't counted.")
+            c[4].metric("Booked P&L", f"{booked:+,.0f}", help="Partial sells on open positions + all closed trades")
+            if eq:
+                if value > eq:
+                    st.warning(f"Invested {100 * value / eq:.0f}% of the account — above 100% (margin).")
+                if risk / eq > 0.06:
+                    st.warning(f"Open risk is {100 * risk / eq:.1f}% of the account — above 6%. Tighten stops or trim before adding.")
+            sec = v.assign(_s=v["Sector"].fillna("Unknown")).groupby("_s")["_cost"].sum().sort_values(ascending=False)
+            sec = sec[sec > 0]
+            known = sec.drop("Unknown", errors="ignore")
+            if len(sec) and cost:
+                st.caption("Exposure by sector: " + " · ".join(f"**{k}** {100 * x / cost:.0f}%" for k, x in sec.items()))
+                if len(known) and known.iloc[0] / cost > 0.4 and len(v) > 2:
+                    st.warning(f"{100 * known.iloc[0] / cost:.0f}% of your exposure is in {known.index[0]} — one bad day for the "
+                               "sector hits most of the book.")
+            v["Cost"], v["Value"], v["P&L"] = v["_cost"], v["_value"], v["_pnl"]
+            v["Weight %"] = 100 * v["_value"] / eq if eq else np.nan
+            v["Risk to stop"] = v["_risk"]
+        else:
+            st.caption("Add quantities to your positions to see exposure, market value, P&L, open risk and sector weights.")
+        if not url:
+            st.info(f"No MarketInOut positions screen set for {mkt} yet — positions use today's scan only (those that dropped "
+                    "out show 'No data'). Send the screen's API link to add it.")
+        elif pos_df is None:
+            st.warning("Couldn't read your MarketInOut positions screen — using today's scan where possible.")
+        if missing:
+            st.warning(f"No data for {', '.join(missing)} — not in your MarketInOut positions screen or today's scan. "
+                       "Add them to the positions watchlist in MarketInOut.")
+        for _, r in v[v["Status"].str.startswith("🔴")].iterrows():
+            st.error(f"**{r['Symbol']}** — {r['Warnings']}")
 
-    # ── table ──
-    shown = [c for c in v.columns if not c.startswith("_") and c != "id"]
-    money = [c for c in ("Cost", "Value", "P&L", "Weight %", "Risk to stop") if c in shown]
-    shown = [c for c in shown if c not in money]
-    shown[shown.index("Qty open") + 1:shown.index("Qty open") + 1] = money
-    ed, saved = gp.card_grid(st, v[shown], key=f"pos_grid_{mkt}", sty=_style(v[shown]),
-                             edit={"Stop": "number", "Note": "text", "Sell qty": "number", "Sell price": "number",
-                                   "Close": "bool", "Delete": "bool"},
-                             submit="Save positions", height=min(32 * len(v) + 90, 560),
-                             widths={"Symbol": 105, "Status": 62, "Plan": 330, "Warnings": 420, "Sector": 150, "Note": 200})
-    st.caption("Click a ticker for the full card · type a new **Stop** to trail it · record a partial sale with **Sell qty** + "
-               "**Sell price** · **Close** sells what's left (at Sell price, or the last price if blank) · **Delete** = "
-               "entered by mistake. Then **Save positions**.")
-    if saved and ed is not None and "Symbol" in ed.columns:
-        by_id = {p["id"]: p for p in open_}
-        orig = v.set_index("Symbol")
-        msgs = []
-        for r in ed.to_dict("records"):
-            s = r["Symbol"]
-            if s not in orig.index:
-                continue
-            o, pid = orig.loc[s], int(orig.loc[s, "id"])
-            if r.get("Delete"):
-                sb.table("positions").delete().eq("id", pid).execute(); msgs.append(f"deleted {s}"); continue
-            upd = {}
-            ns = _num(r.get("Stop"))
-            if np.isfinite(ns) and ns != _num(o["Stop"]):
-                upd["stop"] = ns
-            if str(r.get("Note") or "") != str(o["Note"] or ""):
-                upd["note"] = str(r.get("Note") or "")
-            q_open = _num(o["Qty open"]) if np.isfinite(_num(o["Qty open"])) else 0.0
-            sq, sp = _num(r.get("Sell qty")) or 0.0, _num(r.get("Sell price"))
-            sq = sq if np.isfinite(sq) else 0.0
-            if r.get("Close"):
-                price = sp if np.isfinite(sp) and sp > 0 else _num(o["Last"])
-                sb.table("position_exits").insert({"position_id": pid, "qty": q_open, "price": price,
-                                                   "note": "closed"}).execute()
-                upd.update(status="closed", closed_at=date.today().isoformat(), qty_open=0)
-                msgs.append(f"closed {s} @ {price:g}")
-            elif sq > 0 and np.isfinite(sp) and sp > 0:
-                # Partial sale = split, like the trades sheet: this row closes with the shares sold, and a new open row
-                # carries the rest (same entry date, price and stop).
-                sq = min(sq, q_open) if q_open else sq
-                sb.table("position_exits").insert({"position_id": pid, "qty": sq, "price": sp, "note": "partial"}).execute()
-                upd.update(qty=sq, qty_open=0, status="closed", closed_at=date.today().isoformat())
-                rest = q_open - sq
-                if rest > 0:
-                    src_ = by_id.get(pid, {})
-                    sb.table("positions").insert({k: src_.get(k) for k in ("user_id", "market", "symbol", "sector", "industry",
-                                                  "setup", "entry_date", "avg_price", "stop", "init_stop", "fail_level")}
-                                                 | {"qty": rest, "qty_open": rest,
-                                                    "note": ((src_.get("note") or "").replace(REMAINDER, "").strip() + " " + REMAINDER).strip()}).execute()
-                msgs.append(f"sold {sq:g} {s} @ {sp:g}" + (f" · {rest:g} still open" if rest > 0 else ""))
-            if upd:
-                upd["updated_at"] = pd.Timestamp.utcnow().isoformat()
-                sb.table("positions").update(upd).eq("id", pid).execute()
-                if "stop" in upd and not any(s in m_ for m_ in msgs):
-                    msgs.append(f"{s} stop → {upd['stop']:g}")
-        if msgs:
-            st.session_state[f"pos_msg_{mkt}"] = "Saved: " + " · ".join(msgs)
-            st.rerun()
-    if st.session_state.get(f"pos_msg_{mkt}"):
-        st.success(st.session_state.pop(f"pos_msg_{mkt}"))
-    gp.copy_area(st, "Open positions — for TradingView", ",".join(gp.tv_symbol(x, mcfg) for x in v["Symbol"]),
-                 key=f"pos_copy_{mkt}")
+        # ── table ──
+        shown = [c for c in v.columns if not c.startswith("_") and c != "id"]
+        money = [c for c in ("Cost", "Value", "P&L", "Weight %", "Risk to stop") if c in shown]
+        shown = [c for c in shown if c not in money]
+        shown[shown.index("Qty open") + 1:shown.index("Qty open") + 1] = money
+        ed, saved = gp.card_grid(st, v[shown], key=f"pos_grid_{mkt}", sty=_style(v[shown]),
+                                 edit={"Stop": "number", "Note": "text", "Sell qty": "number", "Sell price": "number",
+                                       "Close": "bool", "Delete": "bool"},
+                                 submit="Save positions", height=min(32 * len(v) + 90, 560),
+                                 widths={"Symbol": 105, "Status": 62, "Plan": 330, "Warnings": 420, "Sector": 150, "Note": 200})
+        st.caption("Click a ticker for the full card · type a new **Stop** to trail it · record a partial sale with **Sell qty** + "
+                   "**Sell price** · **Close** sells what's left (at Sell price, or the last price if blank) · **Delete** = "
+                   "entered by mistake. Then **Save positions**.")
+        if saved and ed is not None and "Symbol" in ed.columns:
+            by_id = {p["id"]: p for p in open_}
+            orig = v.set_index("Symbol")
+            msgs = []
+            for r in ed.to_dict("records"):
+                s = r["Symbol"]
+                if s not in orig.index:
+                    continue
+                o, pid = orig.loc[s], int(orig.loc[s, "id"])
+                if r.get("Delete"):
+                    sb.table("positions").delete().eq("id", pid).execute(); msgs.append(f"deleted {s}"); continue
+                upd = {}
+                ns = _num(r.get("Stop"))
+                if np.isfinite(ns) and ns != _num(o["Stop"]):
+                    upd["stop"] = ns
+                if str(r.get("Note") or "") != str(o["Note"] or ""):
+                    upd["note"] = str(r.get("Note") or "")
+                q_open = _num(o["Qty open"]) if np.isfinite(_num(o["Qty open"])) else 0.0
+                sq, sp = _num(r.get("Sell qty")) or 0.0, _num(r.get("Sell price"))
+                sq = sq if np.isfinite(sq) else 0.0
+                if r.get("Close"):
+                    price = sp if np.isfinite(sp) and sp > 0 else _num(o["Last"])
+                    sb.table("position_exits").insert({"position_id": pid, "qty": q_open, "price": price,
+                                                       "note": "closed"}).execute()
+                    upd.update(status="closed", closed_at=date.today().isoformat(), qty_open=0)
+                    msgs.append(f"closed {s} @ {price:g}")
+                elif sq > 0 and np.isfinite(sp) and sp > 0:
+                    # Partial sale = split, like the trades sheet: this row closes with the shares sold, and a new open row
+                    # carries the rest (same entry date, price and stop).
+                    sq = min(sq, q_open) if q_open else sq
+                    sb.table("position_exits").insert({"position_id": pid, "qty": sq, "price": sp, "note": "partial"}).execute()
+                    upd.update(qty=sq, qty_open=0, status="closed", closed_at=date.today().isoformat())
+                    rest = q_open - sq
+                    if rest > 0:
+                        src_ = by_id.get(pid, {})
+                        sb.table("positions").insert({k: src_.get(k) for k in ("user_id", "market", "symbol", "sector", "industry",
+                                                      "setup", "entry_date", "avg_price", "stop", "init_stop", "fail_level")}
+                                                     | {"qty": rest, "qty_open": rest,
+                                                        "note": ((src_.get("note") or "").replace(REMAINDER, "").strip() + " " + REMAINDER).strip()}).execute()
+                    msgs.append(f"sold {sq:g} {s} @ {sp:g}" + (f" · {rest:g} still open" if rest > 0 else ""))
+                if upd:
+                    upd["updated_at"] = pd.Timestamp.utcnow().isoformat()
+                    sb.table("positions").update(upd).eq("id", pid).execute()
+                    if "stop" in upd and not any(s in m_ for m_ in msgs):
+                        msgs.append(f"{s} stop → {upd['stop']:g}")
+            if msgs:
+                st.session_state[f"pos_msg_{mkt}"] = "Saved: " + " · ".join(msgs)
+                st.rerun()
+        if st.session_state.get(f"pos_msg_{mkt}"):
+            st.success(st.session_state.pop(f"pos_msg_{mkt}"))
+        gp.copy_area(st, "Open positions — for TradingView", ",".join(gp.tv_symbol(x, mcfg) for x in v["Symbol"]),
+                     key=f"pos_copy_{mkt}")
     _render_stats(st, sb, mcfg, v, eq)
     _render_closed(st, sb, mcfg)
 
@@ -517,7 +521,7 @@ def _render_stats(st, sb, mcfg, open_v, eq):
     """📊 Performance — the trades-sheet dashboard, from your positions (every lot: closed sales and open holdings)."""
     mkt = mcfg["market"]
     d = _lots(sb, mcfg, open_v)
-    with st.expander("📊 Performance — win rate, profit factor, R, ROI", expanded=True):
+    with st.expander("📊 Performance — win rate, profit factor, R, ROI"):
         if d.empty or not d["Qty"].fillna(0).sum():
             st.caption("Needs positions with quantities. Every sale (partial or full) and every open holding counts as a trade, "
                        "like your trades sheet.")
