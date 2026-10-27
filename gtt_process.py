@@ -38,7 +38,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-27i · Positions: exposure, market value, open P&L, open risk, booked P&L, sector weights, account size"
+PROCESS_VERSION = "v2026-10-27j · Positions: 📊 Performance (trades-sheet dashboard), partial sale splits the lot"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",

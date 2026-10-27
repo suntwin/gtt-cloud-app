@@ -21,6 +21,7 @@ import gtt_process as gp
 import focus_flow as ff
 
 STRETCH_10MA, STRETCH_10W, VOL_DUMP = 4.0, 3.0, 2.0
+REMAINDER = "↳ rest after partial sale"
 LEVEL = {"🔴": 0, "🟠": 1, "🟡": 2, "🟢": 3}
 
 
@@ -101,7 +102,7 @@ def assess(m, p, n_exits, in_scan):
     if _num(m.get("10w (ADR)")) > STRETCH_10W:
         w.append(("🟠", f"Stretched weekly: {m['10w (ADR)']:.1f} ADR above the 10-week MA — late, trim"))
     d = _num(m.get("Days held"))
-    if 3 <= d <= 5 and _num(m.get("Return %")) > 0 and n_exits == 0:
+    if 3 <= d <= 5 and _num(m.get("Return %")) > 0 and n_exits == 0 and REMAINDER not in str(p.get("note") or ""):
         w.append(("🟡", f"Day {int(d)} and up {m['Return %']:.1f}% — sell ⅓ into strength, move the stop to breakeven"))
     if not in_scan:
         w.append(("🟡", "Dropped out of the scan — no longer passes the screens"))
@@ -265,7 +266,9 @@ def render_positions_tab(st, sb, base_df, mcfg):
                 st.success(f"Added {sym}."); st.rerun()
 
     if not open_:
-        st.info("No open positions."); _render_closed(st, sb, mcfg); return
+        st.info("No open positions.")
+        _render_stats(st, sb, mcfg, None, _equity(st, sb, mcfg))
+        _render_closed(st, sb, mcfg); return
 
     # ── evaluate ──
     live = gp.add_derived(base_df).drop_duplicates("Symbol").set_index("Symbol") if base_df is not None and not base_df.empty else None
@@ -393,6 +396,7 @@ def render_positions_tab(st, sb, base_df, mcfg):
                "**Sell price** · **Close** sells what's left (at Sell price, or the last price if blank) · **Delete** = "
                "entered by mistake. Then **Save positions**.")
     if saved and ed is not None and "Symbol" in ed.columns:
+        by_id = {p["id"]: p for p in open_}
         orig = v.set_index("Symbol")
         msgs = []
         for r in ed.to_dict("records"):
@@ -418,11 +422,19 @@ def render_positions_tab(st, sb, base_df, mcfg):
                 upd.update(status="closed", closed_at=date.today().isoformat(), qty_open=0)
                 msgs.append(f"closed {s} @ {price:g}")
             elif sq > 0 and np.isfinite(sp) and sp > 0:
+                # Partial sale = split, like the trades sheet: this row closes with the shares sold, and a new open row
+                # carries the rest (same entry date, price and stop).
+                sq = min(sq, q_open) if q_open else sq
                 sb.table("position_exits").insert({"position_id": pid, "qty": sq, "price": sp, "note": "partial"}).execute()
-                upd["qty_open"] = max(q_open - sq, 0)
-                if q_open and q_open - sq <= 0:
-                    upd.update(status="closed", closed_at=date.today().isoformat())
-                msgs.append(f"sold {sq:g} {s} @ {sp:g}")
+                upd.update(qty=sq, qty_open=0, status="closed", closed_at=date.today().isoformat())
+                rest = q_open - sq
+                if rest > 0:
+                    src_ = by_id.get(pid, {})
+                    sb.table("positions").insert({k: src_.get(k) for k in ("user_id", "market", "symbol", "sector", "industry",
+                                                  "setup", "entry_date", "avg_price", "stop", "init_stop", "fail_level")}
+                                                 | {"qty": rest, "qty_open": rest,
+                                                    "note": ((src_.get("note") or "").replace(REMAINDER, "").strip() + " " + REMAINDER).strip()}).execute()
+                msgs.append(f"sold {sq:g} {s} @ {sp:g}" + (f" · {rest:g} still open" if rest > 0 else ""))
             if upd:
                 upd["updated_at"] = pd.Timestamp.utcnow().isoformat()
                 sb.table("positions").update(upd).eq("id", pid).execute()
@@ -435,7 +447,124 @@ def render_positions_tab(st, sb, base_df, mcfg):
         st.success(st.session_state.pop(f"pos_msg_{mkt}"))
     gp.copy_area(st, "Open positions — for TradingView", ",".join(gp.tv_symbol(x, mcfg) for x in v["Symbol"]),
                  key=f"pos_copy_{mkt}")
+    _render_stats(st, sb, mcfg, v, eq)
     _render_closed(st, sb, mcfg)
+
+
+def _lots(sb, mcfg, open_v):
+    """One row per trade lot, like the trades sheet: every closed row (shares sold, avg exit) and every open row
+    (shares held, at the last price)."""
+    rows = []
+    try:
+        closed = load_positions(sb, mcfg, "closed")
+    except Exception:
+        closed = []
+    allp = closed + (load_positions(sb, mcfg) if open_v is not None else [])
+    ex = pd.DataFrame(load_exits(sb, [p["id"] for p in allp]))
+    last = dict(zip(open_v["id"], open_v["Last"])) if open_v is not None and len(open_v) else {}
+    for p in allp:
+        avg, st0 = _num(p["avg_price"]), _num(p.get("init_stop"))
+        e = ex[ex["position_id"] == p["id"]] if not ex.empty else pd.DataFrame()
+        if len(e):
+            q, pr = pd.to_numeric(e["qty"], errors="coerce").fillna(0), pd.to_numeric(e["price"], errors="coerce")
+            qs = float(q.sum())
+            px = float((pr * q).sum() / qs) if qs > 0 else float(pr.mean())
+            d_end = pd.to_datetime(e["exit_date"]).max() if "exit_date" in e else pd.Timestamp(p.get("closed_at") or date.today())
+            rows.append({"Symbol": p["symbol"], "Status": "Closed", "Entry": pd.Timestamp(p["entry_date"]), "Exit": d_end,
+                         "Qty": qs, "Avg": avg, "Price": px, "Stop0": st0})
+        if p.get("status") == "open" and _num(p.get("qty_open")) > 0:
+            rows.append({"Symbol": p["symbol"], "Status": "Open", "Entry": pd.Timestamp(p["entry_date"]), "Exit": pd.NaT,
+                         "Qty": _num(p["qty_open"]), "Avg": avg, "Price": _num(last.get(p["id"])), "Stop0": st0})
+    d = pd.DataFrame(rows)
+    if d.empty:
+        return d
+    d["Cost"] = d["Avg"] * d["Qty"]
+    d["P&L"] = (d["Price"] - d["Avg"]) * d["Qty"]
+    d["Return %"] = (d["Price"] / d["Avg"] - 1) * 100
+    d["R"] = np.where(d["Stop0"] < d["Avg"], (d["Price"] - d["Avg"]) / (d["Avg"] - d["Stop0"]), np.nan)
+    end = d["Exit"].fillna(pd.Timestamp(date.today()))
+    d["Days"] = [int(np.busday_count(a.date(), b.date())) + 1 for a, b in zip(d["Entry"], end)]
+    return d
+
+
+def _render_stats(st, sb, mcfg, open_v, eq):
+    """📊 Performance — the trades-sheet dashboard, from your positions (every lot: closed sales and open holdings)."""
+    mkt = mcfg["market"]
+    d = _lots(sb, mcfg, open_v)
+    with st.expander("📊 Performance — win rate, profit factor, R, ROI", expanded=True):
+        if d.empty or not d["Qty"].fillna(0).sum():
+            st.caption("Needs positions with quantities. Every sale (partial or full) and every open holding counts as a trade, "
+                       "like your trades sheet.")
+            return
+        c1, c2, c3 = st.columns([1, 1, 2])
+        per = c1.selectbox("Period", ["All", "This year", "Last 90 days", "Last 30 days"], key=f"pos_per_{mkt}")
+        cost_pct = c2.number_input("Costs per side %", 0.0, 2.0, 0.17 if mkt == "NSE" else 0.02, 0.01, key=f"pos_cost_{mkt}",
+                                   help="Brokerage + charges per buy or sell, as % of the trade value")
+        tax_pct = c3.number_input("Tax on realised profit %", 0.0, 50.0, 15.0 if mkt == "NSE" else 0.0, 1.0, key=f"pos_tax_{mkt}",
+                                  help="E.g. 15% short-term capital gains (STT row in your sheet). 0 to ignore.")
+        start = {"This year": pd.Timestamp(date.today().year, 1, 1), "Last 90 days": pd.Timestamp(date.today()) - pd.Timedelta(days=90),
+                 "Last 30 days": pd.Timestamp(date.today()) - pd.Timedelta(days=30)}.get(per)
+        if start is not None:
+            d = d[(d["Exit"].fillna(pd.Timestamp(date.today())) >= start)]
+        d = d[d["Price"].notna()]
+        if d.empty:
+            st.caption("No trades in that period."); return
+        win, loss = d[d["P&L"] >= 0], d[d["P&L"] < 0]
+        rel, unr = d[d["Status"] == "Closed"], d[d["Status"] == "Open"]
+        n, nw, nl = len(d), len(win), len(loss)
+        gp_, gl = win["P&L"].sum(), loss["P&L"].sum()
+        avg_w, avg_l = (gp_ / nw if nw else 0.0), (gl / nl if nl else 0.0)
+        payoff = avg_w / abs(avg_l) if avg_l else np.nan
+        wr = nw / n
+        net = gp_ + gl
+        net_rel = rel["P&L"].sum()
+        costs = n * d["Cost"].mean() * cost_pct / 100 * 2
+        tax = max(net_rel, 0) * tax_pct / 100
+        net_after = net - costs - tax
+        deployed = unr["Cost"].sum()
+        kelly = 100 * (wr - (1 - wr) / payoff) if payoff and np.isfinite(payoff) else np.nan
+        rr = (win["P&L"] / abs(avg_l)).mean() if nl and nw else np.nan
+        fm = lambda x: f"{x:,.0f}"
+        rows_ = [
+            ("Trades", f"{n}  ({nw} won · {nl} lost)", "Every sale (partial or full) and every open holding is one trade"),
+            ("Win %", f"{100 * wr:.0f}%", None),
+            ("Win / loss ratio", f"{nw / nl:.2f}" if nl else "–", "Number of winners ÷ number of losers"),
+            ("Profit factor", f"{abs(gp_ / gl):.2f}" if gl else "–", "Gross profit ÷ gross loss (realised + unrealised)"),
+            ("Avg win", fm(avg_w), None), ("Avg loss", fm(avg_l), None),
+            ("Payoff (avg win ÷ avg loss)", f"{payoff:.2f}" if np.isfinite(payoff) else "–", None),
+            ("Avg RR (winners)", f"{rr:.2f}" if np.isfinite(rr) else "–", "Each winner ÷ the average loss, averaged — as in your sheet"),
+            ("Avg R (initial stop)", f"{d['R'].mean():+.2f}" if d["R"].notna().any() else "–", "Needs initial stops"),
+            ("Expectancy / trade", fm(net / n), "Net profit ÷ trades"),
+            ("Gross profit (realised · unrealised)", f"{fm(rel[rel['P&L'] >= 0]['P&L'].sum())} · {fm(unr[unr['P&L'] >= 0]['P&L'].sum())}", None),
+            ("Gross loss (realised · unrealised)", f"{fm(rel[rel['P&L'] < 0]['P&L'].sum())} · {fm(unr[unr['P&L'] < 0]['P&L'].sum())}", None),
+            ("Net profit (realised + unrealised)", fm(net), None), ("Net profit (realised)", fm(net_rel), None),
+            ("Costs (est.)", fm(costs), f"Trades × avg trade size × {cost_pct:g}% × 2 sides"),
+            ("Tax on realised profit (est.)", fm(tax), None),
+            ("Net profit after costs + tax", fm(net_after), None),
+            ("Capital deployed now", fm(deployed), "Cost of open holdings"),
+            ("Avg trade size", fm(d["Cost"].mean()), None),
+            ("Avg days held", f"{d['Days'].mean():.1f}  (winners {win['Days'].mean() if nw else 0:.1f} · losers {loss['Days'].mean() if nl else 0:.1f})", None),
+            ("Avg stop-out (avg loss ÷ avg trade size)", f"{100 * abs(avg_l) / d['Cost'].mean():.2f}%" if nl else "–", None),
+            ("Largest win · loss", f"{fm(d['P&L'].max())} · {fm(d['P&L'].min())}", None),
+            ("Kelly position size", f"{kelly:.1f}%" if np.isfinite(kelly) else "–",
+             "Win% − (1 − Win%) ÷ payoff. Keep sizes well below it (and ≤ 25%)"),
+        ]
+        if eq:
+            rows_ += [("Account size", fm(eq), None),
+                      ("ROI on account", f"{100 * net_after / eq:.2f}%", "Net after costs + tax ÷ account size"),
+                      ("Projected account", fm(eq + net_after), "Account + net after costs"),
+                      ("Projected cash", fm(eq + net_after - deployed), "Projected account − capital deployed"),
+                      ("Cumulative ROI (on projected account)", f"{100 * net_after / (eq + net_after):.2f}%", "As in your sheet")]
+        c = st.columns(5)
+        c[0].metric("Win %", f"{100 * wr:.0f}%", f"{nw} / {n}", delta_color="off")
+        c[1].metric("Profit factor", f"{abs(gp_ / gl):.2f}" if gl else "–")
+        c[2].metric("Payoff", f"{payoff:.2f}" if np.isfinite(payoff) else "–", help="Avg win ÷ avg loss")
+        c[3].metric("Net after costs", fm(net_after))
+        c[4].metric("ROI on account", f"{100 * net_after / eq:.1f}%" if eq else "–")
+        st.dataframe(pd.DataFrame([{"Measure": a, "Value": b, "How": h or ""} for a, b, h in rows_]), hide_index=True,
+                     use_container_width=True, height=min(36 * len(rows_) + 40, 900))
+        st.caption("Every lot counts as a trade, like your trades sheet: a partial sale closes those shares as their own trade, "
+                   "the rest stays open. Open holdings count at today's price (unrealised).")
 
 
 def _render_closed(st, sb, mcfg):
