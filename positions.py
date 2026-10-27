@@ -1,9 +1,8 @@
 """
 Positions tab — the open trades you're managing.
 
-Prices come from Yahoo Finance daily candles (about 15 min delayed, NSE + US), so a position keeps its warnings even
-after it drops out of the scan — the weakening ones are exactly the ones that drop out. If Yahoo fails, today's scan
-numbers are used where the stock is still in it, and the row says so.
+Prices come from MarketInOut — your positions screen (a MIO screen over your positions watchlist, same GTT formula),
+then today's scan. Yahoo Finance was dropped (its numbers didn't match).
 
 Warnings, most urgent first:
   🔴 at/below the stop · back below the breakout's fail level · big-volume down day · closed below the 20MA
@@ -34,77 +33,52 @@ def _num(x):
 
 
 # ── data ───────────────────────────────────────────────────────────────────
-def yahoo_symbol(sym, mcfg):
-    s = str(sym).upper().split(":")[-1].strip()
-    if mcfg.get("market") == "NSE":
-        return s.replace("&", "%26") + ".NS"
-    return s.replace(".", "-")
+# Prices come from MarketInOut — the same numbers as the scanner. Your positions screen (a MIO screen over your
+# positions watchlist, same GTT formula) is read first; anything not in it falls back to today's scan.
+POS_SCREEN = {"NSE": "https://api.marketinout.com/run/screen?key=dbf1d7c7f45c4fac", "USA": None}
+GTT_COLS = ['Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln', '_bo_engulfing_cndl',
+            '_circuit', '_days_since_bo', '_bo_dollar_vol_mln', '_rvol_to_float', 'Adr', 'Ti65',
+            '_avg_vol_float_ratio', '_20madist', '_10wmadist', '_10madist', '_nr4', '_nr4_previous', '_rs', '_period_perf']
 
 
-@_st.cache_data(ttl=600, show_spinner=False)
-def fetch_daily(ysym):
-    """~1 year of daily candles from Yahoo: DataFrame (date index) o h l c v, or None."""
-    for host in ("query1", "query2"):
-        try:
-            r = requests.get(f"https://{host}.finance.yahoo.com/v8/finance/chart/{ysym}?range=1y&interval=1d",
-                             headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
-            res = (r.json().get("chart") or {}).get("result") or []
-            if not res:
-                continue
-            j = res[0]
-            q = j["indicators"]["quote"][0]
-            idx = pd.to_datetime(j["timestamp"], unit="s") + pd.Timedelta(seconds=int(j["meta"].get("gmtoffset") or 0))
-            df = pd.DataFrame({"o": q["open"], "h": q["high"], "l": q["low"], "c": q["close"], "v": q["volume"]},
-                              index=idx.normalize()).dropna(subset=["c"])
-            df = df[~df.index.duplicated(keep="last")].astype(float)
-            if len(df) >= 25:
-                return df
-        except Exception:
-            continue
-    return None
+@_st.cache_data(ttl=300, show_spinner=False)
+def fetch_mio(url):
+    """A MarketInOut GTT-layout screen → DataFrame keyed by Symbol (.NS stripped), or None."""
+    from io import StringIO
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+        if r.status_code != 200 or not r.text.strip():
+            return None
+        df = pd.read_csv(StringIO(r.text), sep="|", header=None)
+        df = gp.assign_scan_columns(df, GTT_COLS)
+        df["Symbol"] = df["Symbol"].astype(str).str.upper().str.replace(".NS", "", regex=False).str.strip()
+        for c in df.columns:
+            if c not in ("Symbol", "Timestamp"):
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df.drop_duplicates("Symbol").set_index("Symbol")
+    except Exception:
+        return None
 
 
-def metrics(df, entry_date, avg, stop):
-    """Everything the warnings need, from daily candles."""
-    c, h, l, v = df["c"], df["h"], df["l"], df["v"]
-    last, prev = c.iloc[-1], c.iloc[-2]
-    adr = ((h / l - 1) * 100).rolling(20).mean().iloc[-1]
-    ma = {n: c.rolling(n).mean().iloc[-1] for n in (10, 20, 50)}
-    wk = c.resample("W-FRI").last().dropna()
-    ma10w = wk.rolling(10).mean().iloc[-1] if len(wk) >= 10 else np.nan
-    avgv = v.iloc[-51:-1].mean()
-    up = 0
-    for a, b in zip(c.iloc[::-1].values[:-1], c.iloc[::-1].values[1:]):
-        if a > b:
-            up += 1
-        else:
-            break
-    held = df[df.index >= pd.Timestamp(entry_date)]
-    dist = lambda x: (last / x - 1) * 100 if x and np.isfinite(x) else np.nan
-    m = {"Last": last, "Chg %": (last / prev - 1) * 100, "ADR": adr,
-         "10MA": ma[10], "20MA": ma[20], "50MA": ma[50],
-         "10MA %": dist(ma[10]), "20MA %": dist(ma[20]), "50MA %": dist(ma[50]),
-         "10w %": dist(ma10w), "Vol x": v.iloc[-1] / avgv if avgv else np.nan,
-         "NR4 %": (h.iloc[-4:].max() / l.iloc[-4:].min() - 1) * 100, "Up days": up,
-         "Days held": max(len(held), 0), "High since entry": held["h"].max() if len(held) else np.nan,
-         "Off 52W hi %": (h.max() / last - 1) * 100, "Bar": df.index[-1].date()}
-    for k in ("10MA", "20MA", "50MA", "10w"):
-        m[f"{k} (ADR)"] = m[f"{k} %"] / adr if adr else np.nan
-    m["Rel tight"] = m["NR4 %"] / adr if adr else np.nan
-    m["Return %"] = (last / avg - 1) * 100 if avg else np.nan
-    m["R"] = (last - avg) / (avg - stop) if stop and avg and avg > stop else np.nan
-    return m
-
-
-def from_scan(row):
-    """Fallback when Yahoo has nothing: the same measures from today's scan row (no days-held / up-days)."""
-    adr = _num(row.get("Adr"))
-    m = {"Last": _num(row.get("Last")), "Chg %": _num(row.get("_chg_percentclose")), "ADR": adr,
-         "10MA %": _num(row.get("_10madist")), "20MA %": _num(row.get("_20madist")), "10w %": _num(row.get("W_Dist10wMA")),
-         "Vol x": _num(row.get("_vol_ratio")), "NR4 %": _num(row.get("_nr4")), "Off 52W hi %": _num(row.get("off_high_252"))}
+def metrics(row, entry_date, avg, stop):
+    """Everything the warnings need, from one MarketInOut row (positions screen or today's scan)."""
+    g = lambda k: _num(row.get(k))
+    last, adr = g("Last"), g("Adr")
+    m = {"Last": last, "Chg %": g("_chg_percentclose"), "ADR": adr, "Ti65": g("Ti65"),
+         "10MA %": g("_10madist"), "20MA %": g("_20madist"),
+         "10w %": g("_10wmadist") if np.isfinite(g("_10wmadist")) else g("W_Dist10wMA"),
+         "Vol x": g("dvol") / g("_avgvol_mln") if g("_avgvol_mln") else np.nan, "NR4 %": g("_nr4"),
+         "Off 1M hi %": g("off_high_21"), "Off 52W hi %": g("off_high_252"), "Timestamp": row.get("Timestamp")}
     for k in ("10MA", "20MA", "10w"):
         m[f"{k} (ADR)"] = m[f"{k} %"] / adr if adr else np.nan
+    m["10MA"] = last / (1 + m["10MA %"] / 100) if np.isfinite(m["10MA %"]) else np.nan
+    m["20MA"] = last / (1 + m["20MA %"] / 100) if np.isfinite(m["20MA %"]) else np.nan
     m["Rel tight"] = m["NR4 %"] / adr if adr else np.nan
+    m["MA hold"] = gp.ma_hold_label(row.get("_hl_pct"), row.get("_low_10ma"), row.get("_low_20ma"), row.get("_hold_ma"),
+                                    adr, m["20MA %"], m["10MA %"], m["Rel tight"])
+    m["Days held"] = int(np.busday_count(pd.Timestamp(entry_date).date(), date.today())) + 1
+    m["Return %"] = (last / avg - 1) * 100 if avg and np.isfinite(last) else np.nan
+    m["R"] = (last - avg) / (avg - stop) if stop and avg and avg > stop and np.isfinite(last) else np.nan
     return m
 
 
@@ -169,7 +143,8 @@ def _c_status(x):
 def _style(v):
     fmt = {c: "{:.2f}" for c in ("Last", "Avg", "Stop", "R", "Rel tight", "10MA (ADR)", "20MA (ADR)", "10w (ADR)")}
     fmt.update({c: "{:+.1f}" for c in ("Return %", "Chg %")})
-    fmt.update({c: "{:.1f}" for c in ("ADR", "Vol x", "Off 52W hi %")})
+    fmt.update({c: "{:.1f}" for c in ("ADR", "Vol x", "Off 52W hi %", "Off 1M hi %")})
+    fmt["Ti65"] = "{:.2f}"
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     for c, f in (("Return %", _c_ret), ("Status", _c_status), ("Chg %", gp._c_chg), ("Vol x", gp._c_vol),
                  ("10MA (ADR)", ff._c_ma10), ("Rel tight", ff._hl("tight")), ("ADR", ff._hl("adr")),
@@ -200,9 +175,9 @@ def _lookup(st, base_df, mcfg, sym):
 def render_positions_tab(st, sb, base_df, mcfg):
     mkt = mcfg["market"]
     st.subheader(f"Positions · {mkt}")
-    st.caption("Your open trades, checked every time the page loads: prices from Yahoo Finance daily candles (≈15 min "
-               "delayed), so warnings keep working after a stock drops out of the scan. 🔴 act now · 🟠 tighten / trim · "
-               "🟡 heads-up · 🟢 fine.")
+    st.caption("Your open trades, checked every time the page loads with MarketInOut's numbers (your positions screen first, "
+               "then today's scan) — so warnings keep working after a stock drops out of the scan, as long as it's in your "
+               "MIO positions watchlist. 🔴 act now · 🟠 tighten / trim · 🟡 heads-up · 🟢 fine.")
     if sb is None:
         st.error("Database not connected."); return
     try:
@@ -250,36 +225,39 @@ def render_positions_tab(st, sb, base_df, mcfg):
     view = st.session_state.get(f"sf_view_{mkt}")
     vrow = view.set_index("Symbol") if view is not None and not view.empty else None
     exits = pd.DataFrame(load_exits(sb, [p["id"] for p in open_]))
-    rows, notes, yahoo_fail = [], {}, []
+    url = POS_SCREEN.get(mkt)
+    pos_df = fetch_mio(url) if url else None
+    rows, missing = [], []
     with st.spinner("Checking your positions…"):
         for p in open_:
             sym = p["symbol"]
             in_scan = live is not None and sym in live.index
-            df = fetch_daily(yahoo_symbol(sym, mcfg))
-            if df is not None:
-                m, src = metrics(df, p["entry_date"], _num(p["avg_price"]), _num(p.get("init_stop") or p.get("stop"))), f"Yahoo {df.index[-1]:%d-%b}"
+            if pos_df is not None and sym in pos_df.index:
+                row, src = pos_df.loc[sym], "positions screen"
             elif in_scan:
-                m, src = from_scan(live.loc[sym]), "scan (Yahoo failed)"
-                m["Return %"] = (m["Last"] / _num(p["avg_price"]) - 1) * 100
-                m["Days held"] = int(np.busday_count(pd.Timestamp(p["entry_date"]).date(), date.today())) + 1
-                yahoo_fail.append(sym)
+                row, src = live.loc[sym], "scan"
             else:
-                m, src = {}, "no data"
-                yahoo_fail.append(sym)
+                row, src = None, "no data"
+                missing.append(sym)
+            m = metrics(row, p["entry_date"], _num(p["avg_price"]), _num(p.get("init_stop") or p.get("stop"))) if row is not None else {}
+            if m and m.get("Timestamp"):
+                src += f" {str(m['Timestamp'])[:16]}"
             ex = exits[exits["position_id"] == p["id"]] if not exits.empty else pd.DataFrame()
-            w, plan = assess(m, p, len(ex), in_scan) if m else ([("🟠", "No price data — check it in TradingView")], "Check the chart")
+            w, plan = assess(m, p, len(ex), in_scan) if m else \
+                ([("🟠", "No data — add it to your MarketInOut positions watchlist")], "Check the chart")
             status = w[0][0] if w else "🟢"
-            notes[sym] = w
             realised = float(((pd.to_numeric(ex["price"]) - _num(p["avg_price"])) * pd.to_numeric(ex["qty"])).sum()) if len(ex) else 0.0
             vr = vrow.loc[sym] if vrow is not None and sym in vrow.index else {}
             rows.append({"id": p["id"], "Symbol": sym, "Status": status + (f" {len(w)}" if len(w) > 1 else ""), "Plan": plan,
                          "Return %": m.get("Return %"), "R": m.get("R"), "Days": m.get("Days held"),
-                         "Last": m.get("Last"), "Avg": _num(p["avg_price"]), "Stop": _num(p.get("stop")),
-                         "Qty open": _num(p.get("qty_open")), "Chg %": m.get("Chg %"), "Vol x": m.get("Vol x"),
+                         "Last": m.get("Last"), "Chg %": m.get("Chg %"), "Avg": _num(p["avg_price"]), "Stop": _num(p.get("stop")),
+                         "Qty open": _num(p.get("qty_open")), "Vol x": m.get("Vol x"),
                          "10MA (ADR)": m.get("10MA (ADR)"), "20MA (ADR)": m.get("20MA (ADR)"), "10w (ADR)": m.get("10w (ADR)"),
-                         "Rel tight": m.get("Rel tight"), "ADR": m.get("ADR"), "Up days": m.get("Up days"),
-                         "Off 52W hi %": m.get("Off 52W hi %"), "Sector": p.get("sector") or (vr.get("Sector") if len(vr) else None),
-                         "Setup": p.get("setup"), "👑": vr.get("Leader") if len(vr) else "", "MA hold": vr.get("MA hold") if len(vr) else "",
+                         "Rel tight": m.get("Rel tight"), "ADR": m.get("ADR"), "Ti65": m.get("Ti65"),
+                         "Off 1M hi %": m.get("Off 1M hi %"), "Off 52W hi %": m.get("Off 52W hi %"),
+                         "MA hold": m.get("MA hold") or (vr.get("MA hold") if len(vr) else ""),
+                         "Sector": p.get("sector") or (vr.get("Sector") if len(vr) else None),
+                         "Setup": p.get("setup"), "👑": vr.get("Leader") if len(vr) else "",
                          "In scan": "yes" if in_scan else "no", "Entry": str(p["entry_date"])[:10],
                          "Warnings": " · ".join(f"{a} {b}" for a, b in w), "Data": src, "Note": p.get("note") or "",
                          "Sell qty": 0.0, "Sell price": 0.0, "Close": False, "Delete": False,
@@ -298,8 +276,14 @@ def render_positions_tab(st, sb, base_df, mcfg):
     pnl = pd.to_numeric(v["_pnl"], errors="coerce").sum() + v["_realised"].sum()
     c[4].metric("P&L (open + booked)", f"{pnl:,.0f}" if v["Qty open"].fillna(0).sum() else "–",
                 help="Needs quantities. Booked = partial sells recorded below.")
-    if yahoo_fail:
-        st.warning(f"Yahoo Finance had no data for {', '.join(yahoo_fail)} — those rows use today's scan where possible.")
+    if not url:
+        st.info(f"No MarketInOut positions screen set for {mkt} yet — positions use today's scan only (those that dropped "
+                "out show 'No data'). Send the screen's API link to add it.")
+    elif pos_df is None:
+        st.warning("Couldn't read your MarketInOut positions screen — using today's scan where possible.")
+    if missing:
+        st.warning(f"No data for {', '.join(missing)} — not in your MarketInOut positions screen or today's scan. "
+                   "Add them to the positions watchlist in MarketInOut.")
     for _, r in v[v["Status"].str.startswith("🔴")].iterrows():
         st.error(f"**{r['Symbol']}** — {r['Warnings']}")
 

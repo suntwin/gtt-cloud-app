@@ -42,7 +42,7 @@ RULE_HELP = {
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
 SHOW = ["Flag", "Symbol", "Leader", "Score", "Setup", "MA hold"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
-        "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Flags", "Data"]
+        "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Last", "Chg %", "Vol x", "Circuit %", "Flags", "Data"]
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
            "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Avg RS", "RS 1M", "RS 3M", "RS 6M"]
 # Sector leaders: strength (RS) is separate from readiness (Score) — the best stocks must never be buried by the rules
@@ -59,7 +59,7 @@ def lead_n(st, mkt, n_all):
     pct = LEAD_PCT.get(st.session_state.get(f"sf_ltopp_{mkt}", "10%"), 0.10)
     return min(n_all, max(LEAD_SHOW, math.ceil(pct * n_all)))
 LEAD_COLS = ["Flag", "Symbol", "Leader", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Explosive", "ADR", "Ti65", "Score", "Setup",
-             "MA hold", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Chg %", "Vol x", "Flags"]
+             "MA hold", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Last", "Chg %", "Vol x", "Flags"]
 
 
 def _num(x):
@@ -470,7 +470,7 @@ def style(v, liq_floor=50.0):
     fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Ti65": "{:.2f}", "Rel tight": "{:.2f}",
            "Off 1M (ADR)": "{:.1f}", "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}",
            "Avg vol": "{:.0f}", "Day vol": "{:.0f}", "Chg %": "{:+.1f}", "Vol x": "{:.1f}", "Circuit %": "{:.0f}",
-           "Pivot": "{:g}", "To pivot %": "{:.1f}", "Stop guide": "{:g}"}
+           "Pivot": "{:g}", "To pivot %": "{:.1f}", "Stop guide": "{:g}", "Last": "{:.2f}"}
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     rc = [r for r, _ in RULES if r in v.columns]
     if rc:
@@ -971,7 +971,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
     d["Unflag"] = False
     d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
     show = ["Pick", "Rank", "Symbol", "Leader", "Setup", "MA hold", "Entry", "Pivot", "To pivot %", "Stop guide", "Flags", "Sector", "Score"] + \
-           HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
+           HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Last", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
     show = [c for c in show if c in d.columns]
     n_pick = int(d["Pick"].sum())
     st.caption(f"**{len(d)} flagged · {n_pick} picked** (aim for {cfg['target']}). Tick **Pick** = draw the range and set "
