@@ -487,6 +487,32 @@ def _lots(sb, mcfg, open_v):
     return d
 
 
+TONE = {"good": ("rgba(40,167,69,.16)", "#28a745"), "warn": ("rgba(255,193,7,.16)", "#ffc107"),
+        "bad": ("rgba(220,53,69,.16)", "#dc3545"), "info": ("rgba(13,110,253,.12)", "#3d8bfd"),
+        "muted": ("rgba(128,128,128,.10)", "#8a8f98"), "na": ("rgba(128,128,128,.06)", "#5c6370")}
+
+
+def _tiles_html(groups):
+    """Material-style tiles: coloured left edge + tint by tone, grouped under small headings."""
+    import html as _h
+    css = ("<style>.pt-g{font-size:12px;letter-spacing:.06em;text-transform:uppercase;opacity:.65;margin:14px 0 6px}"
+           ".pt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}"
+           ".pt{border-radius:10px;padding:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,.25)}"
+           ".pt-l{font-size:12px;opacity:.75}.pt-v{font-size:22px;font-weight:700;line-height:1.25;margin-top:2px}"
+           ".pt-s{font-size:11px;opacity:.65;margin-top:2px}</style>")
+    out = [css]
+    for title, tiles in groups:
+        out.append(f"<div class='pt-g'>{_h.escape(title)}</div><div class='pt-grid'>")
+        for label, value, sub, tone_, tip in tiles:
+            bg, edge = TONE.get(tone_, TONE["na"])
+            col = edge if tone_ in ("good", "bad", "warn") else "inherit"
+            out.append(f"<div class='pt' title='{_h.escape(tip or '')}' style='background:{bg};border-left:4px solid {edge}'>"
+                       f"<div class='pt-l'>{_h.escape(label)}</div><div class='pt-v' style='color:{col}'>{_h.escape(str(value))}</div>"
+                       + (f"<div class='pt-s'>{_h.escape(sub)}</div>" if sub else "") + "</div>")
+        out.append("</div>")
+    return "".join(out)
+
+
 def _render_stats(st, sb, mcfg, open_v, eq):
     """📊 Performance — the trades-sheet dashboard, from your positions (every lot: closed sales and open holdings)."""
     mkt = mcfg["market"]
@@ -524,45 +550,70 @@ def _render_stats(st, sb, mcfg, open_v, eq):
         deployed = unr["Cost"].sum()
         kelly = 100 * (wr - (1 - wr) / payoff) if payoff and np.isfinite(payoff) else np.nan
         rr = (win["P&L"] / abs(avg_l)).mean() if nl and nw else np.nan
-        fm = lambda x: f"{x:,.0f}"
-        rows_ = [
-            ("Trades", f"{n}  ({nw} won · {nl} lost)", "Every sale (partial or full) and every open holding is one trade"),
-            ("Win %", f"{100 * wr:.0f}%", None),
-            ("Win / loss ratio", f"{nw / nl:.2f}" if nl else "–", "Number of winners ÷ number of losers"),
-            ("Profit factor", f"{abs(gp_ / gl):.2f}" if gl else "–", "Gross profit ÷ gross loss (realised + unrealised)"),
-            ("Avg win", fm(avg_w), None), ("Avg loss", fm(avg_l), None),
-            ("Payoff (avg win ÷ avg loss)", f"{payoff:.2f}" if np.isfinite(payoff) else "–", None),
-            ("Avg RR (winners)", f"{rr:.2f}" if np.isfinite(rr) else "–", "Each winner ÷ the average loss, averaged — as in your sheet"),
-            ("Avg R (initial stop)", f"{d['R'].mean():+.2f}" if d["R"].notna().any() else "–", "Needs initial stops"),
-            ("Expectancy / trade", fm(net / n), "Net profit ÷ trades"),
-            ("Gross profit (realised · unrealised)", f"{fm(rel[rel['P&L'] >= 0]['P&L'].sum())} · {fm(unr[unr['P&L'] >= 0]['P&L'].sum())}", None),
-            ("Gross loss (realised · unrealised)", f"{fm(rel[rel['P&L'] < 0]['P&L'].sum())} · {fm(unr[unr['P&L'] < 0]['P&L'].sum())}", None),
-            ("Net profit (realised + unrealised)", fm(net), None), ("Net profit (realised)", fm(net_rel), None),
-            ("Costs (est.)", fm(costs), f"Trades × avg trade size × {cost_pct:g}% × 2 sides"),
-            ("Tax on realised profit (est.)", fm(tax), None),
-            ("Net profit after costs + tax", fm(net_after), None),
-            ("Capital deployed now", fm(deployed), "Cost of open holdings"),
-            ("Avg trade size", fm(d["Cost"].mean()), None),
-            ("Avg days held", f"{d['Days'].mean():.1f}  (winners {win['Days'].mean() if nw else 0:.1f} · losers {loss['Days'].mean() if nl else 0:.1f})", None),
-            ("Avg stop-out (avg loss ÷ avg trade size)", f"{100 * abs(avg_l) / d['Cost'].mean():.2f}%" if nl else "–", None),
-            ("Largest win · loss", f"{fm(d['P&L'].max())} · {fm(d['P&L'].min())}", None),
-            ("Kelly position size", f"{kelly:.1f}%" if np.isfinite(kelly) else "–",
-             "Win% − (1 − Win%) ÷ payoff. Keep sizes well below it (and ≤ 25%)"),
+        fm = lambda x: f"{x:,.0f}" if np.isfinite(_num(x)) else "–"
+        sgn = lambda x: f"{x:+,.0f}" if np.isfinite(_num(x)) else "–"
+        pf = abs(gp_ / gl) if gl else np.nan
+        avg_r = d["R"].mean() if d["R"].notna().any() else np.nan
+        stop_out = 100 * abs(avg_l) / d["Cost"].mean() if nl and d["Cost"].mean() else np.nan
+        dw, dl = (win["Days"].mean() if nw else np.nan), (loss["Days"].mean() if nl else np.nan)
+        exp_ = net / n
+
+        def tone(x, good, ok, higher=True):
+            x = _num(x)
+            if not np.isfinite(x):
+                return "na"
+            if not higher:
+                x, good, ok = -x, -good, -ok
+            return "good" if x >= good else "warn" if x >= ok else "bad"
+        pos = lambda x: "na" if not np.isfinite(_num(x)) else ("good" if x > 0 else "bad" if x < 0 else "na")
+
+        groups = [
+            ("Edge", [
+                ("Win %", f"{100 * wr:.0f}%", f"{nw} won · {nl} lost of {n}", tone(100 * wr, 50, 35), "Winners ÷ all trades"),
+                ("Profit factor", f"{pf:.2f}" if np.isfinite(pf) else "–", "gross profit ÷ gross loss", tone(pf, 2, 1.2),
+                 "Gross profit ÷ |gross loss| (realised + unrealised). ≥ 2 strong · < 1.2 weak"),
+                ("Payoff", f"{payoff:.2f}" if np.isfinite(payoff) else "–", "avg win ÷ avg loss", tone(payoff, 2, 1),
+                 "How much a typical win is worth vs a typical loss. ≥ 2 lets you win under 40% of trades"),
+                ("Expectancy / trade", sgn(exp_), "net ÷ trades", pos(exp_), "What each trade earns on average"),
+                ("Avg R", f"{avg_r:+.2f}" if np.isfinite(avg_r) else "–", "vs initial stop", tone(avg_r, 0.5, 0),
+                 "Average result in multiples of the initial risk. Needs initial stops"),
+                ("Kelly size", f"{kelly:.1f}%" if np.isfinite(kelly) else "–", "keep well below · ≤ 25%",
+                 "info", "Win% − (1 − Win%) ÷ payoff"),
+            ]),
+            ("Wins & losses", [
+                ("Avg win", sgn(avg_w), None, "good" if nw else "na", None),
+                ("Avg loss", sgn(avg_l) if nl else "–", None, "bad" if nl else "na", None),
+                ("Avg RR (winners)", f"{rr:.2f}" if np.isfinite(rr) else "–", "winner ÷ avg loss", tone(rr, 2, 1),
+                 "Each winner ÷ the average loss, averaged — as in your sheet"),
+                ("Largest win", sgn(d["P&L"].max()) if nw else "–", None, "good" if nw else "na", None),
+                ("Largest loss", sgn(d["P&L"].min()) if nl else "–", None, "bad" if nl else "na", None),
+                ("Win / loss ratio", f"{nw / nl:.2f}" if nl else "–", "winners ÷ losers (count)", tone(nw / nl if nl else np.nan, 1, 0.6), None),
+            ]),
+            ("Profit", [
+                ("Net after costs + tax", sgn(net_after), f"net {sgn(net)} − costs {fm(costs)} − tax {fm(tax)}", pos(net_after), None),
+                ("Net realised", sgn(net_rel), "closed lots only", pos(net_rel), None),
+                ("Gross profit", fm(gp_), f"realised {fm(rel[rel['P&L'] >= 0]['P&L'].sum())} · open {fm(unr[unr['P&L'] >= 0]['P&L'].sum())}",
+                 "good" if gp_ > 0 else "na", None),
+                ("Gross loss", fm(gl), f"realised {fm(rel[rel['P&L'] < 0]['P&L'].sum())} · open {fm(unr[unr['P&L'] < 0]['P&L'].sum())}",
+                 "bad" if gl < 0 else "na", None),
+                ("Costs (est.)", fm(costs), f"{cost_pct:g}% × 2 sides", "muted", "Trades × avg trade size × cost % × 2"),
+                ("Tax (est.)", fm(tax), f"{tax_pct:g}% of realised profit", "muted", None),
+            ]),
+            ("Capital & habits", [
+                ("Capital deployed", fm(deployed), f"{100 * deployed / eq:.0f}% of account" if eq else "cost of open holdings", "info", None),
+                ("Avg trade size", fm(d["Cost"].mean()), f"{100 * d['Cost'].mean() / eq:.1f}% of account" if eq else None, "info", None),
+                ("Avg days held", f"{d['Days'].mean():.1f}", f"winners {dw:.1f} · losers {dl:.1f}" if nw and nl else None,
+                 ("good" if dw > dl else "warn") if nw and nl else "na", "Winners should be held longer than losers"),
+                ("Avg stop-out", f"{stop_out:.2f}%" if np.isfinite(stop_out) else "–", "avg loss ÷ avg trade size",
+                 tone(stop_out, 5, 8, higher=False), "≤ 5% tight · > 8% loose"),
+            ] + ([
+                ("ROI on account", f"{100 * net_after / eq:+.2f}%", "net after costs ÷ account", pos(net_after), None),
+                ("Projected account", fm(eq + net_after), f"account {fm(eq)}", "info", None),
+                ("Projected cash", fm(eq + net_after - deployed), "projected − deployed", "info", None),
+                ("Cumulative ROI", f"{100 * net_after / (eq + net_after):+.2f}%", "on projected account", pos(net_after), "As in your sheet"),
+            ] if eq else [("ROI on account", "–", "set Account size above", "na", None)])),
         ]
-        if eq:
-            rows_ += [("Account size", fm(eq), None),
-                      ("ROI on account", f"{100 * net_after / eq:.2f}%", "Net after costs + tax ÷ account size"),
-                      ("Projected account", fm(eq + net_after), "Account + net after costs"),
-                      ("Projected cash", fm(eq + net_after - deployed), "Projected account − capital deployed"),
-                      ("Cumulative ROI (on projected account)", f"{100 * net_after / (eq + net_after):.2f}%", "As in your sheet")]
-        c = st.columns(5)
-        c[0].metric("Win %", f"{100 * wr:.0f}%", f"{nw} / {n}", delta_color="off")
-        c[1].metric("Profit factor", f"{abs(gp_ / gl):.2f}" if gl else "–")
-        c[2].metric("Payoff", f"{payoff:.2f}" if np.isfinite(payoff) else "–", help="Avg win ÷ avg loss")
-        c[3].metric("Net after costs", fm(net_after))
-        c[4].metric("ROI on account", f"{100 * net_after / eq:.1f}%" if eq else "–")
-        st.dataframe(pd.DataFrame([{"Measure": a, "Value": b, "How": h or ""} for a, b, h in rows_]), hide_index=True,
-                     use_container_width=True, height=min(36 * len(rows_) + 40, 900))
+        st.markdown(_tiles_html(groups), unsafe_allow_html=True)
         st.caption("Every lot counts as a trade, like your trades sheet: a partial sale closes those shares as their own trade, "
                    "the rest stays open. Open holdings count at today's price (unrealised).")
 
