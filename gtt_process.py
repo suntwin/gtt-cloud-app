@@ -15,6 +15,7 @@ Tables / functions: see supabase_migration.sql.
 from datetime import datetime, date, timedelta
 import copy
 import time
+import json
 import numpy as np
 import pandas as pd
 
@@ -37,7 +38,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-27c · Sector Focus: 🙈 Hide stocks from step 2 (ranks recomputed) — run supabase_hidden.sql"
+PROCESS_VERSION = "v2026-10-27d · 🙈 rows vanish instantly on tick; flags/hidden read cache (faster Save)"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2576,7 +2577,7 @@ def live_extra(base_df, symbols):
 
 
 def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, height=420, widths=None, fmt=None,
-              tips=None, card_first=None, submit=None):
+              tips=None, card_first=None, submit=None, vanish_col=None):
     """AgGrid table where clicking a ticker opens the white card with ALL its attributes.
 
     view       visible columns (in order) · sty: optional pandas Styler of `view` (its colours are reused)
@@ -2617,6 +2618,13 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
                               autoSizeStrategy={"type": "fitCellContents", "skipHeader": True},
                               suppressRowClickSelection=True, context={"cardFirst": list(card_first or [])},
                               stopEditingWhenCellsLoseFocus=True)
+    if vanish_col:
+        # Ticking this bool column makes the row disappear at once, in the browser (no round trip). The returned
+        # (filtered) rows then leave it out — the caller treats a missing row as ticked.
+        gb.configure_grid_options(
+            isExternalFilterPresent=JsCode("function(){return true;}"),
+            doesExternalFilterPass=JsCode(f"function(n){{return !(n.data && n.data[{json.dumps(vanish_col)}]===true);}}"),
+            onCellValueChanged=JsCode(f"function(e){{if(e.colDef&&e.colDef.field==={json.dumps(vanish_col)}){{e.api.onFilterChanged();}}}}"))
     style_js = JsCode(_CSS_FROM_DATA)
     for c in data.columns:
         if str(c).startswith("__s_") or c in hidden:

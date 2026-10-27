@@ -123,10 +123,29 @@ def cfg_for(mcfg):
 
 
 # ── flags (Supabase table `flags`) ─────────────────────────────────────────
+# Small read cache: every Save reruns the tab, and re-reading flags + hidden from Supabase each time is the slow part.
+# Writes below update the database AND drop the cache, so the next read is fresh. 90 s TTL catches edits from another device.
+_CACHE, _TTL = {}, 90.0
+
+
+def _cached(table, sb, mcfg):
+    import time
+    k = (table, mcfg["user_id"], mcfg["market"])
+    hit = _CACHE.get(k)
+    if hit and time.time() - hit[0] < _TTL:
+        return dict(hit[1])
+    rows = (sb.table(table).select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]).execute().data or [])
+    d = {r["symbol"]: r for r in rows}
+    _CACHE[k] = (time.time(), d)
+    return dict(d)
+
+
+def _drop(table, mcfg):
+    _CACHE.pop((table, mcfg["user_id"], mcfg["market"]), None)
+
+
 def load_flags(sb, mcfg):
-    rows = (sb.table("flags").select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
-            .execute().data or [])
-    return {r["symbol"]: r for r in rows}
+    return _cached("flags", sb, mcfg)
 
 
 def add_flags(sb, mcfg, syms, sector=None, source=None, sectors=None):
@@ -134,37 +153,40 @@ def add_flags(sb, mcfg, syms, sector=None, source=None, sectors=None):
              "sector": (sectors or {}).get(s, sector), "source": source, "flagged_at": date.today().isoformat()}
             for s in syms]
     if rows:
+        _drop("flags", mcfg)
         sb.table("flags").upsert(rows, on_conflict="user_id,market,symbol").execute()
 
 
 def remove_flags(sb, mcfg, syms):
     syms = list(syms)
     if syms:
+        _drop("flags", mcfg)
         sb.table("flags").delete().eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]).in_("symbol", syms).execute()
 
 
 def load_hidden(sb, mcfg):
-    """{symbol: row} of stocks you hid from step 2. Missing table → {} (run supabase_hidden.sql)."""
-    rows = (sb.table("hidden_symbols").select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
-            .execute().data or [])
-    return {r["symbol"]: r for r in rows}
+    """{symbol: row} of stocks you hid from step 2. Missing table → raises (run supabase_hidden.sql)."""
+    return _cached("hidden_symbols", sb, mcfg)
 
 
 def hide_symbols(sb, mcfg, syms, sectors=None, reason="hidden in Sector Focus"):
     rows = [{"user_id": mcfg["user_id"], "market": mcfg["market"], "symbol": s, "sector": (sectors or {}).get(s),
              "reason": reason, "hidden_at": date.today().isoformat()} for s in syms]
     if rows:
+        _drop("hidden_symbols", mcfg)
         sb.table("hidden_symbols").upsert(rows, on_conflict="user_id,market,symbol").execute()
 
 
 def unhide_symbols(sb, mcfg, syms):
     syms = list(syms)
     if syms:
+        _drop("hidden_symbols", mcfg)
         sb.table("hidden_symbols").delete().eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]).in_("symbol", syms).execute()
 
 
 def update_flag(sb, mcfg, sym, **fields):
     fields["updated_at"] = pd.Timestamp.utcnow().isoformat()
+    _drop("flags", mcfg)
     sb.table("flags").update(fields).eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]).eq("symbol", sym).execute()
 
 
@@ -838,25 +860,30 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
     edit = {"Flag": "bool", "Hide": "bool"} if hide else {"Flag": "bool"}
     ed, save = gp.card_grid(st, gv, key=key, sty=style(gv, cfg["min_liq"]), extra=_card_extra(pv, cols), labels=LABELS,
                             tips=_tips(cfg), card_first=CARD_FIRST, edit=edit, submit=submit,
-                            height=min(32 * len(pv) + 70, 560),
+                            vanish_col="Hide" if hide else None, height=min(32 * len(pv) + 70, 560),
                             widths={"Symbol": 110, "Leader": 72, "Score": 58, "Setup": 170, "Sector": 150, "Flags": 200, "Source": 110})
-    st.caption(f"{note} **Click a ticker** for all its data · tick ⚑ on the rows you like, then **{submit}** "
-               "(nothing reloads while you tick or sort).")
+    st.caption(f"{note} **Click a ticker** for all its data · tick ⚑" + (" or 🙈 (the row vanishes at once)" if hide else "") +
+               f", then **{submit}** — nothing reloads until you press it.")
     if save and ed is not None and "Symbol" in ed.columns:
         st.session_state[okey] = list(ed["Symbol"])                  # the grid's sort order at Save
-        now = set(ed.loc[ed["Flag"].fillna(False).astype(bool), "Symbol"])
-        hid = list(ed.loc[ed["Hide"].fillna(False).astype(bool), "Symbol"]) if hide and "Hide" in ed.columns else []
+        hid = set(ed.loc[ed["Hide"].fillna(False).astype(bool), "Symbol"]) if hide and "Hide" in ed.columns else set()
+        if hide:
+            hid |= set(pv["Symbol"]) - set(ed["Symbol"])             # rows ticked 🙈 vanished from the grid → not returned
+        now = set(ed.loc[ed["Flag"].fillna(False).astype(bool), "Symbol"]) - hid
+        was_vis = was - hid                                          # hiding a flagged stock keeps its flag (it stays in Flagged)
+        changed = False
         if hid:
             secmap = dict(zip(pv["Symbol"], pv["Sector"])) if "Sector" in pv.columns else {}
-            hide_symbols(sb, mcfg, hid, sectors=secmap)
-            st.toast(f"Hidden: {', '.join(hid)} — unhide them from 🙈 Hidden under the sector table.")
-            if now == was:
-                _rerun(st)
-        if now != was:
+            hide_symbols(sb, mcfg, sorted(hid), sectors=secmap)
+            changed = True
+        if now != was_vis:
             secmap = dict(zip(pv["Symbol"], pv["Sector"])) if "Sector" in pv.columns else {}
-            add_flags(sb, mcfg, sorted(now - was), sector=sector, source=sector or "other sectors", sectors=None if sector else secmap)
-            remove_flags(sb, mcfg, was - now)
-            st.toast(f"Flagged {len(now - was)}, unflagged {len(was - now)}.")
+            add_flags(sb, mcfg, sorted(now - was_vis), sector=sector, source=sector or "other sectors", sectors=None if sector else secmap)
+            remove_flags(sb, mcfg, was_vis - now)
+            changed = True
+        if changed:
+            st.toast(" · ".join(x for x in (f"Flagged {len(now - was_vis)}, unflagged {len(was_vis - now)}" if now != was_vis else "",
+                                            f"Hidden: {', '.join(sorted(hid))} (unhide under 🙈 Hidden)" if hid else "") if x))
             _rerun(st)
     order = [x for x in st.session_state.get(okey, []) if x in set(pv["Symbol"])] or list(pv["Symbol"])
     gp.copy_area(st, f"{copy_label}: {len(order)} tickers in the table's order (sort the table, press Save to refresh) — for TradingView",
