@@ -126,6 +126,48 @@ def load_exits(sb, ids):
     return (sb.table("position_exits").select("*").in_("position_id", ids).execute().data or []) if ids else []
 
 
+def _equity(st, sb, mcfg):
+    """Account size for the % figures — saved in scoring_prefs (scanner_type POSITIONS_<market>)."""
+    mkt, k = mcfg["market"], f"pos_equity_{mcfg['market']}"
+    if f"{k}_loaded" not in st.session_state:
+        st.session_state[f"{k}_loaded"] = True
+        try:
+            r = sb.table("scoring_prefs").select("config").eq("user_id", mcfg["user_id"]).eq("scanner_type", f"POSITIONS_{mkt}").execute()
+            st.session_state[k] = float((r.data[0]["config"] or {}).get("equity", 0)) if r.data else 0.0
+        except Exception:
+            st.session_state.setdefault(k, 0.0)
+    c1, c2 = st.columns([1, 3])
+    eq = c1.number_input("Account size", min_value=0.0, step=10000.0, format="%.0f", key=k,
+                         help="Used for exposure / risk as % of the account. Saved for next time.")
+    if f"{k}_saved" in st.session_state and eq != st.session_state[f"{k}_saved"]:      # changed → save it
+        try:
+            cfg = {"equity": eq}
+            ex = sb.table("scoring_prefs").select("id").eq("user_id", mcfg["user_id"]).eq("scanner_type", f"POSITIONS_{mkt}").execute()
+            if ex.data:
+                sb.table("scoring_prefs").update({"config": cfg}).eq("user_id", mcfg["user_id"]).eq("scanner_type", f"POSITIONS_{mkt}").execute()
+            else:
+                sb.table("scoring_prefs").insert({"user_id": mcfg["user_id"], "scanner_type": f"POSITIONS_{mkt}", "config": cfg}).execute()
+        except Exception:
+            pass
+    st.session_state[f"{k}_saved"] = eq
+    if not eq:
+        c2.caption("Set your account size to see exposure and risk as % of the account.")
+    return eq
+
+
+def _booked_closed(sb, mcfg):
+    """Realised P&L of all closed trades (needs quantities)."""
+    try:
+        closed = load_positions(sb, mcfg, "closed")
+        ex = pd.DataFrame(load_exits(sb, [p["id"] for p in closed]))
+        if ex.empty:
+            return 0.0
+        avg = {p["id"]: _num(p["avg_price"]) for p in closed}
+        return float(((pd.to_numeric(ex["price"]) - ex["position_id"].map(avg)) * pd.to_numeric(ex["qty"])).sum())
+    except Exception:
+        return 0.0
+
+
 # ── UI ─────────────────────────────────────────────────────────────────────
 def _c_ret(x):
     x = _num(x)
@@ -145,12 +187,17 @@ def _style(v):
     fmt.update({c: "{:+.1f}" for c in ("Return %", "Chg %")})
     fmt.update({c: "{:.1f}" for c in ("ADR", "Vol x", "Off 52W hi %", "Off 1M hi %")})
     fmt["Ti65"] = "{:.2f}"
+    fmt.update({c: "{:,.0f}" for c in ("Cost", "Value", "Risk to stop")})
+    fmt.update({"P&L": "{:+,.0f}", "Weight %": "{:.1f}"})
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     for c, f in (("Return %", _c_ret), ("Status", _c_status), ("Chg %", gp._c_chg), ("Vol x", gp._c_vol),
                  ("10MA (ADR)", ff._c_ma10), ("Rel tight", ff._hl("tight")), ("ADR", ff._hl("adr")),
                  ("10w (ADR)", ff._hl("relwk"))):
         if c in v.columns:
             sty = sty.map(f, subset=[c])
+    if "P&L" in v.columns:
+        sty = sty.map(lambda x: ff._css("#d4edda", "#155724") if _num(x) > 0 else ff._css("#f8d7da", "#721c24")
+                      if _num(x) < 0 else "", subset=["P&L"])
     if "R" in v.columns:
         sty = sty.map(lambda x: ff._css("#28a745", "white", True) if _num(x) >= 2 else ff._css("#8ee68e") if _num(x) > 0
                       else ff._css("#f8d7da", "#721c24") if np.isfinite(_num(x)) else "", subset=["R"])
@@ -248,6 +295,14 @@ def render_positions_tab(st, sb, base_df, mcfg):
             status = w[0][0] if w else "🟢"
             realised = float(((pd.to_numeric(ex["price"]) - _num(p["avg_price"])) * pd.to_numeric(ex["qty"])).sum()) if len(ex) else 0.0
             vr = vrow.loc[sym] if vrow is not None and sym in vrow.index else {}
+            if not p.get("sector"):                       # learn the sector once from the scan / Sector Focus and keep it
+                sec_ = (vr.get("Sector") if len(vr) else None) or (live.loc[sym].get("Sector") if in_scan else None)
+                if isinstance(sec_, str) and sec_ and sec_ != "Unknown":
+                    p["sector"] = sec_
+                    try:
+                        sb.table("positions").update({"sector": sec_}).eq("id", int(p["id"])).execute()
+                    except Exception:
+                        pass
             rows.append({"id": p["id"], "Symbol": sym, "Status": status + (f" {len(w)}" if len(w) > 1 else ""), "Plan": plan,
                          "Return %": m.get("Return %"), "R": m.get("R"), "Days": m.get("Days held"),
                          "Last": m.get("Last"), "Chg %": m.get("Chg %"), "Avg": _num(p["avg_price"]), "Stop": _num(p.get("stop")),
@@ -261,21 +316,58 @@ def render_positions_tab(st, sb, base_df, mcfg):
                          "In scan": "yes" if in_scan else "no", "Entry": str(p["entry_date"])[:10],
                          "Warnings": " · ".join(f"{a} {b}" for a, b in w), "Data": src, "Note": p.get("note") or "",
                          "Sell qty": 0.0, "Sell price": 0.0, "Close": False, "Delete": False,
-                         "_realised": realised, "_pnl": (m.get("Last", np.nan) - _num(p["avg_price"])) * _num(p.get("qty_open"))})
+                         "_realised": realised, "_pnl": (m.get("Last", np.nan) - _num(p["avg_price"])) * _num(p.get("qty_open")),
+                         "_cost": _num(p["avg_price"]) * _num(p.get("qty_open")),
+                         "_value": _num(m.get("Last")) * _num(p.get("qty_open")),
+                         "_risk": max(_num(m.get("Last")) - _num(p.get("stop")), 0) * _num(p.get("qty_open"))
+                         if np.isfinite(_num(p.get("stop"))) else np.nan})
     v = pd.DataFrame(rows)
     v = v.assign(_o=v["Status"].str[:1].map(LEVEL)).sort_values(["_o", "Return %"], ascending=[True, False]).drop(columns="_o") \
          .reset_index(drop=True)
 
     # ── summary ──
+    eq = _equity(st, sb, mcfg)
     n_red = int(v["Status"].str.startswith("🔴").sum()); n_or = int(v["Status"].str.startswith("🟠").sum())
+    has_qty = bool(pd.to_numeric(v["Qty open"], errors="coerce").fillna(0).sum())
+    cost, opnl = float(np.nansum(v["_cost"])), float(np.nansum(v["_pnl"]))
+    value, risk = cost + opnl, float(np.nansum(v["_risk"]))          # a row without a price counts at cost
+    booked = float(v["_realised"].sum()) + _booked_closed(sb, mcfg)
+    pct = lambda x: f"{100 * x / eq:.1f}% of account" if eq else None
     c = st.columns(5)
-    c[0].metric("Open", len(v))
+    c[0].metric("Open", len(v), help="Open positions")
     c[1].metric("🔴 Act now", n_red)
     c[2].metric("🟠 Tighten / trim", n_or)
     c[3].metric("Avg return", f"{pd.to_numeric(v['Return %'], errors='coerce').mean():+.1f}%")
-    pnl = pd.to_numeric(v["_pnl"], errors="coerce").sum() + v["_realised"].sum()
-    c[4].metric("P&L (open + booked)", f"{pnl:,.0f}" if v["Qty open"].fillna(0).sum() else "–",
-                help="Needs quantities. Booked = partial sells recorded below.")
+    c[4].metric("Locked in", f"{int((pd.to_numeric(v['Stop'], errors='coerce') >= v['Avg']).sum())} of {len(v)}",
+                help="Positions whose stop is at or above your average price — can't turn into a loss")
+    if has_qty:
+        c = st.columns(5)
+        c[0].metric("Exposure (cost)", f"{cost:,.0f}", pct(cost), delta_color="off",
+                    help="Total cost basis of open positions = average price × shares still held")
+        c[1].metric("Market value", f"{value:,.0f}", pct(value), delta_color="off")
+        c[2].metric("Open P&L", f"{opnl:+,.0f}", f"{100 * opnl / cost:+.1f}%" if cost else None)
+        c[3].metric("Open risk to stops", f"{risk:,.0f}", pct(risk), delta_color="off",
+                    help="What you'd give back if every position hit its current stop (from the last price). "
+                         "Positions without a stop aren't counted.")
+        c[4].metric("Booked P&L", f"{booked:+,.0f}", help="Partial sells on open positions + all closed trades")
+        if eq:
+            if value > eq:
+                st.warning(f"Invested {100 * value / eq:.0f}% of the account — above 100% (margin).")
+            if risk / eq > 0.06:
+                st.warning(f"Open risk is {100 * risk / eq:.1f}% of the account — above 6%. Tighten stops or trim before adding.")
+        sec = v.assign(_s=v["Sector"].fillna("Unknown")).groupby("_s")["_cost"].sum().sort_values(ascending=False)
+        sec = sec[sec > 0]
+        known = sec.drop("Unknown", errors="ignore")
+        if len(sec) and cost:
+            st.caption("Exposure by sector: " + " · ".join(f"**{k}** {100 * x / cost:.0f}%" for k, x in sec.items()))
+            if len(known) and known.iloc[0] / cost > 0.4 and len(v) > 2:
+                st.warning(f"{100 * known.iloc[0] / cost:.0f}% of your exposure is in {known.index[0]} — one bad day for the "
+                           "sector hits most of the book.")
+        v["Cost"], v["Value"], v["P&L"] = v["_cost"], v["_value"], v["_pnl"]
+        v["Weight %"] = 100 * v["_value"] / eq if eq else np.nan
+        v["Risk to stop"] = v["_risk"]
+    else:
+        st.caption("Add quantities to your positions to see exposure, market value, P&L, open risk and sector weights.")
     if not url:
         st.info(f"No MarketInOut positions screen set for {mkt} yet — positions use today's scan only (those that dropped "
                 "out show 'No data'). Send the screen's API link to add it.")
@@ -289,6 +381,9 @@ def render_positions_tab(st, sb, base_df, mcfg):
 
     # ── table ──
     shown = [c for c in v.columns if not c.startswith("_") and c != "id"]
+    money = [c for c in ("Cost", "Value", "P&L", "Weight %", "Risk to stop") if c in shown]
+    shown = [c for c in shown if c not in money]
+    shown[shown.index("Qty open") + 1:shown.index("Qty open") + 1] = money
     ed, saved = gp.card_grid(st, v[shown], key=f"pos_grid_{mkt}", sty=_style(v[shown]),
                              edit={"Stop": "number", "Note": "text", "Sell qty": "number", "Sell price": "number",
                                    "Close": "bool", "Delete": "bool"},
