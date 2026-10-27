@@ -569,7 +569,7 @@ def main():
 
     import focus_flow as _ff
     _ff.FAB_SLOT = st.container()        # floating 🔍 Check ticker lives here, outside the tabs
-    tab1, tab9, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Sector Focus", "Alert Management", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
+    tab1, tab9, tab10, tab8, tab2, tab3, tab4, tab6, tab5 = st.tabs(["GTT Scanner", "Sector Focus", "Positions", "Alert Management", "Market Themes & Leaders", "Watchlist", "Journal", "Breadth", "Entry Rules"])
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 1: SCANNER (NO SCORING — just computed columns + filters)
@@ -984,6 +984,13 @@ def main():
 
     with tab9:
         render_sector_focus_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
+
+    with tab10:
+        try:
+            import positions as _pos
+            _pos.render_positions_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
+        except Exception as _e:
+            st.error(f"Positions tab failed: {_e}")
 
     with tab8:
         render_alerts_tab(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG)
