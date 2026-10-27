@@ -873,7 +873,9 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
     ed, save = gp.card_grid(st, gv, key=key, sty=style(gv, cfg["min_liq"]), extra=_card_extra(pv, cols), labels=LABELS,
                             tips=_tips(cfg), card_first=CARD_FIRST, edit=edit, submit=submit,
                             vanish_col="Hide" if hide else None, height=min(32 * len(pv) + 70, 560),
-                            widths={"Symbol": 110, "Leader": 72, "Score": 58, "Setup": 170, "Sector": 150, "Flags": 200, "Source": 110})
+                            fmt={"Avg RS": 0, "RS 1M": 0, "RS 3M": 0, "RS 6M": 0, "Explosive": 1},
+                            widths={"Symbol": 110, "Leader": 72, "Score": 58, "Setup": 170, "Sector": 150, "Flags": 200, "Source": 110,
+                                    "Avg RS": 58, "RS 1M": 52, "RS 3M": 52, "RS 6M": 52, "MA hold": 125, "Last": 78})
     st.caption(f"{note} **Click a ticker** for all its data · tick ⚑" + (" or 🙈 (the row vanishes at once)" if hide else "") +
                f", then **{submit}** — nothing reloads until you press it.")
     if save and ed is not None and "Symbol" in ed.columns:
