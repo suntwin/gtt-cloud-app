@@ -48,7 +48,16 @@ NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Of
 # Sector leaders: strength (RS) is separate from readiness (Score) — the best stocks must never be buried by the rules
 LEAD_WIN = {"Avg RS": "Avg_RS", "3M": "RS_3M", "6M": "RS_6M", "1M": "RS_1M"}
 LEAD_DISP = {"Avg RS": "Avg RS", "3M": "RS 3M", "6M": "RS 6M", "1M": "RS 1M"}     # radio choice → display column
-LEAD_BADGE, LEAD_SHOW = 5, 15
+LEAD_BADGE, LEAD_SHOW = 5, 15          # LEAD_SHOW = the minimum the panel lists (or all, when fewer qualify)
+LEAD_PCT = {"5%": 0.05, "10%": 0.10, "20%": 0.20, "30%": 0.30, "50%": 0.50, "100%": 1.0}
+
+
+def lead_n(st, mkt, n_all):
+    """How many leaders to list: the chosen % of the sector's qualifying stocks, never fewer than LEAD_SHOW (15),
+    and all of them when fewer than that qualify (e.g. near a market bottom)."""
+    import math
+    pct = LEAD_PCT.get(st.session_state.get(f"sf_ltopp_{mkt}", "10%"), 0.10)
+    return min(n_all, max(LEAD_SHOW, math.ceil(pct * n_all)))
 LEAD_COLS = ["Flag", "Symbol", "Leader", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Explosive", "ADR", "Ti65", "Score", "Setup",
              "MA hold", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Chg %", "Vol x", "Flags"]
 
@@ -823,13 +832,16 @@ def _leaders_panel(st, sb, mcfg, cfg, live, g, sd, hide_ok=False):
                    help="RS 1–99 vs the whole market. Avg RS = average of the screens the stock is in. A blank RS means "
                         "the stock isn't in that screen (not weak). The 👑 badge in the tables follows this choice.")
     n_all = int(((live["Sector"] == g) & live["_lead_rank"].notna()).sum())
-    top = int(c1.number_input("Show top", 5, 200, LEAD_SHOW, 5, key=f"sf_ltop_{mkt}",
-                              help="How many of the sector's strongest to list. Ties at the same RS: more explosive "
-                                   "(ADR × Ti65) first, then on more screens, then closer to the 52-week high."))
+    c1.radio("Show top", list(LEAD_PCT), index=1, horizontal=True, key=f"sf_ltopp_{mkt}",
+             help=f"Share of the sector's qualifying stocks to list — never fewer than {LEAD_SHOW} (or all of them when fewer "
+                  "qualify). Ties at the same RS: more explosive (ADR × Ti65) first, then on more screens, then closer to "
+                  "the 52-week high.")
+    top = lead_n(st, mkt, n_all)
     c1.checkbox(f"Include low-ADR stocks (< {cfg['min_adr']:g}%)", key=f"sf_llow_{mkt}",
                 help="Off = leaders must be explosive enough to trade (ADR ≥ the R4 floor). The 👑 badges follow this too.")
     lead = live[(live["Sector"] == g) & live["_lead_rank"].notna()].sort_values("_lead_rank").head(top)
-    c2.caption(f"Top {min(top, n_all)} of {n_all} in {g} by **{win}**" +
+    c2.caption(f"Showing **{top} of {n_all}** qualifying in {g} ({st.session_state.get(f'sf_ltopp_{mkt}', '10%')}, min {LEAD_SHOW}) "
+               f"· ranked by **{win}**" +
                ("" if st.session_state.get(f"sf_llow_{mkt}") else f" with ADR ≥ {cfg['min_adr']:g}%") +
                ", ties → most explosive (ADR × Ti65). Ignores the min score. Strength ≠ readiness: a leader with a low score "
                "is a stock to **watch for its next tight setup**, not to buy today. A leader that ALSO scores well is the "
@@ -896,10 +908,10 @@ def _where_it_shows(st, mcfg, v, r):
     sec = r.get("Sector")
     lr, win = _num(r.get("_lead_rank")), st.session_state.get(f"sf_lwin_{mkt}", "Avg RS")
     n_sec = int(((v["Sector"] == sec) & v["_lead_rank"].notna()).sum()) if "_lead_rank" in v.columns else 0
-    top = int(st.session_state.get(f"sf_ltop_{mkt}", LEAD_SHOW))
+    top = lead_n(st, mkt, n_sec)
     lead_txt = (f" · 👑 Strength rank **#{int(lr)} of {n_sec}** in {sec} by {win}" +
                 (" — listed in the Leaders panel." if lr <= top else
-                 f" — set 'Show top' to {int(lr)}+ in the Leaders panel to list it.")) if np.isfinite(lr) else ""
+                 f" — pick a bigger 'Show top' % in the Leaders panel to list it.")) if np.isfinite(lr) else ""
     return _where_core(st, mcfg, v, r) + lead_txt
 
 

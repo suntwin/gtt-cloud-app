@@ -38,7 +38,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-27d · 🙈 rows vanish instantly on tick; flags/hidden read cache (faster Save)"
+PROCESS_VERSION = "v2026-10-27e · Leaders: Show top as % of sector (min 15, all if fewer)"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
