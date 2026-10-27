@@ -48,7 +48,7 @@ def save_snapshot(sb, mcfg, sd, live, flags):
         rows.append({"user_id": mcfg["user_id"], "market": mcfg["market"], "snap_date": str(sd), "symbol": s,
                      "sector": _clean(r.get("Sector")), "score": _clean(_num(r.get("Score"))), "setup": _clean(r.get("Setup")),
                      "ma_hold": _clean(r.get("MA hold")) or None,
-                     "rules": {k: r.get(k) for k in RULE_IDS if k in r},
+                     "rules": {**{k: r.get(k) for k in RULE_IDS if k in r}, **({"HIDDEN": True} if r.get("Hidden") else {})},
                      "flagged": s in flags, "picked": s in picked, "adr": _clean(_num(r.get("ADR"))),
                      "rel_tight": _clean(_num(r.get("Rel tight"))), "last": _clean(_num(r.get("Last")))})
     for i in range(0, len(rows), 500):
@@ -87,8 +87,16 @@ def run_review(sb, mcfg, sd, live, shown_min=6, ready=READY):
     for r in bo.to_dict("records"):
         s, p = r["Symbol"], prev.get(r["Symbol"])
         failed = ""
+        prules = (p or {}).get("rules") or {}
+        if isinstance(prules, str):
+            try:
+                prules = json.loads(prules)
+            except Exception:
+                prules = {}
         if p is None:
             bucket = "Not in the scan before" if pdate else "No earlier snapshot yet"
+        elif prules.get("HIDDEN"):
+            bucket = "Hidden by you"
         elif p.get("picked"):
             bucket = "Picked"
         elif p.get("flagged"):
@@ -162,7 +170,7 @@ def rule_check(sb, mcfg):
     return pd.DataFrame(rows), rev
 
 
-BUCKET_COLOURS = {"Held back by rules": "#fff3cd", "Shown, not flagged": "#cfe2ff", "Flagged": "#d4edda", "Picked": "#28a745",
+BUCKET_COLOURS = {"Hidden by you": "#f5c2c7", "Held back by rules": "#fff3cd", "Shown, not flagged": "#cfe2ff", "Flagged": "#d4edda", "Picked": "#28a745",
                   "Not in the scan before": "#e2e3e5", "No earlier snapshot yet": "#e2e3e5"}
 
 
@@ -190,7 +198,7 @@ def render_review(st, sb, mcfg, sd, live, flags, step="5", base=None, shown_min=
             "symbol": "Symbol", "sector": "Sector", "chg": "Chg %", "vol_x": "Vol x", "adr": "ADR", "bucket": "What happened",
             "prev_date": "We looked on", "prev_score": "Score then", "prev_setup": "Setup then", "prev_ma_hold": "MA hold then",
             "failed_rules": "Rules that held it back"})
-        order = {"Held back by rules": 0, "Shown, not flagged": 1, "Flagged": 2, "Picked": 3}
+        order = {"Hidden by you": 0, "Held back by rules": 1, "Shown, not flagged": 2, "Flagged": 3, "Picked": 4}
         view = view.assign(_o=view["What happened"].map(order).fillna(9)).sort_values(["_o", "Chg %"], ascending=[True, False]) \
                    .drop(columns="_o").reset_index(drop=True)
         counts = view["What happened"].value_counts()

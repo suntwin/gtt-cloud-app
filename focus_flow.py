@@ -63,7 +63,7 @@ def _num(x):
 
 LABELS = {"Flag": "⚑", "ADR": "🖍 ADR", "Ti65": "🖍 Ti65", "Rel tight": "🖍 Rel tight", "ADRs from 10w": "🖍 Rel Wk Dist",
           "R1": "R1 Liquid", "R2": "R2 Volume", "R3": "R3 Sector", "R4": "R4 ADR", "R5": "R5 Pivot", "R6": "R6 Tight",
-          "R7": "R7 10MA", "R8": "R8 Weekly", "Entry": "Entry plan", "Leader": "👑"}
+          "R7": "R7 10MA", "R8": "R8 Weekly", "Entry": "Entry plan", "Leader": "👑", "Hide": "🙈"}
 CARD_NAMES = {"Last": "Last", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol ratio", "dvol": "Day vol",
               "_nr4": "NR4 %", "_nr4_previous": "NR4 prev %", "_rel_tightness_prev": "Rel tight prev",
               "off_high_21": "Off 1M hi %", "off_high_126": "Off 6M hi %", "_10madist": "10MA %", "_20madist": "20MA %",
@@ -90,6 +90,7 @@ def _tips(cfg):
               "Score": "Rules passed out of 8 (½ counts half)",
               "Leader": "👑 #n = the n-th strongest stock in its sector by the RS window picked in the Leaders panel (top 5 get the badge). Strength, not readiness.",
               "Avg RS": "Average RS (1–99 vs the market) of the screens the stock is in", "RS 1M": "RS on the 1-month screen (blank = not in it)",
+              "Hide": "🙈 Hide: tick, then press the Save button — the stock leaves step 2 (and the 👑 ranks) until you unhide it",
               "Explosive": "ADR × Ti65 — range × trend intensity. Higher = more explosive. Breaks RS ties in the Leaders panel",
               "RS 3M": "RS on the 3-month screen (blank = not in it)", "RS 6M": "RS on the 6-month screen (blank = not in it)",
               "MA hold": "HL on 10MA = pullback low held above the previous one (within 0.3 ADR), tagged the 10MA (−0.6 to +0.5 ADR), "
@@ -140,6 +141,26 @@ def remove_flags(sb, mcfg, syms):
     syms = list(syms)
     if syms:
         sb.table("flags").delete().eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]).in_("symbol", syms).execute()
+
+
+def load_hidden(sb, mcfg):
+    """{symbol: row} of stocks you hid from step 2. Missing table → {} (run supabase_hidden.sql)."""
+    rows = (sb.table("hidden_symbols").select("*").eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"])
+            .execute().data or [])
+    return {r["symbol"]: r for r in rows}
+
+
+def hide_symbols(sb, mcfg, syms, sectors=None, reason="hidden in Sector Focus"):
+    rows = [{"user_id": mcfg["user_id"], "market": mcfg["market"], "symbol": s, "sector": (sectors or {}).get(s),
+             "reason": reason, "hidden_at": date.today().isoformat()} for s in syms]
+    if rows:
+        sb.table("hidden_symbols").upsert(rows, on_conflict="user_id,market,symbol").execute()
+
+
+def unhide_symbols(sb, mcfg, syms):
+    syms = list(syms)
+    if syms:
+        sb.table("hidden_symbols").delete().eq("user_id", mcfg["user_id"]).eq("market", mcfg["market"]).in_("symbol", syms).execute()
 
 
 def update_flag(sb, mcfg, sym, **fields):
@@ -390,7 +411,7 @@ def _c_rs(x):
         _css("#f8d7da", "#721c24") if x < 70 else ""
 
 
-def add_leaders(v, win, min_adr=0.0):
+def add_leaders(v, win, min_adr=0.0, exclude=()):
     """RS display columns (0 = not in that screen → blank) and a 👑 #rank badge for the top LEAD_BADGE per sector
     (today's scan only). Leaders must be EXPLOSIVE: ADR ≥ min_adr (R4's floor). Ranked by the chosen RS window; ties
     (RS is 1–99, many sit at 99) go to the more explosive stock = ADR × Ti65."""
@@ -401,7 +422,7 @@ def add_leaders(v, win, min_adr=0.0):
     adr = pd.to_numeric(v["ADR"], errors="coerce") if "ADR" in v.columns else pd.Series(np.nan, index=v.index)
     ti = pd.to_numeric(v["Ti65"], errors="coerce") if "Ti65" in v.columns else pd.Series(np.nan, index=v.index)
     v["Explosive"] = (adr * ti).round(1)
-    ok = today & rs.notna() & ((adr >= min_adr) if min_adr else True)
+    ok = today & rs.notna() & ((adr >= min_adr) if min_adr else True) & ~v["Symbol"].isin(set(exclude))
     # Ties at the same RS: more explosive (ADR × Ti65) first, then strong on more screens, then closer to the 52W high.
     k = pd.DataFrame({"rs": rs, "ex": v["Explosive"], "n": v[["RS 1M", "RS 3M", "RS 6M"]].notna().sum(axis=1),
                       "o52": pd.to_numeric(v.get("Off 52W %"), errors="coerce").abs() if "Off 52W %" in v.columns else np.nan,
@@ -661,9 +682,15 @@ def _render_sector_focus(st, sb, base_df, mcfg):
         v.loc[stale, "Entry"] = "No longer passes the screens — check the chart; unflag unless you hold it"
         v.loc[stale, "Flags"] = "Not in today's scan"
         v.loc[stale, "Data"] = "dropped out"
+    try:
+        hidden = load_hidden(sb, mcfg)
+        hide_ok = True
+    except Exception:
+        hidden, hide_ok = {}, False
+    v["Hidden"] = v["Symbol"].isin(hidden)
     lead_win = st.session_state.get(f"sf_lwin_{mkt}", "Avg RS")
     lead_low = st.session_state.get(f"sf_llow_{mkt}", False)
-    v = add_leaders(v, lead_win, 0.0 if lead_low else float(cfg["min_adr"]))
+    v = add_leaders(v, lead_win, 0.0 if lead_low else float(cfg["min_adr"]), exclude=hidden)
     st.session_state[f"sf_view_{mkt}"] = v            # for the floating 🔍 Check ticker (every tab)
     # Alert Management uses these for its priorities (Shortlister is retired)
     picked = [s_ for s_, r_ in flags.items() if r_.get("build_range")]
@@ -671,7 +698,7 @@ def _render_sector_focus(st, sb, base_df, mcfg):
 
     # ── Step 2: one sector at a time ──
     st.markdown("#### 2 · Go through each sector and flag the best few")
-    live = v[~stale]
+    live = v[~stale & ~v["Hidden"]]                    # hidden stocks never show in step 2 (ranks are worked out without them)
     c1, c2 = st.columns([1, 3])
     min_score = c1.slider("Min score", 0.0, 8.0, 4.0, 0.5, key=f"sf_min_{mkt}",
                           help="Hide stocks passing fewer rules. Flagged stocks always show.")
@@ -685,7 +712,7 @@ def _render_sector_focus(st, sb, base_df, mcfg):
         flagged_in = {x: int(((v["Sector"] == x) & v["Flag"]).sum()) for x in focus}
         g = st.radio("Sector", focus, horizontal=True, key=f"sf_sector_{mkt}")      # static labels keep the selection stable
         st.caption(" · ".join(f"**{x}** {counts.get(x, 0)} stocks, ⚑{flagged_in.get(x, 0)}" for x in focus))
-        _leaders_panel(st, sb, mcfg, cfg, live, g, sd)
+        _leaders_panel(st, sb, mcfg, cfg, live, g, sd, hide_ok)
         part = live[(live["Sector"] == g) & ((live["Score"] >= min_score) | live["Flag"])]
         gone = v[stale & (v["Sector"] == g)]
         if not gone.empty:
@@ -697,7 +724,8 @@ def _render_sector_focus(st, sb, base_df, mcfg):
         else:
             _flag_grid(st, sb, mcfg, cfg, part, key=f"sf_grid_{mkt}_{g}_{sd}", submit=f"Save flags for {g}",
                        okey=f"sf_order_{mkt}_{g}", copy_label=g, copy_key=f"sf_copy_sec_{mkt}_{g}", sector=g,
-                       note=f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}).")
+                       note=f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}).", hide=hide_ok)
+        _hidden_box(st, sb, mcfg, hidden, hide_ok)
 
     # ── Step 3: last stop — the best setups in every other sector ──
     st.markdown("---")
@@ -731,7 +759,7 @@ def _render_sector_focus(st, sb, base_df, mcfg):
     st.markdown("---")
     try:
         import focus_review
-        focus_review.render_review(st, sb, mcfg, sd, live, flags)
+        focus_review.render_review(st, sb, mcfg, sd, v[~stale], flags)     # hidden ones too: did a stock you hid break out?
     except Exception as e:
         st.caption(f"Review unavailable ({e}).")
 
@@ -740,7 +768,31 @@ SETUP_ORDER = ["1-min ORH ready", "Leader flag on 10MA", "Broke out today", "Tig
                "Volume came, not tight yet", "Near the pivot", "Not ready"]
 
 
-def _leaders_panel(st, sb, mcfg, cfg, live, g, sd):
+def _hidden_box(st, sb, mcfg, hidden, hide_ok):
+    """The stocks you've hidden, with Unhide."""
+    mkt = mcfg.get("market")
+    if not hide_ok:
+        st.caption("To hide stocks from this screen, run supabase_hidden.sql once in Supabase.")
+        return
+    if not hidden:
+        return
+    with st.expander(f"🙈 Hidden ({len(hidden)}) — not shown in step 2 and left out of the 👑 ranks"):
+        hd = pd.DataFrame([{"Unhide": False, "Symbol": s, "Sector": r.get("sector") or "", "Hidden on": str(r.get("hidden_at") or "")[:10],
+                            "Reason": r.get("reason") or ""} for s, r in sorted(hidden.items())])
+        with st.form(f"sf_hidden_form_{mkt}", border=False):
+            ed = st.data_editor(hd, hide_index=True, key=f"sf_hidden_ed_{mkt}", disabled=["Symbol", "Sector", "Hidden on", "Reason"],
+                                column_config={"Unhide": st.column_config.CheckboxColumn("Unhide", width="small")})
+            go_ = st.form_submit_button("Unhide ticked")
+        if go_:
+            back = list(ed.loc[ed["Unhide"].fillna(False).astype(bool), "Symbol"])
+            if back:
+                unhide_symbols(sb, mcfg, back)
+                st.toast(f"Unhid {', '.join(back)}.")
+                st.session_state.pop(f"sf_hidden_ed_{mkt}", None)
+                _rerun(st)
+
+
+def _leaders_panel(st, sb, mcfg, cfg, live, g, sd, hide_ok=False):
     """👑 The sector's strongest stocks by RS — shown regardless of score. Watch them for the next setup."""
     mkt = mcfg.get("market")
     st.markdown(f"##### 👑 Leaders in {g}")
@@ -765,23 +817,27 @@ def _leaders_panel(st, sb, mcfg, cfg, live, g, sd):
         return
     _flag_grid(st, sb, mcfg, cfg, lead, key=f"sf_lgrid_{mkt}_{g}_{sd}_{win}", submit=f"Save flags (leaders in {g})",
                okey=f"sf_lorder_{mkt}_{g}", copy_label=f"Leaders in {g}", copy_key=f"sf_copy_lead_{mkt}_{g}", sector=g,
-               note=f"{len(lead)} leaders.", cols=LEAD_COLS)
+               note=f"{len(lead)} leaders.", cols=LEAD_COLS, hide=hide_ok)
     st.markdown(f"##### All of {g}")
 
 
 def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key, sector=None, note="", show_sector=False,
-               cols=None):
-    """One flaggable grid (⚑ on the row, saved with the form button) + a copy box in the table's sort order."""
+               cols=None, hide=False):
+    """One flaggable grid (⚑ on the row, saved with the form button) + a copy box in the table's sort order.
+    hide=True adds a 🙈 Hide tick: saved with the same button, the stock leaves step 2 until unhidden."""
     mkt = mcfg.get("market")
     cols = [c for c in (cols or SHOW) if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
+    if hide:
+        cols.insert(cols.index("Flag") + 1 if "Flag" in cols else 0, "Hide")
     if show_sector and "Sector" in part.columns:
         cols.insert(cols.index("Setup") + 1, "Sector")
-    pv = part.reset_index(drop=True)
+    pv = part.reset_index(drop=True).assign(Hide=False)
     gv = pv[cols].copy()
     gv["Flag"] = gv["Flag"].astype(bool)
     was = set(part.loc[part["Flag"], "Symbol"])
+    edit = {"Flag": "bool", "Hide": "bool"} if hide else {"Flag": "bool"}
     ed, save = gp.card_grid(st, gv, key=key, sty=style(gv, cfg["min_liq"]), extra=_card_extra(pv, cols), labels=LABELS,
-                            tips=_tips(cfg), card_first=CARD_FIRST, edit={"Flag": "bool"}, submit=submit,
+                            tips=_tips(cfg), card_first=CARD_FIRST, edit=edit, submit=submit,
                             height=min(32 * len(pv) + 70, 560),
                             widths={"Symbol": 110, "Leader": 72, "Score": 58, "Setup": 170, "Sector": 150, "Flags": 200, "Source": 110})
     st.caption(f"{note} **Click a ticker** for all its data · tick ⚑ on the rows you like, then **{submit}** "
@@ -789,6 +845,13 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
     if save and ed is not None and "Symbol" in ed.columns:
         st.session_state[okey] = list(ed["Symbol"])                  # the grid's sort order at Save
         now = set(ed.loc[ed["Flag"].fillna(False).astype(bool), "Symbol"])
+        hid = list(ed.loc[ed["Hide"].fillna(False).astype(bool), "Symbol"]) if hide and "Hide" in ed.columns else []
+        if hid:
+            secmap = dict(zip(pv["Symbol"], pv["Sector"])) if "Sector" in pv.columns else {}
+            hide_symbols(sb, mcfg, hid, sectors=secmap)
+            st.toast(f"Hidden: {', '.join(hid)} — unhide them from 🙈 Hidden under the sector table.")
+            if now == was:
+                _rerun(st)
         if now != was:
             secmap = dict(zip(pv["Symbol"], pv["Sector"])) if "Sector" in pv.columns else {}
             add_flags(sb, mcfg, sorted(now - was), sector=sector, source=sector or "other sectors", sectors=None if sector else secmap)

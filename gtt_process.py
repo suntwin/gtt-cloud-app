@@ -37,7 +37,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-27b · Floating 🔍 Check ticker (bottom-right, every tab)"
+PROCESS_VERSION = "v2026-10-27c · Sector Focus: 🙈 Hide stocks from step 2 (ranks recomputed) — run supabase_hidden.sql"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2515,7 +2515,7 @@ function(params){
     'max-height:96%;overflow:auto;z-index:99999;' +
     'background:#ffffff;color:#111;border:1px solid #bbb;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.35);' +
     'font:12px/1.25 -apple-system,Segoe UI,Roboto,sans-serif;padding:6px 8px;';
-  const skip = ['Keep','CONT','Symbol','Sector_Rank','Sector_Total','Flag','Pick','Unflag'];
+  const skip = ['Keep','CONT','Symbol','Sector_Rank','Sector_Total','Flag','Pick','Unflag','Hide'];
   let rows = '';
   let cols = params.api.getColumns().slice();
   const first = (params.context && params.context.cardFirst) ? params.context.cardFirst : [];
@@ -2634,7 +2634,7 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
         if kind == "bool":
             kw.update(editable=True, cellDataType="boolean", cellRenderer="agCheckboxCellRenderer",
                       cellEditor="agCheckboxCellEditor", width=72 if c == "Unflag" else 58, maxWidth=80)
-            if c in ("Flag", "Pick"):
+            if c in ("Flag", "Pick", "Hide"):
                 kw["pinned"] = "left"
         elif kind == "number":
             kw.update(editable=True, cellEditor="agNumberCellEditor", width=68, maxWidth=80)
