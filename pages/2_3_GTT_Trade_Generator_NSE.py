@@ -678,7 +678,7 @@ def main():
                 amc = list(fdf.columns)
                 with st.expander("Choose visible columns (saved as your default)"):
                     # Force key columns to always be visible (fixes old saved prefs)
-                    _forced_visible = ['_vol_ratio', '_rel_wk_dist', '_rel_tightness', '_chg_percentclose', 'W_Dist10wMA',
+                    _forced_visible = ['Last', '_vol_ratio', '_rel_wk_dist', '_rel_tightness', '_chg_percentclose', 'W_Dist10wMA',
                                        'W_TightCloses_10w', 'Adr', 'Symbol', 'off_high_21', 'off_high_252']
                     _saved = get_persisted_columns('nse_main_table_v2', amc, mtdh)
                     _default = list(set(_saved + [c for c in _forced_visible if c in amc]))
@@ -689,6 +689,11 @@ def main():
                 cp = {c: i for i, c in enumerate(columns_to_show) if c in fdf.columns}
                 smc = sorted(smc, key=lambda c: cp.get(c, 9999)); hmc = sorted(hmc, key=lambda c: cp.get(c, 9999))
                 fdf = fdf[smc + hmc]
+                _front = [c for c in ('Last', '_chg_percentclose') if c in fdf.columns]   # right after the ticker, frozen
+                if _front and 'Symbol' in fdf.columns:
+                    _rest = [c for c in fdf.columns if c not in _front]
+                    _i = _rest.index('Symbol') + 1
+                    fdf = fdf[_rest[:_i] + _front + _rest[_i:]]
 
                 gb = GridOptionsBuilder.from_dataframe(fdf)
                 gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=70, flex=0)
@@ -817,6 +822,8 @@ def main():
                 # ── Symbol renderer ──
                 sr = JsCode("""function(p){const s=p.value;const r=p.data.Sector_Rank;const t=p.data.Sector_Total;if(r&&t&&r>0)return s+' ('+r+'/'+t+')';return s}""")
                 gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left', checkboxSelection=True, headerCheckboxSelection=True)
+                for _pc in ('Last', '_chg_percentclose'):
+                    if _pc in fdf.columns: gb.configure_column(_pc, pinned='left')
                 if 'Sector' in fdf.columns: gb.configure_column('Sector', minWidth=120, maxWidth=150)
                 if 'Industry' in fdf.columns: gb.configure_column('Industry', minWidth=120, maxWidth=150)
                 if 'Sector_Rank' in fdf.columns: gb.configure_column('Sector_Rank', hide=True)
@@ -937,7 +944,7 @@ def main():
                             n_vol = int((ss2['_vol_ratio'].fillna(0) >= 1.0).sum())
                             ss2 = ss2.sort_values('_rel_tightness' if '_rel_tightness' in ss2.columns else '_vol_ratio',
                                                   ascending='_rel_tightness' in ss2.columns, na_position='last').head(15)
-                            dc = [c for c in ['Symbol','Saved','_chg_percentclose','_vol_ratio','_avgvol_mln','dvol','Adr'] + (['_circuit'] if MARKET_CFG.get('market') == 'NSE' else []) + ['Ti65','_nr4','_rel_tightness','_rel_wk_dist','off_high_21','off_high_252','_10madist','_20madist','Industry'] if c in ss2.columns]
+                            dc = [c for c in ['Symbol','Last','_chg_percentclose','Saved','_vol_ratio','_avgvol_mln','dvol','Adr'] + (['_circuit'] if MARKET_CFG.get('market') == 'NSE' else []) + ['Ti65','_nr4','_rel_tightness','_rel_wk_dist','off_high_21','off_high_252','_10madist','_20madist','Industry'] if c in ss2.columns]
                             sd = ss2[dc].copy()
                             with st.expander(f"{sec} — tightest {len(ss2)} of {int((sdf['Sector']==sec).sum())} scanned · {n_vol} with volume today"):
                                 gb = GridOptionsBuilder.from_dataframe(sd); gb.configure_default_column(resizable=True,filterable=True,sortable=True,minWidth=70,flex=0)
@@ -964,6 +971,8 @@ def main():
                                 for rc,sn in hs2.items():
                                     if rc in sd.columns: gb.configure_column(rc, headerName=sn)
                                 if 'Symbol' in sd.columns: gb.configure_column('Symbol', cellRenderer=sr, minWidth=150, maxWidth=180, pinned='left')
+                                for _pc in ('Last', '_chg_percentclose'):
+                                    if _pc in sd.columns: gb.configure_column(_pc, pinned='left')
                                 if '_circuit' in sd.columns:
                                     sd['_circuit'] = pd.to_numeric(sd['_circuit'], errors='coerce')
                                     gb.configure_column('_circuit', headerName='Circuit %', minWidth=70, maxWidth=90, headerTooltip='NSE price band: 20 free · 10 caution · ≤5 can lock in circuit',

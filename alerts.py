@@ -24,7 +24,7 @@ LIST_LABELS = {"FOCUS": "Picked", "FLAGGED": "Flagged", "ACTION": "Action", "REC
 TZ = {"NSE": "Asia/Kolkata", "USA": "America/New_York", "CRYPTO": "UTC"}
 TV_LIMIT = 100                      # TradingView plan: max active alerts (all markets together)
 FOCUS_TARGET = 15                   # suggested waiting alerts per market: only the best breakout candidates
-SHOW = ["Priority", "Symbol", "TF", "Line", "Alert at", "Last", "To alert %", "Status", "Set d ago", "Expires in d", "Lists", "Note"]
+SHOW = ["Priority", "Symbol", "TF", "Line", "Alert at", "Last", "Chg %", "To alert %", "Status", "Set d ago", "Expires in d", "Lists", "Note"]
 
 
 def _num(x):
@@ -152,11 +152,12 @@ def build_table(df, base_df, lists, market_filter=None):
     if df is None or df.empty:
         return pd.DataFrame(columns=SHOW + ["_trig", "_adr", "_fired", "_mkt"])
     now = dt.datetime.now(dt.timezone.utc)
-    last = adr = {}
+    last = adr = chg = {}
     if base_df is not None and not getattr(base_df, "empty", True) and "Symbol" in base_df.columns:
         b = base_df.drop_duplicates("Symbol").set_index(base_df.drop_duplicates("Symbol")["Symbol"].astype(str).str.upper())
         last = pd.to_numeric(b.get("Last"), errors="coerce").to_dict() if "Last" in b else {}
         adr = pd.to_numeric(b.get("Adr"), errors="coerce").to_dict() if "Adr" in b else {}
+        chg = pd.to_numeric(b.get("_chg_percentclose"), errors="coerce").to_dict() if "_chg_percentclose" in b else {}
     on = {}
     for key, syms in (lists or {}).items():
         for s in syms:
@@ -189,7 +190,7 @@ def build_table(df, base_df, lists, market_filter=None):
             "Symbol": tk,
             "TF": _tf_label(r.get("resolution")), "Line": line,
             "Alert at": round(lvl, 4 if np.isfinite(lvl) and abs(lvl) < 10 else 2) if np.isfinite(lvl) else np.nan,
-            "Last": lp, "To alert %": round((lvl / lp - 1) * 100, 1) if np.isfinite(lp) and lp and np.isfinite(lvl) else np.nan,
+            "Last": lp, "Chg %": _num(chg.get(tk, np.nan)), "To alert %": round((lvl / lp - 1) * 100, 1) if np.isfinite(lp) and lp and np.isfinite(lvl) else np.nan,
             "Status": status,
             "Set d ago": (now - cre).days if cre is not None else np.nan,
             "Expires in d": (exp - now).days if exp is not None else np.nan,
@@ -226,7 +227,9 @@ def _css(bg, fg="black", bold=False):
 
 
 def style_alerts(v, adr):
-    sty = v.style.format({"Alert at": "{:g}", "Last": "{:g}", "To alert %": "{:+.1f}"}, na_rep="")
+    sty = v.style.format({"Alert at": "{:g}", "Last": "{:g}", "Chg %": "{:+.1f}", "To alert %": "{:+.1f}"}, na_rep="")
+    if "Chg %" in v.columns:
+        sty = sty.map(gp._c_chg, subset=["Chg %"])
 
     def dist(col):
         res = []
@@ -338,7 +341,7 @@ def render_alerts_tab(st, sb, base_df, mcfg):
         v = t[~t["_trig"]] if view == "Waiting" else t[t["_trig"]] if view == "Triggered" else t
         cols = [c for c in SHOW if c in v.columns]
         v = v.copy()
-        for c in ("Alert at", "Last", "To alert %", "Set d ago", "Expires in d"):
+        for c in ("Alert at", "Last", "Chg %", "To alert %", "Set d ago", "Expires in d"):
             if c in v.columns:
                 v[c] = pd.to_numeric(v[c], errors="coerce")
         vv = v[cols].reset_index(drop=True)

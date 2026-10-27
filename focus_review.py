@@ -198,6 +198,8 @@ def render_review(st, sb, mcfg, sd, live, flags, step="5", base=None, shown_min=
                 "symbol": "Symbol", "sector": "Sector", "chg": "Chg %", "vol_x": "Vol x", "adr": "ADR", "bucket": "What happened",
                 "prev_date": "We looked on", "prev_score": "Score then", "prev_setup": "Setup then", "prev_ma_hold": "MA hold then",
                 "failed_rules": "Rules that held it back"})
+            if live is not None and "Last" in getattr(live, "columns", []):          # display only (not stored)
+                view.insert(1, "Last", view["Symbol"].map(dict(zip(live["Symbol"], pd.to_numeric(live["Last"], errors="coerce")))))
             order = {"Hidden by you": 0, "Held back by rules": 1, "Shown, not flagged": 2, "Flagged": 3, "Picked": 4}
             view = view.assign(_o=view["What happened"].map(order).fillna(9)).sort_values(["_o", "Chg %"], ascending=[True, False]) \
                        .drop(columns="_o").reset_index(drop=True)

@@ -56,7 +56,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-28b · Positions: Close asks for price + date; edit any position or closed trade"
+PROCESS_VERSION = "v2026-10-28c · Last + Chg % right after the ticker and frozen in every table"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2340,7 +2340,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
         c.metric(n, int(counts.get(k, 0)))
 
-    show = ["Keep", "CONT", "Tier", "Patterns", "Label", "Symbol", "Note", "Reason", "Tag", "_chg_percentclose", "_vol_ratio",
+    show = ["Keep", "CONT", "Tier", "Patterns", "Label", "Symbol", "Last", "Note", "Reason", "Tag", "_chg_percentclose", "_vol_ratio",
             "Adr", "_rel_tightness_today", "_nr4", "dvol", "_avgvol_mln", "_rel_wk_dist", "off_high_21", "off_high_252",
             "_10madist", "_20madist", "Avg_RS", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
@@ -2610,6 +2610,12 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
     labels, edit, widths, fmt = labels or {}, edit or {}, widths or {}, fmt or {}
     vis = view.reset_index(drop=True).copy()
+    if "Symbol" in vis.columns:                       # Last + Chg % always sit right after the ticker, frozen with it
+        front = [c for c in ("Last", "Chg %") if c in vis.columns]
+        if front:
+            rest = [c for c in vis.columns if c not in front]
+            i = rest.index("Symbol") + 1
+            vis = vis[rest[:i] + front + rest[i:]]
     height = max(height, 30 * len(vis) + 125)   # room for wrapped headers + horizontal scrollbar (1-row tables were squashed)
     data = vis.copy()
     for c in data.columns:                                   # round numbers for display (the card rounds too)
@@ -2653,6 +2659,8 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
             kw["width"] = kw["minWidth"] = widths[c]
         if "__s_" + str(c) in data.columns:
             kw["cellStyle"] = style_js
+        if c in ("Last", "Chg %") and "Symbol" in vis.columns:
+            kw["pinned"] = "left"
         if c == "Symbol":
             kw.update(pinned="left", cellStyle={"fontWeight": "bold", "textDecoration": "underline", "cursor": "pointer"},
                       headerTooltip="Click a ticker to see all its data", width=widths.get(c, 105), maxWidth=140)
@@ -2689,6 +2697,11 @@ def _tomorrow_grid(view, cfg, key):
     """Tomorrow's list as an AgGrid (like the scanner table): sort/filter/tick, returned FILTERED_AND_SORTED on Update."""
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
     df = _grid_safe(view)
+    if "Symbol" in df.columns:                        # Last + Chg % right after the ticker, frozen with it
+        front = [c for c in ("Last", "_chg_percentclose") if c in df.columns]
+        rest = [c for c in df.columns if c not in front]
+        i = rest.index("Symbol") + 1
+        df = df[rest[:i] + front + rest[i:]]
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(resizable=True, filterable=True, sortable=True, minWidth=60, flex=0)
     gb.configure_grid_options(enableBrowserTooltips=True, onCellClicked=row_card_js())
@@ -2717,6 +2730,8 @@ def _tomorrow_grid(view, cfg, key):
                 kw["filter"] = "agNumberColumnFilter"
                 kw["valueFormatter"] = JsCode("function(p){return (p.value===null||p.value===undefined)?'':"
                                               "(Math.round(p.value*100)/100).toString()}")
+            if c == "_chg_percentclose":
+                kw["pinned"] = "left"
             gb.configure_column(c, **kw)
     return AgGrid(df, gridOptions=gb.build(), height=480, width="100%", key=key,
                   update_mode=GridUpdateMode.MANUAL, data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
@@ -2777,7 +2792,7 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
     notes = latest_note_by_symbol(sb, mcfg)
     if notes:
         part["Note"] = part["Symbol"].map(notes)
-    show = ["Skip"] + tagcols + ["Rating", "Symbol", "Note", "Suggested", "Why", "In_Watchlist", "On_List", "_chg_percentclose",
+    show = ["Skip"] + tagcols + ["Rating", "Symbol", "Last", "_chg_percentclose", "Note", "Suggested", "Why", "In_Watchlist", "On_List",
                                  "_vol_ratio", "Adr", "_rel_tightness_prev", "_nr4_previous", "_rel_wk_dist", "off_high_252", "dvol",
                                  "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "Sector"]
     show = _with_circuit(show, mcfg)
@@ -2796,7 +2811,9 @@ def render_breakout_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         "Why": st.column_config.TextColumn("Why", width="large"),
         "In_Watchlist": st.column_config.TextColumn("Already saved as"),
         "On_List": st.column_config.CheckboxColumn("Was on list"),
-        "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f"),
+        "Symbol": st.column_config.TextColumn("Symbol", pinned=True),
+        "Last": st.column_config.NumberColumn("Last", format="%.2f", pinned=True),
+        "_chg_percentclose": st.column_config.NumberColumn("Chg %", format="%.1f", pinned=True),
         "_vol_ratio": st.column_config.NumberColumn("Vol x", format="%.1f"),
         "_rel_tightness_prev": st.column_config.NumberColumn("Rel tight (prev)", format="%.2f"),
         "_nr4_previous": st.column_config.NumberColumn("NR4 % (prev)", format="%.2f",
@@ -3116,6 +3133,14 @@ def render_watchlist_tab(st, sb, base_df, mcfg):
             if multi:
                 cfgcols["Tags"] = _tags_column(st, "Tags", "Pick one or more", extra=("UNTAGGED",) if has_untagged else ())
             st.caption("One row per stock. Change tags, rating or Action, then press Apply — nothing is sent until then.")
+            _front = [c for c in ("Last", "Chg %") if c in v.columns]           # Last + Chg % right after the ticker, frozen
+            if _front and "symbol" in v.columns:
+                _rest = [c for c in v.columns if c not in _front]
+                _i = _rest.index("symbol") + 1
+                v = v[_rest[:_i] + _front + _rest[_i:]]
+            cfgcols.update({"symbol": st.column_config.TextColumn("symbol", pinned=True),
+                            "Last": st.column_config.NumberColumn("Last", format="%.2f", pinned=True),
+                            "Chg %": st.column_config.NumberColumn("Chg %", format="%.1f", pinned=True)})
             if "In scan" in v.columns:
                 _gone = int((~v["In scan"]).sum())
                 if _gone:
