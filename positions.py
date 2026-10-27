@@ -265,6 +265,10 @@ def render_positions_tab(st, sb, base_df, mcfg):
                     "init_stop": float(stop) or None, "fail_level": fail, "note": note}).execute()
                 st.success(f"Added {sym}."); st.rerun()
 
+    _edit_box(st, sb, mcfg, open_)
+    if not open_ and st.session_state.get(f"pos_msg_{mkt}"):
+        st.success(st.session_state.pop(f"pos_msg_{mkt}"))
+
     if not open_:
         st.info("No open positions.")
         _render_stats(st, sb, mcfg, None, _equity(st, sb, mcfg))
@@ -328,6 +332,9 @@ def render_positions_tab(st, sb, base_df, mcfg):
     v = v.assign(_o=v["Status"].str[:1].map(LEVEL)).sort_values(["_o", "Return %"], ascending=[True, False]).drop(columns="_o") \
          .reset_index(drop=True)
 
+    _close_form(st, sb, mcfg)
+    if st.session_state.get(f"pos_msg_{mkt}"):                 # shown here so it isn't hidden in a collapsed section
+        st.success(st.session_state.pop(f"pos_msg_{mkt}"))
     _red = v.loc[v["Status"].str.startswith("🔴"), "Symbol"].tolist()
     st.markdown(f"**{len(v)} open** · 🔴 {len(_red)} · 🟠 {int(v['Status'].str.startswith('🟠').sum())}"
                 + (f" — **act now: {', '.join(_red)}**" if _red else ""))
@@ -420,11 +427,15 @@ def render_positions_tab(st, sb, base_df, mcfg):
                 sq, sp = _num(r.get("Sell qty")) or 0.0, _num(r.get("Sell price"))
                 sq = sq if np.isfinite(sq) else 0.0
                 if r.get("Close"):
-                    price = sp if np.isfinite(sp) and sp > 0 else _num(o["Last"])
-                    sb.table("position_exits").insert({"position_id": pid, "qty": q_open, "price": price,
-                                                       "note": "closed"}).execute()
-                    upd.update(status="closed", closed_at=date.today().isoformat(), qty_open=0)
-                    msgs.append(f"closed {s} @ {price:g}")
+                    if np.isfinite(sp) and sp > 0:
+                        sb.table("position_exits").insert({"position_id": pid, "qty": q_open, "price": sp,
+                                                           "note": "closed"}).execute()
+                        upd.update(status="closed", closed_at=date.today().isoformat(), qty_open=0)
+                        msgs.append(f"closed {s} @ {sp:g}")
+                    else:                                   # no price typed → ask for it (below the status line)
+                        pend = st.session_state.setdefault(f"pos_pend_{mkt}", {})
+                        pend[pid] = {"Symbol": s, "qty": q_open, "last": _num(o["Last"])}
+                        msgs.append(f"{s}: enter the closing price above")
                 elif sq > 0 and np.isfinite(sp) and sp > 0:
                     # Partial sale = split, like the trades sheet: this row closes with the shares sold, and a new open row
                     # carries the rest (same entry date, price and stop).
@@ -453,6 +464,120 @@ def render_positions_tab(st, sb, base_df, mcfg):
                      key=f"pos_copy_{mkt}")
     _render_stats(st, sb, mcfg, v, eq)
     _render_closed(st, sb, mcfg)
+
+
+def _close_form(st, sb, mcfg):
+    """Positions ticked Close without a price: ask for the closing price and date before closing them."""
+    mkt = mcfg["market"]
+    pend = st.session_state.get(f"pos_pend_{mkt}") or {}
+    if not pend:
+        return
+    with st.container(border=True):
+        st.markdown("**Close position" + ("s" if len(pend) > 1 else "") + " — enter the price you sold at**")
+        with st.form(f"pos_close_form_{mkt}"):
+            vals = {}
+            for pid, r in pend.items():
+                c1, c2, c3 = st.columns([2, 2, 2])
+                c1.markdown(f"**{r['Symbol']}** · {r['qty']:g} shares")
+                last = r["last"] if np.isfinite(_num(r["last"])) else 0.0
+                vals[pid] = (c2.number_input(f"Closing price · {r['Symbol']}", min_value=0.0, value=float(last), step=0.05,
+                                             format="%.2f", key=f"pos_cp_{mkt}_{pid}"),
+                             c3.date_input(f"Closed on · {r['Symbol']}", value=date.today(), key=f"pos_cd_{mkt}_{pid}"))
+            b1, b2 = st.columns([1, 5])
+            ok = b1.form_submit_button("Confirm close", type="primary")
+            cancel = b2.form_submit_button("Cancel")
+        if cancel:
+            st.session_state.pop(f"pos_pend_{mkt}", None); st.rerun()
+        if ok:
+            done = []
+            for pid, (price, when) in vals.items():
+                if not price or price <= 0:
+                    st.warning(f"{pend[pid]['Symbol']}: enter a closing price."); return
+            for pid, (price, when) in vals.items():
+                r = pend[pid]
+                sb.table("position_exits").insert({"position_id": int(pid), "qty": r["qty"], "price": float(price),
+                                                   "exit_date": when.isoformat(), "note": "closed"}).execute()
+                sb.table("positions").update({"status": "closed", "closed_at": when.isoformat(), "qty_open": 0,
+                                              "updated_at": pd.Timestamp.utcnow().isoformat()}).eq("id", int(pid)).execute()
+                done.append(f"{r['Symbol']} @ {price:g}")
+            st.session_state.pop(f"pos_pend_{mkt}", None)
+            st.session_state[f"pos_msg_{mkt}"] = "Closed: " + " · ".join(done)
+            st.rerun()
+
+
+def _edit_box(st, sb, mcfg, open_):
+    """✏️ Fix any position after entering it — open ones and closed trades (exit price / date too)."""
+    mkt = mcfg["market"]
+    with st.expander("✏️ Edit a position or a closed trade"):
+        try:
+            closed = load_positions(sb, mcfg, "closed")
+        except Exception:
+            closed = []
+        allp = [(p, "open") for p in open_] + [(p, "closed") for p in sorted(closed, key=lambda x: str(x.get("closed_at") or ""), reverse=True)]
+        if not allp:
+            st.caption("Nothing to edit yet."); return
+        lab = {p["id"]: f"{p['symbol']} · {'open' if k == 'open' else 'closed ' + str(p.get('closed_at') or '')[:10]} · "
+                        f"entry {str(p['entry_date'])[:10]} @ {_num(p['avg_price']):g} · "
+                        f"{_num(p.get('qty_open') if k == 'open' else p.get('qty')):g} sh" for p, k in allp}
+        pid = st.selectbox("Position", list(lab), format_func=lambda i: lab[i], key=f"pos_edit_sel_{mkt}")
+        p, kind = next((p, k) for p, k in allp if p["id"] == pid)
+        ex = pd.DataFrame(load_exits(sb, [pid])) if kind == "closed" else pd.DataFrame()
+        with st.form(f"pos_edit_form_{mkt}_{pid}"):
+            c = st.columns(4)
+            sym = c[0].text_input("Symbol", value=p["symbol"]).strip().upper().split(":")[-1]
+            ent = c[1].date_input("Entry date", value=pd.Timestamp(p["entry_date"]).date())
+            avg = c[2].number_input("Average price", min_value=0.0, value=float(_num(p["avg_price"]) or 0), step=0.05, format="%.2f")
+            qn = _num(p.get("qty_open") if kind == "open" else p.get("qty"))
+            qty = c[3].number_input("Shares" + (" held" if kind == "open" else " sold"), min_value=0.0,
+                                    value=float(qn if np.isfinite(qn) else 0), step=1.0)
+            c = st.columns(4)
+            stp = c[0].number_input("Current stop (0 = none)", min_value=0.0, value=float(_num(p.get("stop")) if np.isfinite(_num(p.get("stop"))) else 0),
+                                    step=0.05, format="%.2f")
+            ist = c[1].number_input("Initial stop (for R)", min_value=0.0,
+                                    value=float(_num(p.get("init_stop")) if np.isfinite(_num(p.get("init_stop"))) else 0), step=0.05, format="%.2f")
+            opts = ["—"] + list(gp.SETUP_TYPES) + ["1-min ORH", "Pullback", "Other"]
+            setup = c[2].selectbox("Setup", opts, index=opts.index(p.get("setup")) if p.get("setup") in opts else 0)
+            sector = c[3].text_input("Sector", value=p.get("sector") or "")
+            xp = xd = None
+            if kind == "closed" and len(ex):
+                q, pr = pd.to_numeric(ex["qty"], errors="coerce").fillna(0), pd.to_numeric(ex["price"], errors="coerce")
+                px0 = float((pr * q).sum() / q.sum()) if q.sum() > 0 else float(pr.mean())
+                c = st.columns(4)
+                xp = c[0].number_input("Exit price", min_value=0.0, value=px0, step=0.05, format="%.2f")
+                xd = c[1].date_input("Exit date", value=pd.Timestamp(p.get("closed_at") or date.today()).date())
+                if len(ex) > 1:
+                    c[2].caption(f"{len(ex)} sales recorded — saving sets them all to this price and date.")
+            note = st.text_input("Note", value=(p.get("note") or ""))
+            reopen = st.checkbox("Re-open this trade (closed by mistake)") if kind == "closed" else False
+            go_ = st.form_submit_button("Save changes", type="primary")
+        if go_:
+            if not sym or avg <= 0:
+                st.warning("Symbol and average price are needed."); return
+            upd = {"symbol": sym, "entry_date": ent.isoformat(), "avg_price": float(avg), "stop": float(stp) or None,
+                   "init_stop": float(ist) or None, "setup": None if setup == "—" else setup, "sector": sector or None,
+                   "note": note, "updated_at": pd.Timestamp.utcnow().isoformat()}
+            if kind == "open":
+                upd.update(qty_open=float(qty))
+                if not _num(p.get("qty")) or _num(p.get("qty")) == _num(p.get("qty_open")):
+                    upd["qty"] = float(qty)
+            else:
+                upd["qty"] = float(qty)
+                if xd is not None:
+                    upd["closed_at"] = xd.isoformat()
+                if reopen:
+                    upd.update(status="open", closed_at=None, qty_open=float(qty))
+            sb.table("positions").update(upd).eq("id", int(pid)).execute()
+            if kind == "closed" and len(ex):
+                if reopen:
+                    sb.table("position_exits").delete().eq("position_id", int(pid)).execute()
+                else:
+                    for i in ex["id"]:
+                        f = {"price": float(xp), "exit_date": xd.isoformat()}
+                        if len(ex) == 1:
+                            f["qty"] = float(qty)
+                        sb.table("position_exits").update(f).eq("id", int(i)).execute()
+            st.session_state[f"pos_msg_{mkt}"] = f"Updated {sym}." + (" Re-opened." if reopen else "")
+            st.rerun()
 
 
 def _lots(sb, mcfg, open_v):
