@@ -58,8 +58,9 @@ def lead_n(st, mkt, n_all):
     import math
     pct = LEAD_PCT.get(st.session_state.get(f"sf_ltopp_{mkt}", "10%"), 0.10)
     return min(n_all, max(LEAD_SHOW, math.ceil(pct * n_all)))
-LEAD_COLS = ["Flag", "Symbol", "Leader", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Explosive", "ADR", "Ti65", "Score", "Setup",
-             "MA hold", "Rel tight", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "ADRs from 10w", "Avg vol", "Last", "Chg %", "Vol x", "Flags"]
+LEAD_COLS = ["Flag", "Symbol", "Leader", "Score", "Explosive", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "10MA (ADR)",
+             "Avg vol", "Day vol", "Vol x", "MA hold", "Off 1M (ADR)", "Off 52W %", "Setup", "Flags",
+             "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Last", "Chg %"]     # (Last + Chg % are moved next to the ticker)
 
 
 def _num(x):
