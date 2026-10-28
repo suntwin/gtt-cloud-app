@@ -42,9 +42,10 @@ RULE_HELP = {
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
 # Shortlist order (like Tomorrow's list): strength → explosiveness → tightness → distances, then the rest
-TIGHT_ORDER = ["Explosive", "ADR", "Ti65", "Rel tight", "NR4 %", "ADRs from 10w", "10MA %", "20MA %", "Off 1M %", "Off 52W %"]
+TIGHT_ORDER = ["Explosive", "ADR", "Ti65", "Rel tight", "NR4 %", "ADRs from 10w", "10MA %", "20MA %", "Avg vol", "Day vol",
+               "Off 1M %", "Off 52W %"]
 SHOW = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Setup", "MA hold", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8",
-        "Source", "BO", "BO vol x", "Avg vol", "Day vol", "Vol x", "Circuit %", "Flags", "10MA (ADR)", "Off 1M (ADR)", "Data",
+        "Source", "BO", "BO vol x", "Vol x", "Circuit %", "Flags", "10MA (ADR)", "Off 1M (ADR)", "Data",
         "Last", "Chg %"]
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
            "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Avg RS", "RS 1M", "RS 3M", "RS 6M"]
@@ -61,7 +62,7 @@ def lead_n(st, mkt, n_all):
     import math
     pct = LEAD_PCT.get(st.session_state.get(f"sf_ltopp_{mkt}", "10%"), 0.10)
     return min(n_all, max(LEAD_SHOW, math.ceil(pct * n_all)))
-LEAD_COLS = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Avg vol", "Day vol", "Vol x", "MA hold", "Setup", "Flags",
+LEAD_COLS = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Vol x", "MA hold", "Setup", "Flags",
              "10MA (ADR)", "Off 1M (ADR)", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Last", "Chg %"]   # Last + Chg % move next to the ticker
 
 
@@ -73,9 +74,8 @@ def _num(x):
         return np.nan
 
 
-LABELS = {"Flag": "⚑", "ADR": "🖍 ADR", "Ti65": "🖍 Ti65", "Rel tight": "🖍 Rel tight", "ADRs from 10w": "🖍 Rel Wk Dist",
-          "R1": "R1 Liquid", "R2": "R2 Volume", "R3": "R3 Sector", "R4": "R4 ADR", "R5": "R5 Pivot", "R6": "R6 Tight",
-          "R7": "R7 10MA", "R8": "R8 Weekly", "Entry": "Entry plan", "Leader": "👑", "Hide": "🙈"}
+LABELS = {"Flag": "⚑", "ADR": "ADR", "Ti65": "Ti65", "Rel tight": "Rel tight", "ADRs from 10w": "Rel Wk Dist",
+          "R1": "R1", "R2": "R2", "R3": "R3", "R4": "R4", "R5": "R5", "R6": "R6", "R7": "R7", "R8": "R8", "Entry": "Entry plan", "Leader": "👑", "Hide": "🙈"}
 CARD_NAMES = {"Last": "Last", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol ratio", "dvol": "Day vol",
               "_nr4": "NR4 %", "_nr4_previous": "NR4 prev %", "_rel_tightness_prev": "Rel tight prev",
               "off_high_21": "Off 1M hi %", "off_high_126": "Off 6M hi %", "_10madist": "10MA %", "_20madist": "20MA %",
@@ -88,17 +88,17 @@ CARD_NAMES = {"Last": "Last", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol r
               "Industry": "Industry", "Sector": "Sector", "Entry": "Entry plan", "Pivot": "Pivot", "Stop guide": "Stop guide"}
 
 
-CARD_FIRST = ["👑", "Score", "Setup", "MA hold", "🖍 ADR", "🖍 Ti65", "🖍 Rel tight", "🖍 Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
+CARD_FIRST = ["👑", "Score", "Setup", "MA hold", "ADR", "Ti65", "Rel tight", "Rel Wk Dist", "Day vol", "Avg vol", "NR4 %",
               "NR4 prev %", "Avg RS", "Sector %ile", "10MA %", "20MA %"]
 
 
 def _tips(cfg):
     """Header hover text: the rule thresholds and what the key columns mean."""
     t = {r: RULE_HELP[r].format(**cfg) for r, _ in RULES}
-    t.update({"ADR": "Average daily range %. Yellow ≥ 6 · pale ≥ 4.5 · red below",
-              "Ti65": "Trend intensity (price ÷ 65-day avg). Yellow ≥ 1.25 · pale ≥ 1.1 · red < 1",
-              "Rel tight": "Today's NR4 ÷ ADR — lower is tighter. Yellow ≤ 0.5 · pale ≤ 0.8 · red > 1.2",
-              "ADRs from 10w": "Relative weekly distance: ADRs from the 10-week MA. Yellow ≤ 2 · pale 2–3 · red > 3",
+    t.update({"ADR": "Average daily range %",
+              "Ti65": "Trend intensity (price ÷ 65-day avg)",
+              "Rel tight": "Today's NR4 ÷ ADR — lower is tighter. Gold ≤ 0.5 · pale ≤ 1.0 (as in Tomorrow's list)",
+              "ADRs from 10w": "ADRs from the 10-week MA. Green < 1 · light < 2 · pale < 3 · amber < 5 · red beyond",
               "Score": "Rules passed out of 8 (½ counts half)",
               "Leader": "👑 #n = the n-th strongest stock in its sector by the RS window picked in the Leaders panel (top 5 get the badge). Strength, not readiness.",
               "Avg RS": "Average RS (1–99 vs the market) of the screens the stock is in", "RS 1M": "RS on the 1-month screen (blank = not in it)",
@@ -483,7 +483,7 @@ def style(v, liq_floor=50.0):
     if rc:
         sty = sty.map(_c_rule, subset=rc)
     for c, f in (("Score", _c_score), ("Data", _c_data), ("Circuit %", gp._c_circuit),
-                 ("ADR", _hl("adr")), ("Ti65", _hl("ti65")), ("Rel tight", _hl("tight")), ("ADRs from 10w", _hl("relwk")),
+                 ("Rel tight", gp._c_tight), ("ADRs from 10w", gp._c_relwk),        # same colours as Tomorrow's list
                  ("BO vol x", gp._c_vol), ("Vol x", gp._c_vol), ("Chg %", gp._c_chg),
                  ("Off 1M (ADR)", _c_adr_dist), ("Off 52W %", gp._c_offhigh_long), ("10MA (ADR)", _c_ma10)):
         if c in v.columns:
@@ -880,6 +880,10 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
     part = part.assign(**{"NR4 %": g_("_nr4"), "10MA %": g_("_10madist"), "20MA %": g_("_20madist"), "Off 1M %": g_("off_high_21")})
     if sort_tight and "Rel tight" in part.columns:
         part = part.sort_values("Rel tight", ascending=True, na_position="last", kind="stable")
+    saved_order = st.session_state.get(okey) if sort_tight else None
+    if saved_order:                                   # keep the order you last sorted the table to (copy box = same order)
+        pos_ = {sym: i for i, sym in enumerate(saved_order)}
+        part = part.assign(_o=part["Symbol"].map(pos_)).sort_values("_o", na_position="last", kind="stable").drop(columns="_o")
     cols = [c for c in (cols or SHOW) if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
     if hide:
         cols.insert(cols.index("Flag") + 1 if "Flag" in cols else 0, "Hide")
@@ -892,10 +896,11 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
     edit = {"Flag": "bool", "Hide": "bool"} if hide else {"Flag": "bool"}
     ed, save = gp.card_grid(st, gv, key=key, sty=style(gv, cfg["min_liq"]), extra=_card_extra(pv, cols), labels=LABELS,
                             tips=_tips(cfg), card_first=CARD_FIRST, edit=edit, submit=submit,
-                            vanish_col="Hide" if hide else None, height=min(32 * len(pv) + 70, 560),
+                            vanish_col="Hide" if hide else None, submit_on_sort=sort_tight, height=min(32 * len(pv) + 70, 560),
                             fmt={"Avg RS": 0, "RS 1M": 0, "RS 3M": 0, "RS 6M": 0, "Explosive": 1},
-                            widths={"Symbol": 110, "Leader": 72, "Score": 58, "Setup": 170, "Sector": 150, "Flags": 200, "Source": 110,
-                                    "Avg RS": 58, "RS 1M": 52, "RS 3M": 52, "RS 6M": 52, "MA hold": 125, "Last": 78})
+                            widths={"Symbol": 105, "Leader": 64, "Score": 60, "ADR": 54, "Ti65": 54, "Explosive": 74, "Setup": 150, "Sector": 140, "Flags": 170, "Source": 100,
+                                    "Avg RS": 54, "RS 1M": 48, "RS 3M": 48, "RS 6M": 48, "MA hold": 110, "Last": 74,
+                                    **{f"R{i}": 38 for i in range(1, 9)}})
     st.caption(f"{note} **Click a ticker** for all its data · tick ⚑" + (" or 🙈 (the row vanishes at once)" if hide else "") +
                f", then **{submit}** — nothing reloads until you press it.")
     if save and ed is not None and "Symbol" in ed.columns:
@@ -920,7 +925,7 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
                                             f"Hidden: {', '.join(sorted(hid))} (unhide under 🙈 Hidden)" if hid else "") if x))
             _rerun(st)
     order = [x for x in st.session_state.get(okey, []) if x in set(pv["Symbol"])] or list(pv["Symbol"])
-    gp.copy_area(st, f"{copy_label}: {len(order)} tickers in the table's order (sort the table, press Save to refresh) — for TradingView",
+    gp.copy_area(st, f"{copy_label}: {len(order)} tickers in the table's order (sort the table — the list follows, no Save needed) — for TradingView",
                  ",".join(gp.tv_symbol(x, mcfg) for x in order), key=copy_key)
 
 
@@ -1045,5 +1050,5 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                          ",".join(gp.tv_symbol(s, mcfg) for s in picks), key=f"sf_copy_pick_{mkt}")
         order = [x for x in st.session_state.get(f"sf_forder_{mkt}", []) if x in set(d["Symbol"])]
         order += [x for x in d["Symbol"] if x not in order]
-        gp.copy_area(st, f"All {len(order)} flagged, in the table's order (sort the table, press Save to refresh) — for TradingView",
+        gp.copy_area(st, f"All {len(order)} flagged, in the table's order (sort the table — the list follows, no Save needed) — for TradingView",
                      ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"sf_copy_all_{mkt}")

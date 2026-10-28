@@ -56,7 +56,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-28e · Sector Focus step 2: shortlist column order, sorted by Rel tight (leaders + sector table)"
+PROCESS_VERSION = "v2026-10-28f · Sector Focus step 2: Tomorrow colours, Explosive back, vols after 20MA %, sort updates the copy list"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -2595,7 +2595,7 @@ def live_extra(base_df, symbols):
 
 
 def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, height=420, widths=None, fmt=None,
-              tips=None, card_first=None, submit=None, vanish_col=None):
+              tips=None, card_first=None, submit=None, vanish_col=None, submit_on_sort=False):
     """AgGrid table where clicking a ticker opens the white card with ALL its attributes.
 
     view       visible columns (in order) · sty: optional pandas Styler of `view` (its colours are reused)
@@ -2622,9 +2622,10 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
         if c not in edit and pd.api.types.is_float_dtype(data[c]):
             data[c] = data[c].round(fmt.get(c, 2))
     css = _styler_css(sty) if sty is not None else {}
+    _scols = [str(c) for c in sty.data.columns] if sty is not None else []   # Styler's own order (pre-reorder)
     for (i, j), v in css.items():
-        if i < len(vis) and j < len(vis.columns):
-            data.loc[i, "__s_" + str(vis.columns[j])] = v
+        if i < len(vis) and j < len(_scols) and _scols[j] in data.columns:
+            data.loc[i, "__s_" + _scols[j]] = v
     hidden = []
     if extra is not None and not extra.empty:
         ex = extra.reset_index(drop=True)
@@ -2642,6 +2643,12 @@ def card_grid(st, view, key, sty=None, extra=None, labels=None, edit=None, heigh
                               autoSizeStrategy={"type": "fitCellContents", "skipHeader": True},
                               suppressRowClickSelection=True, context={"cardFirst": list(card_first or [])},
                               stopEditingWhenCellsLoseFocus=True)
+    if submit_on_sort and submit:
+        # Sorting a header presses this grid's own Save button, so the copy box follows the new order at once (like the
+        # GTT scanner table). Ticks made before the sort are saved with it.
+        gb.configure_grid_options(onSortChanged=JsCode(
+            "function(e){setTimeout(function(){try{var d=window.parent.document;var bs=d.querySelectorAll('button');"
+            f"for(var i=0;i<bs.length;i++){{if(bs[i].innerText.trim()==={json.dumps(submit)}){{bs[i].click();break;}}}}}}catch(x){{}}}},350);}}"))
     if vanish_col:
         # Ticking this bool column makes the row disappear at once, in the browser (no round trip). The returned
         # (filtered) rows then leave it out — the caller treats a missing row as ticked.
