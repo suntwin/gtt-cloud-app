@@ -42,11 +42,12 @@ RULE_HELP = {
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
 # Shortlist order (like Tomorrow's list): strength → explosiveness → tightness → distances, then the rest
-TIGHT_ORDER = ["Explosive", "ADR", "Ti65", "Rel tight", "NR4 %", "ADRs from 10w", "10MA %", "20MA %", "Avg vol", "Day vol",
-               "Off 1M %", "Off 52W %"]
-SHOW = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Setup", "MA hold", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8",
-        "Source", "BO", "BO vol x", "Vol x", "Circuit %", "Flags", "10MA (ADR)", "Off 1M (ADR)", "Data",
-        "Last", "Chg %"]
+TIGHT_ORDER = ["Explosive", "ADR", "Circuit %", "Ti65", "Rel tight", "NR4 %", "ADRs from 10w", "10MA %", "20MA %",
+               "Avg vol", "Day vol", "Off 1M %", "Off 52W %"]
+# ONE layout for every step-2 table (Sector leaders + All of <sector>) so the eye reads them the same way
+SHOW = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Vol x", "Setup", "MA hold", "R1", "R2", "R3", "R4", "R5", "R6",
+        "R7", "R8", "Source", "BO", "BO vol x", "Flags", "10MA (ADR)", "Off 1M (ADR)", "Avg RS", "RS 1M", "RS 3M", "RS 6M",
+        "Data", "Last", "Chg %"]          # Last + Chg % move next to the ticker
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
            "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Avg RS", "RS 1M", "RS 3M", "RS 6M"]
 # Sector leaders: strength (RS) is separate from readiness (Score) — the best stocks must never be buried by the rules
@@ -62,8 +63,7 @@ def lead_n(st, mkt, n_all):
     import math
     pct = LEAD_PCT.get(st.session_state.get(f"sf_ltopp_{mkt}", "10%"), 0.10)
     return min(n_all, max(LEAD_SHOW, math.ceil(pct * n_all)))
-LEAD_COLS = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Vol x", "MA hold", "Setup", "Flags",
-             "10MA (ADR)", "Off 1M (ADR)", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Last", "Chg %"]   # Last + Chg % move next to the ticker
+LEAD_COLS = SHOW                         # identical to the sector table — same columns, same order, same colours
 
 
 def _num(x):
@@ -472,6 +472,32 @@ def add_leaders(v, win, min_adr=0.0, exclude=()):
     return v
 
 
+def _tm_tight(v):        # = Tomorrow's list (gtt_process _JS["tight"])
+    v = _num(v)
+    if not np.isfinite(v): return ""
+    if v <= 0.5: return _css("#28a745", "white", True)
+    if v <= 0.8: return _css("#fff3cd", "#664d03", True)
+    return ""
+
+
+def _tm_chg(v):          # = Tomorrow's list (_JS["chg"])
+    v = _num(v)
+    if not np.isfinite(v) or v <= 0: return ""
+    if v >= 5: return _css("#b44cb4", "white")
+    if v >= 2: return _css("#e6b3e6")
+    return _css("#ffe6ff")
+
+
+def _tm_vol(v):          # = Tomorrow's list (_JS["vol"])
+    v = _num(v)
+    if not np.isfinite(v) or v <= 0: return ""
+    if v >= 3.5: return _css("#28a745", "white", True)
+    if v >= 1.5: return _css("#8ee68e")
+    if v >= 1.0: return _css("#d4edda")
+    if v < 0.5: return _css("#f8d7da", "#721c24")
+    return ""
+
+
 def style(v, liq_floor=50.0):
     fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Ti65": "{:.2f}", "Rel tight": "{:.2f}",
            "Off 1M (ADR)": "{:.1f}", "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}",
@@ -482,9 +508,9 @@ def style(v, liq_floor=50.0):
     rc = [r for r, _ in RULES if r in v.columns]
     if rc:
         sty = sty.map(_c_rule, subset=rc)
-    for c, f in (("Score", _c_score), ("Data", _c_data), ("Circuit %", gp._c_circuit),
-                 ("Rel tight", gp._c_tight), ("ADRs from 10w", gp._c_relwk),        # same colours as Tomorrow's list
-                 ("BO vol x", gp._c_vol), ("Vol x", gp._c_vol), ("Chg %", gp._c_chg),
+    for c, f in (("Score", _c_score), ("Data", _c_data),
+                 ("Rel tight", _tm_tight), ("ADRs from 10w", gp._c_relwk),          # exactly Tomorrow's list colours
+                 ("BO vol x", gp._c_vol), ("Vol x", _tm_vol), ("Chg %", _tm_chg),
                  ("Off 1M (ADR)", _c_adr_dist), ("Off 52W %", gp._c_offhigh_long), ("10MA (ADR)", _c_ma10)):
         if c in v.columns:
             sty = sty.map(f, subset=[c])
@@ -495,12 +521,7 @@ def style(v, liq_floor=50.0):
         a_ = pd.to_numeric(v["ADR"], errors="coerce").tolist()
         sty = sty.apply(lambda col: [gp._c_off21_adr(abs(_num(x)) / a) if np.isfinite(_num(a)) and _num(a) else ""
                                      for x, a in zip(col, a_)], subset=["Off 1M %"])
-    if "Avg vol" in v.columns:
-        sty = sty.apply(lambda col: gp._liq_styles(col, liq_floor), subset=["Avg vol"])
-    if "Day vol" in v.columns and "Avg vol" in v.columns:
-        av = pd.to_numeric(v["Avg vol"], errors="coerce").tolist()
-        sty = sty.apply(lambda col: [gp._c_vol(_num(x) / a) if np.isfinite(_num(a)) and _num(a) else ""
-                                     for x, a in zip(col, av)], subset=["Day vol"])
+    # NR4 %, ADR, Circuit %, Avg vol, Day vol: no colour — as in Tomorrow's list
     if "Setup" in v.columns:
         sty = sty.map(_c_setup, subset=["Setup"])
     rsc = [c for c in ("Avg RS", "RS 1M", "RS 3M", "RS 6M") if c in v.columns]
@@ -898,7 +919,7 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
                             tips=_tips(cfg), card_first=CARD_FIRST, edit=edit, submit=submit,
                             vanish_col="Hide" if hide else None, submit_on_sort=sort_tight, height=min(32 * len(pv) + 70, 560),
                             fmt={"Avg RS": 0, "RS 1M": 0, "RS 3M": 0, "RS 6M": 0, "Explosive": 1},
-                            widths={"Symbol": 105, "Leader": 64, "Score": 60, "ADR": 54, "Ti65": 54, "Explosive": 74, "Setup": 150, "Sector": 140, "Flags": 170, "Source": 100,
+                            widths={"Symbol": 105, "Leader": 64, "Score": 60, "ADR": 54, "Ti65": 54, "Explosive": 74, "Circuit %": 66, "Setup": 150, "Sector": 140, "Flags": 170, "Source": 100,
                                     "Avg RS": 54, "RS 1M": 48, "RS 3M": 48, "RS 6M": 48, "MA hold": 110, "Last": 74,
                                     **{f"R{i}": 38 for i in range(1, 9)}})
     st.caption(f"{note} **Click a ticker** for all its data · tick ⚑" + (" or 🙈 (the row vanishes at once)" if hide else "") +
