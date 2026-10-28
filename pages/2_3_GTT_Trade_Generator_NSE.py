@@ -901,6 +901,11 @@ def main():
     # TAB 2: MARKET THEMES & LEADERS
     # ════════════════════════════════════════════════════════════════════
     with tab2:
+        try:                                          # Martin Luk's 'potent' scan: last session's gainers by sector
+            import top_gainers as _tg
+            _tg.render_top_gainers(st, supabase, st.session_state.get('gtt_base_df'), MARKET_CFG, sector_df)
+        except Exception as _e:
+            st.warning(f"Top gainers could not load: {_e}")
         if 'gtt_scored_df' in st.session_state and st.session_state.gtt_scored_df is not None:
             sdf = st.session_state.gtt_scored_df.copy()
             if 'Sector' in sdf.columns and '_vol_ratio' in sdf.columns:
