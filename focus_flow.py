@@ -41,8 +41,11 @@ RULE_HELP = {
     "R8": "Weekly: ≤ {wk_full:g} ADR from the 10-week MA (½ for {wk_full:g}–{wk_half:g}, ✗ above)",
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
-SHOW = ["Flag", "Symbol", "Leader", "Score", "Setup", "MA hold"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "Source", "BO",
-        "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Last", "Chg %", "Vol x", "Circuit %", "Flags", "Data"]
+# Shortlist order (like Tomorrow's list): strength → explosiveness → tightness → distances, then the rest
+TIGHT_ORDER = ["Explosive", "ADR", "Ti65", "Rel tight", "NR4 %", "ADRs from 10w", "10MA %", "20MA %", "Off 1M %", "Off 52W %"]
+SHOW = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Setup", "MA hold", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8",
+        "Source", "BO", "BO vol x", "Avg vol", "Day vol", "Vol x", "Circuit %", "Flags", "10MA (ADR)", "Off 1M (ADR)", "Data",
+        "Last", "Chg %"]
 NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
            "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Avg RS", "RS 1M", "RS 3M", "RS 6M"]
 # Sector leaders: strength (RS) is separate from readiness (Score) — the best stocks must never be buried by the rules
@@ -58,9 +61,8 @@ def lead_n(st, mkt, n_all):
     import math
     pct = LEAD_PCT.get(st.session_state.get(f"sf_ltopp_{mkt}", "10%"), 0.10)
     return min(n_all, max(LEAD_SHOW, math.ceil(pct * n_all)))
-LEAD_COLS = ["Flag", "Symbol", "Leader", "Score", "Explosive", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "10MA (ADR)",
-             "Avg vol", "Day vol", "Vol x", "MA hold", "Off 1M (ADR)", "Off 52W %", "Setup", "Flags",
-             "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Last", "Chg %"]     # (Last + Chg % are moved next to the ticker)
+LEAD_COLS = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Avg vol", "Day vol", "Vol x", "MA hold", "Setup", "Flags",
+             "10MA (ADR)", "Off 1M (ADR)", "Avg RS", "RS 1M", "RS 3M", "RS 6M", "Last", "Chg %"]   # Last + Chg % move next to the ticker
 
 
 def _num(x):
@@ -101,6 +103,9 @@ def _tips(cfg):
               "Leader": "👑 #n = the n-th strongest stock in its sector by the RS window picked in the Leaders panel (top 5 get the badge). Strength, not readiness.",
               "Avg RS": "Average RS (1–99 vs the market) of the screens the stock is in", "RS 1M": "RS on the 1-month screen (blank = not in it)",
               "Hide": "🙈 Hide: tick, then press the Save button — the stock leaves step 2 (and the 👑 ranks) until you unhide it",
+              "NR4 %": "Range of the last 4 days in % (high to low). Rel tight = NR4 ÷ ADR",
+              "10MA %": "Distance from the 10-day MA in % (+ above)", "20MA %": "Distance from the 20-day MA in % (+ above)",
+              "Off 1M %": "Below the 1-month high in % (coloured by how many ADRs that is)",
               "Explosive": "ADR × Ti65 — range × trend intensity. Higher = more explosive. Breaks RS ties in the Leaders panel",
               "RS 3M": "RS on the 3-month screen (blank = not in it)", "RS 6M": "RS on the 6-month screen (blank = not in it)",
               "MA hold": "HL on 10MA = pullback low held above the previous one (within 0.3 ADR), tagged the 10MA (−0.6 to +0.5 ADR), "
@@ -471,7 +476,8 @@ def style(v, liq_floor=50.0):
     fmt = {"Score": "{:.1f}", "BO vol x": "{:.1f}", "ADR": "{:.1f}", "Ti65": "{:.2f}", "Rel tight": "{:.2f}",
            "Off 1M (ADR)": "{:.1f}", "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}",
            "Avg vol": "{:.0f}", "Day vol": "{:.0f}", "Chg %": "{:+.1f}", "Vol x": "{:.1f}", "Circuit %": "{:.0f}",
-           "Pivot": "{:g}", "To pivot %": "{:.1f}", "Stop guide": "{:g}", "Last": "{:.2f}"}
+           "Pivot": "{:g}", "To pivot %": "{:.1f}", "Stop guide": "{:g}", "Last": "{:.2f}",
+           "NR4 %": "{:.2f}", "10MA %": "{:+.1f}", "20MA %": "{:+.1f}", "Off 1M %": "{:.1f}"}
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     rc = [r for r, _ in RULES if r in v.columns]
     if rc:
@@ -482,6 +488,13 @@ def style(v, liq_floor=50.0):
                  ("Off 1M (ADR)", _c_adr_dist), ("Off 52W %", gp._c_offhigh_long), ("10MA (ADR)", _c_ma10)):
         if c in v.columns:
             sty = sty.map(f, subset=[c])
+    for c in ("10MA %", "20MA %"):
+        if c in v.columns:
+            sty = sty.map(gp._c_madist, subset=[c])
+    if "Off 1M %" in v.columns and "ADR" in v.columns:
+        a_ = pd.to_numeric(v["ADR"], errors="coerce").tolist()
+        sty = sty.apply(lambda col: [gp._c_off21_adr(abs(_num(x)) / a) if np.isfinite(_num(a)) and _num(a) else ""
+                                     for x, a in zip(col, a_)], subset=["Off 1M %"])
     if "Avg vol" in v.columns:
         sty = sty.apply(lambda col: gp._liq_styles(col, liq_floor), subset=["Avg vol"])
     if "Day vol" in v.columns and "Avg vol" in v.columns:
@@ -756,7 +769,8 @@ def _render_sector_focus(st, sb, base_df, mcfg):
             else:
                 _flag_grid(st, sb, mcfg, cfg, part, key=f"sf_grid_{mkt}_{g}_{sd}", submit=f"Save flags for {g}",
                            okey=f"sf_order_{mkt}_{g}", copy_label=g, copy_key=f"sf_copy_sec_{mkt}_{g}", sector=g,
-                           note=f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}).", hide=hide_ok)
+                           note=f"{len(part)} of {counts.get(g, 0)} stocks in {g} shown (score ≥ {min_score:g}), tightest first.",
+                       hide=hide_ok, sort_tight=True)
             _hidden_box(st, sb, mcfg, hidden, hide_ok)
 
     # ── Step 3: last stop — the best setups in every other sector ──
@@ -852,15 +866,20 @@ def _leaders_panel(st, sb, mcfg, cfg, live, g, sd, hide_ok=False):
             return
         _flag_grid(st, sb, mcfg, cfg, lead, key=f"sf_lgrid_{mkt}_{g}_{sd}_{win}", submit=f"Save flags (leaders in {g})",
                    okey=f"sf_lorder_{mkt}_{g}", copy_label=f"Leaders in {g}", copy_key=f"sf_copy_lead_{mkt}_{g}", sector=g,
-                   note=f"{len(lead)} leaders.", cols=LEAD_COLS, hide=hide_ok)
+                   note=f"{len(lead)} leaders, tightest first.", cols=LEAD_COLS, hide=hide_ok, sort_tight=True)
     st.markdown(f"##### All of {g}")
 
 
 def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key, sector=None, note="", show_sector=False,
-               cols=None, hide=False):
+               cols=None, hide=False, sort_tight=False):
     """One flaggable grid (⚑ on the row, saved with the form button) + a copy box in the table's sort order.
-    hide=True adds a 🙈 Hide tick: saved with the same button, the stock leaves step 2 until unhidden."""
+    hide=True adds a 🙈 Hide tick: saved with the same button, the stock leaves step 2 until unhidden.
+    sort_tight=True sorts by Rel tight (tightest first), like Tomorrow's list — the copy box follows it."""
     mkt = mcfg.get("market")
+    g_ = lambda c: pd.to_numeric(part[c], errors="coerce") if c in part.columns else np.nan
+    part = part.assign(**{"NR4 %": g_("_nr4"), "10MA %": g_("_10madist"), "20MA %": g_("_20madist"), "Off 1M %": g_("off_high_21")})
+    if sort_tight and "Rel tight" in part.columns:
+        part = part.sort_values("Rel tight", ascending=True, na_position="last", kind="stable")
     cols = [c for c in (cols or SHOW) if c in part.columns and (c != "Circuit %" or mkt == "NSE")]
     if hide:
         cols.insert(cols.index("Flag") + 1 if "Flag" in cols else 0, "Hide")
