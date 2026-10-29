@@ -56,7 +56,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-29a · Market Themes: Top gainers (last session) by sector — rotation view from the EP scan"
+PROCESS_VERSION = "v2026-10-29b · Top gainers live on the EP scans (NSE + USA), gap-up > 5% and Chg/ADR columns"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",

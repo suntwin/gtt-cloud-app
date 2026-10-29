@@ -13,12 +13,13 @@ import requests
 
 import gtt_process as gp
 
-# MarketInOut "EP scan" per market. Set the key once the screen is saved (Screens → API link).
-GAINER_SCREEN = {"NSE": None, "USA": None}
-# Column order of the EP scan output: Symbol, Last, Timestamp, then the `show(...)` fields in order
-EP_COLS = ["Symbol", "Last", "Timestamp", "_chg_percentclose", "dvol", "_avgvol_cr", "_circuit", "_rvol_to_float",
-           "Adr", "Ti65", "_avg_vol_float_ratio", "_20madist", "_10wmadist", "_10madist", "_nr4", "_nr4_previous",
-           "_rs", "_period_perf", "_rvol", "_wtc", "_reversal"]
+# MarketInOut "EP scan" per market (whole market: Chg % > 3 on > 2x volume, liquidity floors)
+GAINER_SCREEN = {"NSE": "https://api.marketinout.com/run/screen?key=477c940119bf4ec5",
+                 "USA": "https://api.marketinout.com/run/screen?key=eb1c50ec04704ca8"}
+# Output = the GTT layout (21 fields) + 3 off-high fields + _gapup (1 = gapped up > 5%) — 25 fields
+GTT_COLS = ['Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln', '_bo_engulfing_cndl',
+            '_circuit', '_days_since_bo', '_bo_dollar_vol_mln', '_rvol_to_float', 'Adr', 'Ti65',
+            '_avg_vol_float_ratio', '_20madist', '_10wmadist', '_10madist', '_nr4', '_nr4_previous', '_rs', '_period_perf']
 LOOKBACK = 10          # sessions of history kept in view
 STREAK = 5             # "how many of the last 5 sessions did this sector have gainers"
 _TXT = ("Symbol", "Timestamp", "_wtc", "_reversal")
@@ -32,10 +33,12 @@ def fetch_gainers(url):
             return None
         df = pd.read_csv(StringIO(r.text), sep="|", header=None)
         n = len(df.columns)
-        df.columns = EP_COLS[:n] + [f"Extra_{i}" for i in range(len(EP_COLS), n)]
+        df = gp.assign_scan_columns(df, GTT_COLS)
+        if n == len(GTT_COLS) + 4:                     # last field is _gapup (assign_scan_columns calls it _hl_pct)
+            df = df.rename(columns={gp.MA_HOLD_COLS[0]: "_gapup"})
         df["Symbol"] = df["Symbol"].astype(str).str.upper().str.replace(".NS", "", regex=False).str.strip()
         for c in df.columns:
-            if c not in _TXT:
+            if c not in ("Symbol", "Timestamp"):
                 df[c] = pd.to_numeric(df[c], errors="coerce")
         return df.drop_duplicates("Symbol").reset_index(drop=True)
     except Exception:
@@ -49,10 +52,12 @@ def prepare(raw, sector_df, base_df):
         g = g.merge(sector_df, on="Symbol", how="left")
     for c in ("Sector", "Industry"):
         g[c] = g[c].fillna("Unknown") if c in g.columns else "Unknown"
-    vx = g["_rvol"] if "_rvol" in g.columns else pd.Series(np.nan, index=g.index)
-    if "dvol" in g.columns and "_avgvol_cr" in g.columns:
-        vx = vx.fillna(g["dvol"] / g["_avgvol_cr"].replace(0, np.nan))
+    vx = pd.Series(np.nan, index=g.index)
+    if "dvol" in g.columns and "_avgvol_mln" in g.columns:
+        vx = g["dvol"] / g["_avgvol_mln"].replace(0, np.nan)
     g["Vol x"] = vx.round(1)
+    g["Gap up"] = (g["_gapup"].fillna(0) > 0).map({True: "🚀 > 5%", False: ""}) if "_gapup" in g.columns else ""
+    g["Chg/ADR"] = (g["_chg_percentclose"] / g["Adr"].replace(0, np.nan)).round(1) if "Adr" in g.columns else np.nan
     scan = set(base_df["Symbol"].astype(str).str.upper()) if base_df is not None and "Symbol" in base_df.columns else set()
     g["In scan"] = g["Symbol"].isin(scan).map({True: "✓", False: ""})
     return g.sort_values("_chg_percentclose", ascending=False, kind="stable").reset_index(drop=True)
@@ -104,6 +109,7 @@ def sector_table(g, hist, sd):
                     "Avg chg %": round(grp["_chg_percentclose"].mean(), 1),
                     f"Days in last {len(last5)}": days5, f"Gainers {len(last5)}d": len(n5),
                     "Prior avg/day": round(prev_n, 1), "In scan": int((grp["In scan"] == "✓").sum()),
+                    "Gap-ups": int((grp["Gap up"] != "").sum()),
                     "Top names": ", ".join(top["Symbol"].head(4))})
     st_ = pd.DataFrame(out)
     if st_.empty:
@@ -121,7 +127,7 @@ def sector_table(g, hist, sd):
     st_["Trend"] = st_.apply(trend, axis=1)
     st_ = st_.sort_values(["Today", dcol, "Avg chg %"], ascending=False).reset_index(drop=True)
     return st_[["Sector", "Trend", "Today", "Share %", dcol, f"Gainers {len(last5)}d", "Prior avg/day",
-                "Avg chg %", "In scan", "Top names"]], len(sessions)
+                "Avg chg %", "Gap-ups", "In scan", "Top names"]], len(sessions)
 
 
 def _c_trend(x):
@@ -204,28 +210,35 @@ def render_top_gainers(st, sb, base_df, mcfg, sector_df=None):
         v = g[g["Sector"].isin(pick)] if pick else g
         disp = pd.DataFrame({
             "Symbol": v["Symbol"], "Last": v["Last"], "Chg %": v["_chg_percentclose"].round(2), "Vol x": v["Vol x"],
+            "Gap up": v["Gap up"], "Chg/ADR": v["Chg/ADR"],
             "Sector": v["Sector"], "Industry": v["Industry"], "In scan": v["In scan"],
             "ADR": v.get("Adr", np.nan), "Ti65": v.get("Ti65", np.nan),
-            "Day vol": v.get("dvol", np.nan), "Avg vol": v.get("_avgvol_cr", np.nan),
+            "Day vol": v.get("dvol", np.nan), "Avg vol": v.get("_avgvol_mln", np.nan),
+            "Off 1M %": v.get("off_high_21", np.nan), "Off 52W %": v.get("off_high_252", np.nan),
             "10MA %": v.get("_10madist", np.nan), "20MA %": v.get("_20madist", np.nan),
             "1M perf %": v.get("_period_perf", np.nan), "Circuit %": v.get("_circuit", np.nan)})
         if mkt != "NSE":
             disp = disp.drop(columns=["Circuit %"])
         if not hist.empty:
             rep = hist[hist["snap_date"] != str(sd)].groupby("symbol")["snap_date"].nunique()
-            disp.insert(7, "Prior days", disp["Symbol"].map(rep).fillna(0).astype(int))
+            disp.insert(disp.columns.get_loc("In scan") + 1, "Prior days", disp["Symbol"].map(rep).fillna(0).astype(int))
         for c in disp.columns:                                      # round for display
             if pd.api.types.is_float_dtype(disp[c]):
                 disp[c] = disp[c].round(0 if c in ("Day vol", "Avg vol", "Circuit %") else 1 if c == "Vol x" else 2)
         dsty = disp.style.map(gp._c_chg, subset=["Chg %"]).map(gp._c_vol, subset=["Vol x"]) \
-            .map(gp._c_madist, subset=["10MA %", "20MA %"])
+            .map(gp._c_madist, subset=["10MA %", "20MA %"]) \
+            .map(lambda x: gp._css("#8c008c", "white", True) if x else "", subset=["Gap up"]) \
+            .map(lambda x: gp._css("#28a745", "white", True) if gp._num(x) >= 2 else gp._css("#8ee68e")
+                 if gp._num(x) >= 1 else "", subset=["Chg/ADR"]) \
+            .map(gp._c_offhigh_long, subset=["Off 52W %"])
         st.dataframe(dsty, hide_index=True, width="stretch", height=min(36 * len(disp) + 40, 520),
                      column_config={**{c: st.column_config.NumberColumn(
                                         format="%.0f" if c in ("Day vol", "Avg vol", "Circuit %", "Prior days")
                                         else "%.1f" if c == "Vol x" else "%.2f", pinned=c in ("Last", "Chg %"))
                                         for c in disp.columns if pd.api.types.is_numeric_dtype(disp[c])},
                                     "Symbol": st.column_config.TextColumn(pinned=True)})
-        st.caption("In scan ✓ = already in your 1M/3M/6M momentum scan (a leader moving); blank = a fresh mover "
+        st.caption("🚀 Gap up = opened > 5% above the prior close (EP candidate) · Chg/ADR ≥ 1 = more than a normal "
+                   "day's range, ≥ 2 = a real expansion day. In scan ✓ = already in your 1M/3M/6M momentum scan (a leader moving); blank = a fresh mover "
                    "outside your universe — check whether its sector shows up above.")
         syms = ",".join(gp.tv_symbol(s, mcfg) for s in disp["Symbol"])
         gp.copy_area(st, f"{len(disp)} gainers{' in ' + ', '.join(pick) if pick else ''} — for TradingView", syms,
