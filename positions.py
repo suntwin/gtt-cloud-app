@@ -37,9 +37,9 @@ def _num(x):
 # Prices come from MarketInOut — the same numbers as the scanner. Your positions screen (a MIO screen over your
 # positions watchlist, same GTT formula) is read first; anything not in it falls back to today's scan.
 POS_SCREEN = {"NSE": "https://api.marketinout.com/run/screen?key=dbf1d7c7f45c4fac", "USA": None}
-GTT_COLS = ['Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln', '_bo_engulfing_cndl',
-            '_circuit', '_days_since_bo', '_bo_dollar_vol_mln', '_rvol_to_float', 'Adr', 'Ti65',
-            '_avg_vol_float_ratio', '_20madist', '_10wmadist', '_10madist', '_nr4', '_nr4_previous', '_rs', '_period_perf']
+GTT_COLS = ['Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln', '_dayhigh',
+            '_circuit', '_days_since_bo', '_bo_dollar_vol_mln', '_daylow', 'Adr', 'Ti65',
+            '_avg_vol_float_ratio', '_20madist', '_10wmadist', '_10madist', '_nr4', '_nr4_previous', '_rs', '_inside']
 
 
 @_st.cache_data(ttl=300, show_spinner=False)

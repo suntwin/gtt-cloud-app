@@ -56,7 +56,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-29b · Top gainers live on the EP scans (NSE + USA), gap-up > 5% and Chg/ADR columns"
+PROCESS_VERSION = "v2026-10-30a · Stop fit tag (½ ADR / OK / Wide) from MIO day high/low, trigger / stop / overhead"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
@@ -187,7 +187,7 @@ LABEL_NAMES = {"4_RESETUP": "Saved & tight", "SAVED_WAIT": "Saved, not tight yet
                "PATTERN": "Pattern match", "CHECK": "Check chart"}
 TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's list
 
-SNAPSHOT_METRICS = ["Last", "_chg_percentclose", "_vol_ratio", "Adr", "_nr4", "_nr4_previous",
+SNAPSHOT_METRICS = ["Last", "_chg_percentclose", "_vol_ratio", "Adr", "_nr4", "_nr4_previous", "_dayhigh", "_daylow", "_inside",
                     "_rel_tightness_today", "_rel_tightness_prev", "_rel_wk_dist", "W_Dist10wMA",
                     "W_TightCloses_10w", "_10madist", "_20madist", "_avgvol_mln", "Avg_RS",
                     "RS_1M", "RS_3M", "RS_6M", "Sector", "Industry", "Suggested", "rating",
@@ -284,6 +284,38 @@ def parse_ts_dates(ts):
         return pd.Series([None] * len(ts), index=ts.index)
 
 
+STOP_IDEAL, STOP_MAX, STOP_CAP = 0.5, 0.75, 5.0     # stop budget in ADRs (ideal / max) and hard cap %
+
+
+def stop_fit_cols(d, adr):
+    """Tomorrow's plan from today's candle: trigger = today's high, stop = today's low (MIO _dayhigh/_daylow).
+    Stop fit: ✓ ½ ADR (stop ≤ 0.5 ADR) · OK (≤ 0.75 ADR and ≤ 5%) · Wide. Also close location and overhead room."""
+    if "_dayhigh" not in d.columns or "_daylow" not in d.columns:
+        return d
+    hi = pd.to_numeric(d["_dayhigh"], errors="coerce")
+    lo = pd.to_numeric(d["_daylow"], errors="coerce")
+    hi, lo = hi.where(hi > 0), lo.where((lo > 0) & (lo <= hi))
+    last = pd.to_numeric(d["Last"], errors="coerce")
+    d["_stop_pct"] = ((hi - lo) / hi * 100).round(2)
+    d["_stop_adr"] = (d["_stop_pct"] / adr).round(2)
+    fit = np.select([d["_stop_adr"] <= STOP_IDEAL, (d["_stop_adr"] <= STOP_MAX) & (d["_stop_pct"] <= STOP_CAP)],
+                    ["✓ ½ ADR", "OK"], default="Wide")
+    d["_stop_fit"] = np.where(d["_stop_pct"].notna() & d["_stop_adr"].notna(), fit, "")
+    d["_close_loc"] = ((last - lo) / (hi - lo).replace(0, np.nan)).clip(0, 1).round(2)
+    if "_inside" in d.columns:
+        d["_inside"] = pd.to_numeric(d["_inside"], errors="coerce")
+    over = pd.Series("", index=d.index)
+    for col, name in (("off_high_252", "52W high"), ("off_high_21", "1M high")):   # nearer one wins (1M written last)
+        if col in d.columns:
+            off = pd.to_numeric(d[col], errors="coerce").abs()
+            level = last / (1 - off / 100)
+            room = (level / hi - 1) * 100
+            near = room.notna() & d["_stop_pct"].notna() & (room > 0.2) & (room < 2 * d["_stop_pct"])
+            over = over.where(~near, name + " " + room.round(1).astype(str) + "% above (< 2R)")
+    d["_overhead"] = over
+    return d
+
+
 def add_derived(df):
     """Scan count and tightness/distance metrics. Never drops rows."""
     d = df.copy()
@@ -308,6 +340,7 @@ def add_derived(df):
         d["_vol_ratio"] = (d["dvol"] / d["_avgvol_mln"].replace(0, np.nan)).round(2)
     elif "_vol_ratio" not in d.columns:
         d["_vol_ratio"] = np.nan
+    stop_fit_cols(d, adr)
     d["Missing_Weekly"] = d["W_Dist10wMA"].isna() | d["W_TightCloses_10w"].isna()
     d["Data_Date"] = parse_ts_dates(d["Timestamp"]) if "Timestamp" in d.columns else None
     return d
@@ -2341,8 +2374,8 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
         c.metric(n, int(counts.get(k, 0)))
 
     show = ["Keep", "CONT", "Tier", "Patterns", "Label", "Symbol", "Last", "Note", "Reason", "Tag", "_chg_percentclose", "_vol_ratio",
-            "Adr", "_rel_tightness_today", "_nr4", "dvol", "_avgvol_mln", "_rel_wk_dist", "off_high_21", "off_high_252",
-            "_10madist", "_20madist", "Avg_RS", "Sector"]
+            "Adr", "_rel_tightness_today", "_stop_fit", "_stop_pct", "_dayhigh", "_daylow", "_nr4", "dvol", "_avgvol_mln",
+            "_rel_wk_dist", "off_high_21", "off_high_252", "_10madist", "_20madist", "Avg_RS", "_overhead", "Sector"]
     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
     if len(saved_rows):
         grp = {}
@@ -2510,6 +2543,9 @@ _JS = {
     "offlong": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;const a=Math.abs(v);
         if(a<=5)return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};if(a<=15)return{'backgroundColor':'#8ee68e','color':'black'};
         if(a<=25)return{'backgroundColor':'#d4edda','color':'black'};if(a>40)return{'backgroundColor':'#f8d7da','color':'#721c24'};return null}""",
+    "stopfit": """function(p){const v=p.value;if(v==='✓ ½ ADR')return{'backgroundColor':'#28a745','color':'white','fontWeight':'bold'};
+        if(v==='OK')return{'backgroundColor':'#d4edda','color':'black'};if(v==='Wide')return{'backgroundColor':'#f8d7da','color':'#721c24'};return null}""",
+    "overhead": """function(p){return p.value?{'backgroundColor':'#fff3cd','color':'#664d03'}:null}""",
     "pat": """function(p){return p.value?{'backgroundColor':'#ffd8a8','color':'#7a3e00','fontWeight':'bold'}:null}""",
     "reason": """function(p){return (p.value&&String(p.value).startsWith('⚡'))?{'backgroundColor':'#fd7e14','color':'white','fontWeight':'bold'}:null}""",
     "tier": """function(p){const v=p.value;if(v==='P1')return{'backgroundColor':'#155724','color':'white','fontWeight':'bold'};
@@ -2722,6 +2758,8 @@ def _tomorrow_grid(view, cfg, key):
             "Reason": ("Reason", "reason", 300), "Tag": ("Saved as", None, 150), "dvol": ("Day vol", None, 75),
             "_chg_percentclose": ("Chg %", "chg", 70), "_vol_ratio": ("Vol x", "vol", 65), "Adr": ("ADR", None, 60),
             "_circuit": ("Circuit %", None, 75), "_rel_tightness_today": ("Rel tight", "tight", 75),
+            "_stop_fit": ("Stop fit", "stopfit", 85), "_stop_pct": ("Stop %", None, 70),
+            "_dayhigh": ("Trigger", None, 80), "_daylow": ("Stop", None, 75), "_overhead": ("Overhead", "overhead", 170),
             "_nr4": ("NR4 %", None, 70), "_rel_wk_dist": ("ADRs from 10w", "relwk", 95), "_avgvol_mln": ("Avg vol", None, 75),
             "_10madist": ("10MA dist", "ma", 80), "_20madist": ("20MA dist", "ma", 80), "Avg_RS": ("Avg RS", None, 70),
             "off_high_21": ("Off 1M hi %", "off21", 85), "off_high_252": ("Off 52W hi %", "offlong", 90),
@@ -2731,7 +2769,7 @@ def _tomorrow_grid(view, cfg, key):
             kw = {"headerName": name, "minWidth": w}
             if style:
                 kw["cellStyle"] = js[style]
-            if c in ("_chg_percentclose", "_vol_ratio", "Adr", "_rel_tightness_today", "_nr4", "_rel_wk_dist",
+            if c in ("_chg_percentclose", "_vol_ratio", "Adr", "_rel_tightness_today", "_nr4", "_rel_wk_dist", "_stop_pct", "_dayhigh", "_daylow",
                      "dvol", "_avgvol_mln", "_10madist", "_20madist", "Avg_RS", "_circuit", "off_high_21", "off_high_252"):
                 kw["type"] = ["numericColumn"]
                 kw["filter"] = "agNumberColumnFilter"

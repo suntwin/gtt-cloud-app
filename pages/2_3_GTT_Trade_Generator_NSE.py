@@ -51,11 +51,11 @@ weekly_metric_columns = [
     'Pctof10wkhigh', 'Weeklyvolratio', 'Weeklyrsi'
 ]
 gtt_columns = [
-    'Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln', '_bo_engulfing_cndl',
-    '_circuit', '_days_since_bo', '_bo_dollar_vol_mln', '_rvol_to_float', 'Adr', 'Ti65',
+    'Symbol', 'Last', 'Timestamp', '_chg_percentclose', 'dvol', '_avgvol_mln', '_dayhigh',
+    '_circuit', '_days_since_bo', '_bo_dollar_vol_mln', '_daylow', 'Adr', 'Ti65',
     '_avg_vol_float_ratio', '_20madist', '_10wmadist', '_10madist',
-    '_nr4', '_nr4_previous', '_rs', '_period_perf'
-]   # then off_high_21 / off_high_252 / off_high_126 (named by assign_scan_columns; old screens: _insideday)
+    '_nr4', '_nr4_previous', '_rs', '_inside'
+]   # _dayhigh/_daylow/_inside replaced _bo_engulfing_cndl/_rvol_to_float/_period_perf (2026-10-30)   # then off_high_21 / off_high_252 / off_high_126 (named by assign_scan_columns; old screens: _insideday)
 
 OFF21_JS = JsCode(_GTT_JS["off21"])       # distance from the 1-month high, coloured in ADRs
 OFFLONG_JS = JsCode(_GTT_JS["offlong"])   # distance from the 6-month / 52-week high, in %
@@ -162,9 +162,9 @@ def fetch_gtt_scan(url, name):
             df = pd.read_csv(StringIO(r.text), sep='|', header=None)
             df = assign_scan_columns(df, gtt_columns)
             df['Symbol'] = df['Symbol'].str.upper().str.replace('.NS', '', regex=False)
-            for c in ['Last','_days_since_bo','_nr4','_rs','Adr','Ti65','dvol','_avgvol_mln','_bo_dollar_vol_mln','_bo_engulfing_cndl','_avg_vol_float_ratio']:
+            for c in ['Last','_days_since_bo','_nr4','_rs','Adr','Ti65','dvol','_avgvol_mln','_bo_dollar_vol_mln','_avg_vol_float_ratio']:
                 if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-            for c in ['_20madist','_10wmadist','_10madist','_nr4_previous', 'off_high_21', 'off_high_126', 'off_high_252']:
+            for c in ['_20madist','_10wmadist','_10madist','_nr4_previous', '_dayhigh', '_daylow', '_inside', 'off_high_21', 'off_high_126', 'off_high_252']:
                 if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
             return df
         return None
@@ -604,8 +604,8 @@ def main():
                 'dvol', '_avgvol_mln', '_20madist', '_10madist',
                 'Symbol', 'Sector', 'Industry', 'Avg_RS', 'RS_6M', 'RS_3M', 'RS_1M',
                 'Adr', 'Ti65', '_nr4', 'Last',
-                '_bo_engulfing_cndl', '_days_since_bo', '_bo_dollar_vol_mln', '_circuit',
-                '_avg_vol_float_ratio', '_period_perf', '_10wmadist', 'off_high_126', 'Timestamp',
+                '_inside', '_days_since_bo', '_bo_dollar_vol_mln', '_circuit',
+                '_avg_vol_float_ratio', '_dayhigh', '_daylow', '_10wmadist', 'off_high_126', 'Timestamp',
             ]
             if 'Sector_Rank' in adf.columns: columns_to_show.insert(columns_to_show.index('Symbol')+1, 'Sector_Rank')
             if 'Sector_Total' in adf.columns: columns_to_show.insert(columns_to_show.index('Sector_Rank')+1, 'Sector_Total')
@@ -673,8 +673,8 @@ def main():
                     (st.warning if _missing and _res.empty else st.info)(" · ".join(_msg) + ". Clear the box to see the full list.")
                     fdf = _res
 
-                mtdh = ['RS_6M','RS_3M','RS_1M','Industry','_bo_dollar_vol_mln','_avg_vol_float_ratio','_period_perf',
-                        '_10wmadist','off_high_126','_bo_engulfing_cndl','_days_since_bo','_circuit','W_CloseChg_Pct','Timestamp']
+                mtdh = ['RS_6M','RS_3M','RS_1M','Industry','_bo_dollar_vol_mln','_avg_vol_float_ratio','_dayhigh','_daylow',
+                        '_10wmadist','off_high_126','_inside','_days_since_bo','_circuit','W_CloseChg_Pct','Timestamp']
                 amc = list(fdf.columns)
                 with st.expander("Choose visible columns (saved as your default)"):
                     # Force key columns to always be visible (fixes old saved prefs)
@@ -809,8 +809,8 @@ def main():
 
                 # ── Header shortening ──
                 hs = {'_chg_percentclose':'Chg %','_avgvol_mln':'AvgVolcr','_bo_dollar_vol_mln':'BO$Volcr','_avg_vol_float_ratio':'VolFloatR',
-                      '_bo_engulfing_cndl':'BOEngulf','_days_since_bo':'DaysSinceBO','Sector_Percentile':'SectPctile',
-                      '_nr4_previous':'NR4Prev','_period_perf':'PeriodPerf','_10wmadist':'10wMADist','_10madist':'10MADist',
+                      '_inside':'InsideDay','_days_since_bo':'DaysSinceBO','Sector_Percentile':'SectPctile',
+                      '_nr4_previous':'NR4Prev','_dayhigh':'DayHigh','_daylow':'DayLow','_10wmadist':'10wMADist','_10madist':'10MADist',
                       '_20madist':'20MADist','off_high_21':'Off 1M hi %','off_high_126':'Off 6M hi %','off_high_252':'Off 52W hi %','W_Dist10wMA':'Wk 10wMA %','_rel_wk_dist':'Rel Wk Dist',
                       'W_PctOf10wkHigh':'Wk % of 10wHi','W_CloseChg_Pct':'Wk CloseChg%','W_TightCloses':'Wk TightCl/5',
                       'W_InsideBars':'Wk InsideB/8','_vol_ratio':'Vol Ratio','_rel_tightness':'Rel Tight'}

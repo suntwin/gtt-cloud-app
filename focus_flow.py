@@ -42,13 +42,13 @@ RULE_HELP = {
 }
 HIGHLIGHT = ["ADR", "Ti65", "Rel tight", "ADRs from 10w"]      # the four that matter most — highlighter colours
 # Shortlist order (like Tomorrow's list): strength → explosiveness → tightness → distances, then the rest
-TIGHT_ORDER = ["Explosive", "ADR", "Circuit %", "Ti65", "Rel tight", "NR4 %", "ADRs from 10w", "10MA %", "20MA %",
-               "Avg vol", "Day vol", "Off 1M %", "Off 52W %"]
+TIGHT_ORDER = ["Explosive", "ADR", "Circuit %", "Ti65", "Rel tight", "Stop fit", "Stop %", "NR4 %", "ADRs from 10w", "10MA %", "20MA %",
+               "Avg vol", "Day vol", "Off 1M %", "Off 52W %", "Trigger", "Stop"]
 # ONE layout for every step-2 table (Sector leaders + All of <sector>) so the eye reads them the same way
 SHOW = ["Flag", "Symbol", "Leader", "Score"] + TIGHT_ORDER + ["Vol x", "Setup", "MA hold", "R1", "R2", "R3", "R4", "R5", "R6",
         "R7", "R8", "Source", "BO", "BO vol x", "Flags", "10MA (ADR)", "Off 1M (ADR)", "Avg RS", "RS 1M", "RS 3M", "RS 6M",
         "Data", "Last", "Chg %"]          # Last + Chg % move next to the ticker
-NUMERIC = ["Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
+NUMERIC = ["Stop %", "Trigger", "Stop", "Score", "ADR", "Ti65", "Rel tight", "ADRs from 10w", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)",
            "Avg vol", "Day vol", "Chg %", "Vol x", "Circuit %", "Avg RS", "RS 1M", "RS 3M", "RS 6M"]
 # Sector leaders: strength (RS) is separate from readiness (Score) — the best stocks must never be buried by the rules
 LEAD_WIN = {"Avg RS": "Avg_RS", "3M": "RS_3M", "6M": "RS_6M", "1M": "RS_1M"}
@@ -322,7 +322,8 @@ def score(u, cfg, focus, bos, tiers=None):
     v["Source"] = src
     v = v.rename(columns={"Adr": "ADR", "_rel_tightness_today": "Rel tight", "_off21_adr": "Off 1M (ADR)",
                           "off_high_252": "Off 52W %", "_ma10_adr": "10MA (ADR)", "_rel_wk_dist": "ADRs from 10w",
-                          "_avgvol_mln": "Avg vol", "dvol": "Day vol", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_circuit": "Circuit %"})
+                          "_avgvol_mln": "Avg vol", "dvol": "Day vol", "_chg_percentclose": "Chg %", "_vol_ratio": "Vol x", "_circuit": "Circuit %",
+                          "_stop_fit": "Stop fit", "_stop_pct": "Stop %", "_dayhigh": "Trigger", "_daylow": "Stop"})
     for c in NUMERIC:
         if c in v.columns:
             v[c] = pd.to_numeric(v[c], errors="coerce")
@@ -376,6 +377,10 @@ def commentary(v, cfg, mkt):
             f.append("At 52W high")
         if np.isfinite(rt) and rt <= 0.5 and age != 0:
             f.append("Narrow day")
+        if _num(r.get("_inside")) == 1:
+            f.append("Inside day")
+        if r.get("_overhead"):
+            f.append(f"Overhead: {r.get('_overhead')}")
         if r.get("R1") == "✗":
             f.append("Thin stock")
         if np.isfinite(rwd) and rwd > 4:
@@ -503,7 +508,7 @@ def style(v, liq_floor=50.0):
            "Off 1M (ADR)": "{:.1f}", "Off 52W %": "{:.1f}", "10MA (ADR)": "{:.1f}", "ADRs from 10w": "{:.1f}",
            "Avg vol": "{:.0f}", "Day vol": "{:.0f}", "Chg %": "{:+.1f}", "Vol x": "{:.1f}", "Circuit %": "{:.0f}",
            "Pivot": "{:g}", "To pivot %": "{:.1f}", "Stop guide": "{:g}", "Last": "{:.2f}",
-           "NR4 %": "{:.2f}", "10MA %": "{:+.1f}", "20MA %": "{:+.1f}", "Off 1M %": "{:.1f}"}
+           "NR4 %": "{:.2f}", "Stop %": "{:.2f}", "Trigger": "{:.2f}", "Stop": "{:.2f}", "10MA %": "{:+.1f}", "20MA %": "{:+.1f}", "Off 1M %": "{:.1f}"}
     sty = v.style.format({k: f for k, f in fmt.items() if k in v.columns}, na_rep="–")
     rc = [r for r, _ in RULES if r in v.columns]
     if rc:
@@ -524,6 +529,9 @@ def style(v, liq_floor=50.0):
     # NR4 %, ADR, Circuit %, Avg vol, Day vol: no colour — as in Tomorrow's list
     if "Setup" in v.columns:
         sty = sty.map(_c_setup, subset=["Setup"])
+    if "Stop fit" in v.columns:                      # same bands as Tomorrow's list
+        sty = sty.map(lambda x: _css("#28a745", "white", True) if x == "✓ ½ ADR" else _css("#d4edda") if x == "OK"
+                      else _css("#f8d7da", "#721c24") if x == "Wide" else "", subset=["Stop fit"])
     rsc = [c for c in ("Avg RS", "RS 1M", "RS 3M", "RS 6M") if c in v.columns]
     if rsc:
         sty = sty.format({c: "{:.0f}" for c in rsc}, na_rep="–").map(_c_rs, subset=rsc)
@@ -561,9 +569,9 @@ def _c_flags(x):
         return _css("#e2d9f3", "#3d2a73", True)
     if "Not in today's scan" in t:
         return _css("#f8d7da", "#721c24", True)
-    if "Thin" in t or "< 2x" in t or "No recent" in t or "Circuit" in t or "count steps" in t:
+    if "Thin" in t or "< 2x" in t or "No recent" in t or "Circuit" in t or "count steps" in t or "Overhead" in t:
         return _css("#fff3cd", "#664d03")
-    if "52W high" in t or "Narrow day" in t:
+    if "52W high" in t or "Narrow day" in t or "Inside day" in t:
         return _css("#d4edda")
     return ""
 
@@ -919,7 +927,7 @@ def _flag_grid(st, sb, mcfg, cfg, part, key, submit, okey, copy_label, copy_key,
                             tips=_tips(cfg), card_first=CARD_FIRST, edit=edit, submit=submit,
                             vanish_col="Hide" if hide else None, submit_on_sort=sort_tight, height=min(32 * len(pv) + 70, 560),
                             fmt={"Avg RS": 0, "RS 1M": 0, "RS 3M": 0, "RS 6M": 0, "Explosive": 1},
-                            widths={"Symbol": 105, "Leader": 64, "Score": 60, "ADR": 54, "Ti65": 54, "Explosive": 74, "Circuit %": 66, "Setup": 150, "Sector": 140, "Flags": 170, "Source": 100,
+                            widths={"Symbol": 105, "Leader": 64, "Score": 60, "ADR": 54, "Ti65": 54, "Explosive": 74, "Circuit %": 66, "Stop fit": 80, "Stop %": 62, "Trigger": 74, "Stop": 70, "Setup": 150, "Sector": 140, "Flags": 170, "Source": 100,
                                     "Avg RS": 54, "RS 1M": 48, "RS 3M": 48, "RS 6M": 48, "MA hold": 110, "Last": 74,
                                     **{f"R{i}": 38 for i in range(1, 9)}})
     st.caption(f"{note} **Click a ticker** for all its data · tick ⚑" + (" or 🙈 (the row vanishes at once)" if hide else "") +
