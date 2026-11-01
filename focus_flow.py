@@ -16,12 +16,16 @@ The 8 rules (volume first, tightness last):
   7 10MA        −0.3 to +1 ADR from the 10-day MA
   8 Weekly      ≤ 2 ADR from the 10-week MA (½ for 2–3, ✗ above 3)
 """
+import difflib
+import os
 from datetime import date, timedelta
+from io import BytesIO
 
 import numpy as np
 import pandas as pd
 
 import gtt_process as gp
+import top_gainers as tg
 
 RULES = [("R1", "Liquid"), ("R2", "Volume"), ("R3", "Sector"), ("R4", "ADR"),
          ("R5", "Pivot"), ("R6", "Tight"), ("R7", "10MA"), ("R8", "Weekly")]
@@ -996,16 +1000,100 @@ def _where_core(st, mcfg, v, r):
             (f", hidden there: {' · '.join(why)}." if why else ", within the top-N by score."))
 
 
+_UNI = {}
+
+
+def _universe(mkt):
+    """{symbol: sector} from TradingView/Symbols_<MKT>.csv — used to catch typos when flagging by hand. {} if missing."""
+    if mkt not in _UNI:
+        try:
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "TradingView", f"Symbols_{mkt}.csv")
+            u = pd.read_csv(p, usecols=["Symbol", "Sector"]).dropna(subset=["Symbol"])
+            _UNI[mkt] = dict(zip(u["Symbol"].astype(str).str.upper().str.strip(), u["Sector"]))
+        except Exception:
+            _UNI[mkt] = {}
+    return _UNI[mkt]
+
+
+def _ep_scan(st, mkt):
+    """Today's MarketInOut EP scan (gappers) for flagged names that aren't in the 1M/3M/6M scan. None if unavailable."""
+    url = tg.GAINER_SCREEN.get(mkt)
+    if not url:
+        return None
+    try:
+        return st.cache_data(ttl=300, show_spinner=False)(tg.fetch_gainers)(url)
+    except Exception:
+        return None
+
+
+def _fill_from_ep(st, mkt, d):
+    """Flagged rows with no scan row (d['Data'] blank): fill the basics from the EP scan, else mark 'not in today's scans'.
+    The EP scan has no day high/low, so Stop fit / Trigger / Stop stay blank for those."""
+    miss = d["Data"].isna()
+    if not miss.any():
+        return d
+    for c in ("Setup", "Entry", "Flags", "Data", "Sector"):
+        if c not in d.columns:
+            d[c] = np.nan
+        d[c] = d[c].astype(object)
+    ep = _ep_scan(st, mkt)
+    epi = ep.set_index("Symbol") if ep is not None and not ep.empty else pd.DataFrame()
+    uni = _universe(mkt)
+    num = lambda r, c: gp._num(r.get(c)) if c in r else np.nan
+    for i in d.index[miss]:
+        s = d.at[i, "Symbol"]
+        if pd.isna(d.at[i, "Sector"]) and s in uni:
+            d.at[i, "Sector"] = uni[s]
+        if s in epi.index:
+            r = epi.loc[s]
+            adr = num(r, "Adr")
+            vals = {"Last": num(r, "Last"), "Chg %": num(r, "_chg_percentclose"), "ADR": adr, "Ti65": num(r, "Ti65"),
+                    "Rel tight": num(r, "_nr4") / adr if adr else np.nan, "NR4 %": num(r, "_nr4"),
+                    "ADRs from 10w": num(r, "_10wmadist") / adr if adr else np.nan,
+                    "10MA (ADR)": num(r, "_10madist") / adr if adr else np.nan,
+                    "10MA %": num(r, "_10madist"), "20MA %": num(r, "_20madist"),
+                    "Day vol": num(r, "dvol"), "Avg vol": num(r, "_avgvol_mln"),
+                    "Vol x": num(r, "dvol") / num(r, "_avgvol_mln") if num(r, "_avgvol_mln") else np.nan}
+            for c, x in vals.items():
+                if c in d.columns:
+                    d[c] = pd.to_numeric(d[c], errors="coerce")
+                    d.at[i, c] = round(x, 2) if np.isfinite(x) else np.nan
+            d.at[i, "Setup"] = "Gapper (EP scan only)"
+            d.at[i, "Entry"] = "Not in the 1M/3M/6M scan. Weekly check first, then trade the hourly flag (hourly 20MA caught up) with volume"
+            d.at[i, "Flags"] = "EP scan only · no day high/low → no Stop fit"
+            d.at[i, "Data"] = "EP scan"
+        else:
+            d.at[i, "Setup"] = "Not in today's scans"
+            d.at[i, "Entry"] = "No data today — check the chart (or the spelling) and unflag if it's not a setup"
+            d.at[i, "Flags"] = "Not in today's scans"
+            d.at[i, "Data"] = "no data"
+    return d
+
+
 def render_flagged(st, sb, mcfg, v, flags, cfg):
     mkt = mcfg.get("market")
     with st.expander("4 · Flagged — pick your 5–6"):
         with st.expander("⚑ Flag tickers by hand (from any screen or copy box)"):
             txt = st.text_input("Symbols, comma separated", key=f"sf_manual_{mkt}", placeholder="e.g. SUNTV, NSE:TIPSMUSIC")
             if st.button("Flag them", key=f"sf_manual_btn_{mkt}") and txt.strip():
-                syms = [s.strip().upper().split(":")[-1] for s in txt.replace("\n", ",").split(",") if s.strip()]
-                secmap = dict(zip(v["Symbol"], v["Sector"]))
-                add_flags(sb, mcfg, syms, source="manual", sectors=secmap)
-                st.toast(f"Flagged {len(syms)}."); _rerun(st)
+                syms = list(dict.fromkeys(s.strip().upper().split(":")[-1] for s in txt.replace("\n", ",").split(",") if s.strip()))
+                uni = _universe(mkt)
+                known = set(v["Symbol"].astype(str)) | set(uni)
+                good = [s for s in syms if not uni or s in known]
+                bad = [s for s in syms if s not in good]
+                secmap = {**uni, **dict(zip(v["Symbol"], v["Sector"]))}
+                if good:
+                    add_flags(sb, mcfg, good, source="manual", sectors=secmap)
+                if bad:
+                    tips = []
+                    for s in bad:
+                        m = difflib.get_close_matches(s, sorted(known), n=2, cutoff=0.7)
+                        tips.append(f"**{s}**" + (f" → did you mean {' / '.join(m)}?" if m else " (unknown symbol)"))
+                    st.session_state[f"sf_manual_warn_{mkt}"] = "Not flagged — " + " · ".join(tips)
+                st.toast(f"Flagged {len(good)}." + (f" {len(bad)} not recognised." if bad else "")); _rerun(st)
+            w_ = st.session_state.pop(f"sf_manual_warn_{mkt}", None)
+            if w_:
+                st.warning(w_)
         st.caption("🔍 To check any ticker, use the **Check ticker** button in the bottom-right corner — it works from every tab.")
         if not flags:
             st.caption("Nothing flagged yet."); return
@@ -1020,13 +1108,14 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
         d = fl.merge(v.drop(columns=["Flag"]), left_on="symbol", right_on="Symbol", how="left")
         d["Symbol"] = d["symbol"]
         d["Sector"] = d["Sector"].fillna(d["sector"])
+        d = _fill_from_ep(st, mkt, d)
         d["Flagged"] = pd.to_datetime(d["flagged_at"]).dt.strftime("%d-%b")
         d["Pick"] = d["build_range"].fillna(False).astype(bool)
         d["Rank"] = pd.to_numeric(d["rank"], errors="coerce")
         d["Note"] = d["note"].fillna("")
         d["Unflag"] = False
         d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
-        show = ["Pick", "Rank", "Symbol", "Leader", "Setup", "MA hold", "Entry", "Pivot", "To pivot %", "Stop guide", "Flags", "Sector", "Score"] + \
+        show = ["Pick", "Rank", "Symbol", "Leader", "Setup", "MA hold", "Entry", "Pivot", "To pivot %", "Stop guide", "Trigger", "Stop", "Stop %", "Stop fit", "Flags", "Sector", "Score"] + \
                HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Last", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
         show = [c for c in show if c in d.columns]
         n_pick = int(d["Pick"].sum())
@@ -1048,7 +1137,8 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
                                  extra=_card_extra(dv, show), labels={**LABELS, "Entry": "Entry plan"}, tips=_tips(cfg),
                                  card_first=CARD_FIRST, edit={"Pick": "bool", "Rank": "number", "Note": "text", "Unflag": "bool"},
                                  submit="Save shortlist", height=min(32 * len(dv) + 70, 520),
-                                 widths={"Symbol": 110, "Score": 58, "Setup": 170, "Entry": 300, "Flags": 200})
+                                 widths={"Symbol": 110, "Score": 58, "Setup": 170, "Entry": 300, "Flags": 200,
+                                         "Trigger": 74, "Stop": 70, "Stop %": 62, "Stop fit": 80})
         st.caption("**Click a ticker** for all its data · tick Pick / Unflag, type a Rank or Note on the row, then **Save shortlist**.")
         changed = False
         if saved and ed is not None and "Symbol" in ed.columns:
@@ -1081,3 +1171,14 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
         order += [x for x in d["Symbol"] if x not in order]
         gp.copy_area(st, f"All {len(order)} flagged, in the table's order (sort the table — the list follows, no Save needed) — for TradingView",
                      ",".join(gp.tv_symbol(x, mcfg) for x in order), key=f"sf_copy_all_{mkt}")
+        try:                                        # Excel export of the flagged table, in the table's order
+            xcols = [c for c in show if c != "Unflag"]
+            xl = dv.set_index("Symbol", drop=False).loc[[x for x in order if x in set(dv["Symbol"])], xcols]
+            buf = BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                xl.to_excel(w, index=False, sheet_name="Flagged")
+            st.download_button(f"⬇ Export {len(xl)} flagged to Excel", buf.getvalue(),
+                               file_name=f"flagged_{mkt}_{date.today().isoformat()}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"sf_xl_{mkt}")
+        except Exception as e:
+            st.caption(f"Excel export unavailable: {e}")

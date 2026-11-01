@@ -56,7 +56,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-10-30a · Stop fit tag (½ ADR / OK / Wide) from MIO day high/low, trigger / stop / overhead"
+PROCESS_VERSION = "v2026-11-02a · Flagged: typo check when flagging by hand, EP-scan data for gappers, trigger / stop / stop fit, Excel export"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
