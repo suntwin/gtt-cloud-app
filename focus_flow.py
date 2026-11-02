@@ -1003,7 +1003,7 @@ def _where_core(st, mcfg, v, r):
 _UNI = {}
 
 
-def _universe(mkt):
+def _symbol_universe(mkt):
     """{symbol: sector} from TradingView/Symbols_<MKT>.csv — used to catch typos when flagging by hand. {} if missing."""
     if mkt not in _UNI:
         try:
@@ -1038,7 +1038,7 @@ def _fill_from_ep(st, mkt, d):
         d[c] = d[c].astype(object)
     ep = _ep_scan(st, mkt)
     epi = ep.set_index("Symbol") if ep is not None and not ep.empty else pd.DataFrame()
-    uni = _universe(mkt)
+    uni = _symbol_universe(mkt)
     num = lambda r, c: gp._num(r.get(c)) if c in r else np.nan
     for i in d.index[miss]:
         s = d.at[i, "Symbol"]
@@ -1077,7 +1077,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
             txt = st.text_input("Symbols, comma separated", key=f"sf_manual_{mkt}", placeholder="e.g. SUNTV, NSE:TIPSMUSIC")
             if st.button("Flag them", key=f"sf_manual_btn_{mkt}") and txt.strip():
                 syms = list(dict.fromkeys(s.strip().upper().split(":")[-1] for s in txt.replace("\n", ",").split(",") if s.strip()))
-                uni = _universe(mkt)
+                uni = _symbol_universe(mkt)
                 known = set(v["Symbol"].astype(str)) | set(uni)
                 good = [s for s in syms if not uni or s in known]
                 bad = [s for s in syms if s not in good]
