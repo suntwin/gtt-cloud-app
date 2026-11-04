@@ -1115,6 +1115,10 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
         d["Note"] = d["note"].fillna("")
         d["Unflag"] = False
         d = d.sort_values(["Pick", "Rank", "Score"], ascending=[False, True, False], na_position="last")
+        fo_ = st.session_state.get(f"sf_forder_{mkt}")
+        if fo_:                                     # keep the order you last sorted the table to (copy box = same order)
+            pos_ = {sym: i for i, sym in enumerate(fo_)}
+            d = d.assign(_o=d["Symbol"].map(pos_)).sort_values("_o", na_position="last", kind="stable").drop(columns="_o")
         show = ["Pick", "Rank", "Symbol", "Leader", "Setup", "MA hold", "Entry", "Pivot", "To pivot %", "Stop guide", "Trigger", "Stop", "Stop %", "Stop fit", "Flags", "Sector", "Score"] + \
                HIGHLIGHT + [r for r, _ in RULES] + ["BO", "BO vol x", "Off 1M (ADR)", "Off 52W %", "10MA (ADR)", "Avg vol", "Day vol", "Last", "Chg %", "Vol x"] + (["Circuit %"] if mkt == "NSE" else []) + ["Data", "Flagged", "Note", "Unflag"]
         show = [c for c in show if c in d.columns]
@@ -1136,7 +1140,7 @@ def render_flagged(st, sb, mcfg, v, flags, cfg):
         ed, saved = gp.card_grid(st, gv, key=f"sf_fgrid_{mkt}", sty=style(gv, cfg["min_liq"]),
                                  extra=_card_extra(dv, show), labels={**LABELS, "Entry": "Entry plan"}, tips=_tips(cfg),
                                  card_first=CARD_FIRST, edit={"Pick": "bool", "Rank": "number", "Note": "text", "Unflag": "bool"},
-                                 submit="Save shortlist", height=min(32 * len(dv) + 70, 520),
+                                 submit="Save shortlist", submit_on_sort=True, height=min(32 * len(dv) + 70, 520),
                                  widths={"Symbol": 110, "Score": 58, "Setup": 170, "Entry": 300, "Flags": 200,
                                          "Trigger": 74, "Stop": 70, "Stop %": 62, "Stop fit": 80})
         st.caption("**Click a ticker** for all its data · tick Pick / Unflag, type a Rank or Note on the row, then **Save shortlist**.")

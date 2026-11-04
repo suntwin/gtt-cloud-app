@@ -56,7 +56,7 @@ MARKETS = {
             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
 }
 
-PROCESS_VERSION = "v2026-11-02b · fix Sector Focus crash (name clash) · Flagged: typo check when flagging by hand, EP-scan data for gappers, trigger / stop / stop fit, Excel export"
+PROCESS_VERSION = "v2026-11-04a · Flagged copy box follows the table sort (no Save needed) · fix Sector Focus crash (name clash) · Flagged: typo check when flagging by hand, EP-scan data for gappers, trigger / stop / stop fit, Excel export"
 SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
 SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
                "ATH": "All-time-high breakout",
