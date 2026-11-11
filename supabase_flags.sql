@@ -11,6 +11,8 @@ create table if not exists flags (
   source       text,                       -- where it was flagged: sector name, 'manual', …
   note         text        not null default '',
   rank         integer,
+
+
   build_range  boolean     not null default false,   -- picked: draw the range and set the alert
   flagged_at   date        not null default current_date,
   updated_at   timestamptz not null default now(),

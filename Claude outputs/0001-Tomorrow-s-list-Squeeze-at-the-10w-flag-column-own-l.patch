@@ -1,0 +1,170 @@
+From e47b5c37a48e1d8f3b96636d0f168f337ae8b15e Mon Sep 17 00:00:00 2001
+From: Nitesh Chawla <nitesh.chawla@atturra.com>
+Date: Wed, 7 Oct 2026 09:57:28 +0000
+Subject: [PATCH] =?UTF-8?q?Tomorrow's=20list:=20Squeeze=20at=20the=2010w?=
+ =?UTF-8?q?=20=E2=80=94=20flag=20column,=20own=20list=20path=20(no=20daily?=
+ =?UTF-8?q?-change=20window),=20Squeeze=20filter?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ gtt_process.py | 58 ++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 47 insertions(+), 11 deletions(-)
+
+diff --git a/gtt_process.py b/gtt_process.py
+index 68b1f04..f652225 100644
+--- a/gtt_process.py
++++ b/gtt_process.py
+@@ -35,7 +35,7 @@ MARKETS = {
+             "tv_prefix": False},   # US stocks trade on NASDAQ and NYSE — TradingView finds bare symbols
+ }
+ 
+-PROCESS_VERSION = "v2026-10-07i · Write the market note later after a skip"   # shown on the page so you can tell which code is running
++PROCESS_VERSION = "v2026-10-07j · Squeeze at the 10w: flag, own list path, filter"   # shown on the page so you can tell which code is running
+ SETUP_TYPES = ["EP", "TIGHT_BO", "WEMA_BO", "ATH", "CONTINUATION"]
+ SETUP_NAMES = {"EP": "Episodic pivot", "TIGHT_BO": "Tight-range breakout", "WEMA_BO": "10-week EMA breakout",
+                "ATH": "All-time-high breakout",
+@@ -66,6 +66,10 @@ TOMORROW_DEFAULTS = {
+     "pullback_band": 2.0, "stale_days": 20,
+     "missing_days": 3, "min_circuit": 10,
+     "recent_bo_days": 5, "recent_bo_max_rwd": 3.0,
++    # Squeeze at the 10w line (UNIVCABLES / KSHINTL pattern): price ≤ 1 ADR from 10w, tight, sitting on the 10/20 MA,
++    # not yet a full breakout. MA distances are in ADRs so a small dip below the MAs is allowed.
++    "sq_max_rwd": 1.0, "sq_max_reltight": 0.8, "sq_ma_min_adr": -0.3, "sq_ma_max_adr": 1.0,
++    "sq_max_chg_adr": 1.0, "sq_wake_vol": 0.9,
+     "tier1_adr": 7.0, "tier2_adr": 5.0,     # ADR tiers: P1 ≥ tier1, P2 tier2–tier1, P3 below (NSE defaults below)
+ }
+ TIER_DEFAULTS = {"USA": {"tier1_adr": 7.0, "tier2_adr": 5.0}, "NSE": {"tier1_adr": 6.0, "tier2_adr": 4.5}}
+@@ -90,10 +94,10 @@ BREAKOUT_DEFAULTS = {
+ }
+ CLEANUP_DEFAULTS = {"max_age_days": 30, "unseen_days": 10}
+ 
+-LIST_LABELS = ["4_RESETUP", "SAVED_WAIT", "ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "5_REMOVE", "RECENT_BO", "CANDIDATE", "CHECK", "SCANNED"]
++LIST_LABELS = ["4_RESETUP", "SAVED_WAIT", "ADDED", "1_BUY_SIGNAL", "2_SAVE", "3_WAIT", "5_REMOVE", "RECENT_BO", "SQUEEZE", "CANDIDATE", "CHECK", "SCANNED"]
+ LABEL_NAMES = {"4_RESETUP": "Saved & tight", "SAVED_WAIT": "Saved, not tight yet", "ADDED": "Added by you", "1_BUY_SIGNAL": "1 · Buy signal", "2_SAVE": "2 · Save (tag it)", "3_WAIT": "3 · Wait",
+                "5_REMOVE": "5 · Weak (review)", "RECENT_BO": "Recent BO, now tight", "CANDIDATE": "New candidate",
+-               "CHECK": "Check chart"}
++               "SQUEEZE": "Squeeze at 10w", "CHECK": "Check chart"}
+ TOMORROW_LABELS = {"3_WAIT", "4_RESETUP"}   # always carried onto tomorrow's list
+ 
+ SNAPSHOT_METRICS = ["Last", "_chg_percentclose", "_vol_ratio", "Adr", "_nr4", "_nr4_previous",
+@@ -263,7 +267,7 @@ SITUATION_COLOURS = {"Saved & tight": _css("#28a745", "white", True), "Saved, no
+                      "Added by you": _css("#e2d9f3", "#3d2a73"), "1 · Buy signal": _css("#155724", "white", True),
+                      "2 · Save (tag it)": _css("#cfe2ff", "#084298"), "3 · Wait": _css("#fff3cd", "#664d03"),
+                      "5 · Weak (review)": _css("#f8d7da", "#721c24", True), "Check chart": _css("#ffe5d0", "#8a4b08"),
+-                     "Recent BO, now tight": _css("#cff4fc", "#055160", True)}
++                     "Recent BO, now tight": _css("#cff4fc", "#055160", True), "Squeeze at 10w": _css("#ffd8a8", "#7a3e00", True)}
+ 
+ 
+ def _c_circuit(v):
+@@ -461,6 +465,15 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
+         "Broke out " + dsb.fillna(0).astype(int).astype(str) + "d ago, now tight (rel tight "
+         + d["_rel_tightness_today"].round(2).astype(str) + ", " + rwd_now.round(1).astype(str)
+         + " ADR from 10w) — grade the chart; save as CONTINUATION if A/B")
++    # Squeeze at the 10w: flag every row; scanned names that only fail the daily-change window get their own row
++    sq = squeeze_mask(d, cfg)
++    wake = (vol >= cfg["sq_wake_vol"]) & (chg > 0)
++    d["Squeeze"] = np.where(sq & wake, "✓ + vol", np.where(sq, "✓", ""))
++    put(sq & (adr >= cfg["min_adr"]) & (d["_avgvol_mln"].fillna(0) >= cfg["min_liq"]) & ~d["Missing_Weekly"], "SQUEEZE",
++        "Squeeze: " + d["_rel_wk_dist"].round(2).astype(str) + " ADR from 10w, rel tight "
++        + d["_rel_tightness_today"].round(2).astype(str) + ", 10/20MA " + (d["_10madist"] / adr.replace(0, np.nan)).round(1).astype(str)
++        + "/" + (d["_20madist"] / adr.replace(0, np.nan)).round(1).astype(str) + " ADR"
++        + np.where(wake, " · volume coming in (" + v1 + "x)", ""))
+     put(cand & d["Missing_Weekly"], "CHECK", "Passes daily rules, weekly data missing — check chart")
+     d.loc[d["On_List"] & (d["Label"] == "SCANNED"), "Reason"] = "Was on list, no longer qualifies"
+ 
+@@ -507,6 +520,17 @@ def classify_tomorrow(scan_df, yesterday_list, watch_rows, cfg=None, today=None)
+     return d, updates
+ 
+ 
++def squeeze_mask(d, cfg):
++    """Price within sq_max_rwd ADR of the 10w line, tight, on the 10/20 MA (−0.3 to +1 ADR), not a full breakout yet."""
++    num = lambda c: pd.to_numeric(d[c], errors="coerce") if c in d.columns else pd.Series(np.nan, index=d.index)
++    adr = num("Adr").replace(0, np.nan)
++    m10, m20 = num("_10madist") / adr, num("_20madist") / adr
++    chg_adr = num("_chg_percentclose") / adr
++    lo, hi = cfg["sq_ma_min_adr"], cfg["sq_ma_max_adr"]
++    return ((num("_rel_wk_dist") <= cfg["sq_max_rwd"]) & (num("_rel_tightness_today") <= cfg["sq_max_reltight"])
++            & m10.between(lo, hi) & m20.between(lo, hi) & chg_adr.between(-0.5, cfg["sq_max_chg_adr"])).fillna(False)
++
++
+ def suggest_tags(r, cfg, saved_as=None):
+     """Every setup type the scan columns point to (a breakout can be TIGHT_BO and WEMA_BO). Confirm on the chart."""
+     chg, vol = _num(r.get("_chg_percentclose"), 0), _num(r.get("_vol_ratio"), 0)
+@@ -1480,6 +1504,9 @@ RULE_LABELS = {
+     "stale_days": "Suggest removing a saved stock after N days",
+     "recent_bo_days": "Recent BO, now tight: broke out within N days",
+     "recent_bo_max_rwd": "Recent BO, now tight: max ADRs from 10w",
++    "sq_max_rwd": "Squeeze: max ADRs from 10w", "sq_max_reltight": "Squeeze: max rel tight",
++    "sq_ma_min_adr": "Squeeze: 10/20MA dist at least (ADRs, negative = below)", "sq_ma_max_adr": "Squeeze: 10/20MA dist at most (ADRs)",
++    "sq_max_chg_adr": "Squeeze: max day's move (ADRs) — above this it's a breakout", "sq_wake_vol": "Squeeze: 'volume coming in' at vol x ≥",
+     "tier1_adr": "ADR tier P1: ADR at least", "tier2_adr": "ADR tier P2: ADR at least (below = P3)",
+     "missing_days": "Suggest removing a saved stock missing from the scan for N trading days",
+     "min_circuit": "NSE: suggest removing a saved stock whose price band falls below N%",
+@@ -1630,7 +1657,7 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
+     for c, (k, n) in zip(st.columns(len(LABEL_NAMES)), LABEL_NAMES.items()):
+         c.metric(n, int(counts.get(k, 0)))
+ 
+-    show = ["Keep", "CONT", "Tier", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
++    show = ["Keep", "CONT", "Tier", "Squeeze", "Label", "Symbol", "Note", "Reason", "Tag", "Scan_Count", "_chg_percentclose", "_vol_ratio",
+             "Adr", "_rel_tightness_today", "_nr4", "_avgvol_mln", "_rel_wk_dist", "_10madist", "_20madist", "Avg_RS", "Sector"]
+     saved_rows = lab[lab["Saved"] == True] if "Saved" in lab.columns else lab.iloc[0:0]  # noqa: E712
+     if len(saved_rows):
+@@ -1675,18 +1702,25 @@ def render_tomorrow_panel(st, sb, base_df, saved_prefs, mcfg, shared=None):
+     # ADR tier checkboxes: tick one or more to show only those rows (none ticked = all)
+     lim = {"P1": f"ADR ≥ {cfg['tier1_adr']:g}", "P2": f"ADR {cfg['tier2_adr']:g}–{cfg['tier1_adr']:g}",
+            "P3": f"ADR < {cfg['tier2_adr']:g}"}
+-    tcols = st.columns([1, 1, 1, 3])
++    tcols = st.columns([1, 1, 1, 1.4, 2.6])
+     pick = [t for c_, t in zip(tcols, ("P1", "P2", "P3"))
+             if c_.checkbox(f"{t} ({int((view['Tier'] == t).sum())})", key=f"bt_tier_{t}", help=lim[t])]
+-    tcols[3].caption(f"Show only: P1 {lim['P1']} · P2 {lim['P2']} · P3 {lim['P3']}. None ticked = all. "
+-                     "Limits are in More list rules.")
++    _sqv = view["Squeeze"].fillna("").astype(str) if "Squeeze" in view.columns else pd.Series("", index=view.index)
++    sq_only = tcols[3].checkbox(f"Squeeze ({int((_sqv != '').sum())})", key="bt_sq",
++                                help=f"≤ {cfg['sq_max_rwd']:g} ADR from 10w, rel tight ≤ {cfg['sq_max_reltight']:g}, "
++                                     f"10/20MA between {cfg['sq_ma_min_adr']:g} and +{cfg['sq_ma_max_adr']:g} ADR, "
++                                     f"day's move ≤ {cfg['sq_max_chg_adr']:g} ADR. '+ vol' = volume ≥ {cfg['sq_wake_vol']:g}x on an up day.")
++    tcols[4].caption(f"Show only: P1 {lim['P1']} · P2 {lim['P2']} · P3 {lim['P3']} · Squeeze at the 10w. "
++                     "None ticked = all. Limits are in More list rules.")
+     if pick:
+         view = view[view["Tier"].isin(pick)]
++    if sq_only:
++        view = view[_sqv.reindex(view.index).fillna("") != ""]
+     view = sort_by_tightness(view)
+     view = view.assign(_t=view["Tier"].replace("", "P9")).sort_values("_t", kind="stable") \
+         .drop(columns="_t").reset_index(drop=True)
+ 
+-    gkey = "bt_grid_" + "_".join(pick or ["all"])
++    gkey = "bt_grid_" + "_".join(pick or ["all"]) + ("_sq" if sq_only else "")
+     resp = _tomorrow_grid(view, cfg, gkey)
+     out = view
+     if resp is not None and resp.get("data") is not None and len(resp["data"]):
+@@ -1778,11 +1812,13 @@ _JS = {
+     "chg": """function(p){const v=p.value;if(v===null||v===undefined||isNaN(v))return null;
+         if(v>=5)return{'backgroundColor':'#b44cb4','color':'white'};if(v>=2)return{'backgroundColor':'#e6b3e6','color':'black'};
+         if(v>0)return{'backgroundColor':'#ffe6ff','color':'black'};return null}""",
++    "sq": """function(p){const v=p.value;if(v==='✓ + vol')return{'backgroundColor':'#fd7e14','color':'white','fontWeight':'bold'};
++        if(v==='✓')return{'backgroundColor':'#ffd8a8','color':'#7a3e00','fontWeight':'bold'};return null}""",
+     "tier": """function(p){const v=p.value;if(v==='P1')return{'backgroundColor':'#155724','color':'white','fontWeight':'bold'};
+         if(v==='P2')return{'backgroundColor':'#8ee68e','color':'black','fontWeight':'bold'};if(v==='P3')return{'backgroundColor':'#e9ecef','color':'black'};return null}""",
+     "label": """function(p){const m={'Saved & tight':['#28a745','white'],'Saved, not tight yet':['#d4edda','black'],
+         'Added by you':['#e2d9f3','#3d2a73'],'1 · Buy signal':['#155724','white'],'3 · Wait':['#fff3cd','#664d03'],
+-        '5 · Weak (review)':['#f8d7da','#721c24'],'Check chart':['#ffe5d0','#8a4b08'],'Recent BO, now tight':['#cff4fc','#055160']};
++        '5 · Weak (review)':['#f8d7da','#721c24'],'Check chart':['#ffe5d0','#8a4b08'],'Recent BO, now tight':['#cff4fc','#055160'],'Squeeze at 10w':['#ffd8a8','#7a3e00']};
+         const c=m[p.value];return c?{'backgroundColor':c[0],'color':c[1],'fontWeight':'bold'}:null}""",
+ }
+ 
+@@ -1800,7 +1836,7 @@ def _tomorrow_grid(view, cfg, key):
+     gb.configure_column("CONT", headerName="Save CONT", headerTooltip="Also save to the watchlist as CONTINUATION", **tick)
+     gb.configure_column("Symbol", pinned="left", minWidth=95, maxWidth=130)
+     js = {k: JsCode(v) for k, v in _JS.items()}
+-    cols = {"Tier": ("Tier", "tier", 60), "Label": ("Situation", "label", 150), "Note": ("My note", None, 160),
++    cols = {"Tier": ("Tier", "tier", 60), "Squeeze": ("Squeeze", "sq", 80), "Label": ("Situation", "label", 150), "Note": ("My note", None, 160),
+             "Reason": ("Reason", None, 260), "Tag": ("Saved as", None, 150), "Scan_Count": ("Scans", None, 60),
+             "_chg_percentclose": ("Chg %", "chg", 70), "_vol_ratio": ("Vol x", "vol", 65), "Adr": ("ADR", None, 60),
+             "_circuit": ("Circuit %", None, 75), "_rel_tightness_today": ("Rel tight", "tight", 75),
+-- 
+2.34.1
+

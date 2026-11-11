@@ -1,0 +1,90 @@
+//@version=6
+// Opening Volume Scanner — where is the volume going in the first minutes?
+// Use in TradingView's Pine Screener on your "Tonight" watchlist (Tomorrow's list), timeframe 5 minutes.
+//
+// Columns (plots):
+//   RVOL@time   today's volume so far ÷ average volume by the same time on the previous days (up to 5)
+//   % of day    today's volume so far as % of the 20-day average DAILY volume
+//   Chg %       change from yesterday's close
+//   Gap %       open vs yesterday's close
+//   >ORH        1 = price above the opening-range high (first N bars)
+//   >Y high     1 = price above yesterday's high (a simple pivot)
+//   Stop ADR    distance from today's low in ADRs (your stop = low of day must be <= 1 ADR)
+//   ADR %       20-day average daily range
+//   Bars in     bars since the open
+// Alert condition "Opening volume trigger": RVOL@time >= min, above ORH and yesterday's high, stop <= 1 ADR.
+indicator("Opening Volume Scanner", shorttitle = "OpenVol", overlay = false)
+
+lookDays = input.int(5,   "Days for RVOL at time", minval = 1, maxval = 10)
+orBars   = input.int(3,   "Opening range bars (3 x 5m = 15 min)", minval = 1, maxval = 30)
+minRvol  = input.float(2.0, "Trigger: min RVOL at time", minval = 0.5, step = 0.1)
+maxStop  = input.float(1.0, "Trigger: max stop distance (ADR)", minval = 0.1, step = 0.1)
+
+MAX_SLOTS = 400   // enough for a full NSE / US session even on 1-minute bars
+
+// ── previous days, from the daily chart (no repainting: completed days only)
+[avgVol20, adrPct, prevHigh, prevClose] = request.security(syminfo.tickerid, "D",
+     [ta.sma(volume, 20)[1], ta.sma((high / low - 1) * 100, 20)[1], high[1], close[1]],
+     lookahead = barmerge.lookahead_on)
+
+// ── cumulative volume by bar-of-day, today and the previous days
+var matrix<float> hist  = matrix.new<float>(0, MAX_SLOTS, na)
+var array<float>  today = array.new<float>(MAX_SLOTS, na)
+var float cum     = 0.0
+var int   slot    = -1
+var float orh     = na
+var float dayLow  = na
+var float dayOpen = na
+
+newDay = timeframe.change("D")
+if newDay
+    if slot >= 0
+        matrix.add_row(hist, matrix.rows(hist), today)
+        if matrix.rows(hist) > lookDays
+            matrix.remove_row(hist, 0)
+    today   := array.new<float>(MAX_SLOTS, na)
+    cum     := 0.0
+    slot    := -1
+    orh     := na
+    dayLow  := low
+    dayOpen := open
+
+slot   += 1
+cum    += volume
+dayLow := na(dayLow) ? low : math.min(dayLow, low)
+if slot < MAX_SLOTS
+    array.set(today, slot, cum)
+if slot < orBars
+    orh := na(orh) ? high : math.max(orh, high)
+
+// average cumulative volume at this same bar on the previous days
+float sumPrev = 0.0
+int   nPrev   = 0
+int   rows    = matrix.rows(hist)
+if slot < MAX_SLOTS and rows > 0
+    for r = 0 to rows - 1
+        v = matrix.get(hist, r, slot)
+        if not na(v) and v > 0
+            sumPrev += v
+            nPrev   += 1
+float rvolTime = nPrev > 0 ? cum / (sumPrev / nPrev) : na
+float pctDay   = avgVol20 > 0 ? cum / avgVol20 * 100 : na
+float chgPct   = prevClose > 0 ? (close / prevClose - 1) * 100 : na
+float gapPct   = prevClose > 0 ? (dayOpen / prevClose - 1) * 100 : na
+float stopAdr  = adrPct > 0 ? (close - dayLow) / (close * adrPct / 100) : na
+int   aboveOrh = slot >= orBars and close > orh ? 1 : 0
+int   aboveYh  = close > prevHigh ? 1 : 0
+
+plot(rvolTime, "RVOL@time", color.new(color.green, 0), 2)
+plot(pctDay,   "% of day",  color.new(color.teal, 0))
+plot(chgPct,   "Chg %",     color.new(color.purple, 0))
+plot(gapPct,   "Gap %",     color.new(color.gray, 0))
+plot(aboveOrh, ">ORH",      color.new(color.orange, 0), style = plot.style_stepline)
+plot(aboveYh,  ">Y high",   color.new(color.blue, 0),   style = plot.style_stepline)
+plot(stopAdr,  "Stop ADR",  color.new(color.red, 0))
+plot(adrPct,   "ADR %",     color.new(color.silver, 0))
+plot(slot + 1, "Bars in",   color.new(color.gray, 60))
+
+trigger = rvolTime >= minRvol and aboveOrh == 1 and aboveYh == 1 and stopAdr <= maxStop
+alertcondition(trigger, "Opening volume trigger", "{{ticker}}: early volume, above ORH and yesterday's high, stop within 1 ADR")
+hline(minRvol, "Min RVOL", color.new(color.green, 70), hline.style_dotted)
