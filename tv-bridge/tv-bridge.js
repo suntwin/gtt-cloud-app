@@ -92,7 +92,36 @@ async function readAvwap(t, want, prev) {
   return null
 }
 
-async function setSymbol(sym, focus = true, withAvwap = false) {
+// ── NSE circuit lines: when the Scanner opens a stock it passes the stock's price band (the Circuit % column). The base is
+// the last finished session's close (Yahoo daily bars; during the session today's bar is left out), and the upper / lower
+// circuit are drawn as two dashed lines. They are temporary (not saved in the layout) and replaced on the next open.
+async function circuitBase(sym) {
+  const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym(String(sym).split(':').pop(), 'NSE'))}?range=10d&interval=1d`,
+    { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) })
+  if (!r.ok) return null
+  const res = (await r.json())?.chart?.result?.[0]
+  const q = res?.indicators?.quote?.[0], ts = res?.timestamp
+  if (!q || !ts) return null
+  let bars = ts.map((t, i) => [t, q.close[i]]).filter((b) => b[1] != null)
+  const reg = res.meta?.currentTradingPeriod?.regular, nowS = Date.now() / 1000
+  if (reg && nowS < reg.end && bars.length && bars[bars.length - 1][0] >= reg.start) bars = bars.slice(0, -1)   // session not finished
+  return bars.length ? bars[bars.length - 1][1] : null
+}
+async function drawCircuit(t, sym, band) {
+  const base = await circuitBase(sym).catch(() => null)
+  const arg = base ? { up: +(base * (1 + band / 100)).toFixed(2), lo: +(base * (1 - band / 100)).toFixed(2), band, base: +base.toFixed(2) } : null
+  const expr = `(async (A) => { const c = TradingViewApi.activeChart()
+    for (const id of (window.__sdCircuit || [])) { try { c.removeEntity(id) } catch (e) {} }
+    window.__sdCircuit = []
+    if (!A) return 'cleared'
+    const mk = (p, txt, col) => Promise.resolve(c.createShape({ price: p }, { shape: 'horizontal_line', lock: true, disableSave: true, disableUndo: true,
+      overrides: { linecolor: col, linestyle: 2, linewidth: 1, showLabel: true, text: txt, textcolor: col, horzLabelsAlign: 'right', vertLabelsAlign: 'bottom', fontsize: 11 } }))
+    const col = A.band <= 5 ? '#e53935' : A.band <= 10 ? '#fb8c00' : '#8d6e63'
+    window.__sdCircuit = [await mk(A.up, 'Upper circuit ' + A.up + '  (+' + A.band + '%)', col), await mk(A.lo, 'Lower circuit ' + A.lo + '  (−' + A.band + '%)', col)]
+    return 'drawn' })(${JSON.stringify(arg)})`
+  await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }]).catch(() => {})
+}
+async function setSymbol(sym, focus = true, withAvwap = false, band = 0) {
   let t
   try { t = await findTarget() } catch { await launchTV(); t = await findTarget() }
   await waitForChart(t)
@@ -107,6 +136,8 @@ async function setSymbol(sym, focus = true, withAvwap = false) {
   if (focus && process.platform === 'win32')  // raise the TradingView window (fixed command, no user input)
     exec(`powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate('TradingView') | Out-Null"`, { windowsHide: true })
   const symbol = r.result.value
+  // circuit lines for NSE stocks opened from the Scanner (cleared for anything else); not awaited, so the chart opens at once
+  drawCircuit(t, sym, /^NSE:/i.test(sym) && band > 0 ? band : 0).catch(() => {})
   return { symbol, avwap: withAvwap ? await readAvwap(t, sym, prev) : undefined }
 }
 
@@ -427,7 +458,7 @@ http.createServer(async (req, res) => {
   if (!ok) return send(403, { ok: false, error: 'origin not allowed' })
   if (req.method === 'OPTIONS') return send(204, {})
   const u = new URL(req.url, 'http://x')
-  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true, cwatch: true, listadd: true, crsort: true })
+  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true, cwatch: true, listadd: true, crsort: true, circuit: true })
   if (u.pathname === '/quotes') {
     const mk = (u.searchParams.get('market') || 'NSE').toUpperCase()
     const syms = [...new Set((u.searchParams.get('syms') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => QUOTE_SYM.test(x)))].slice(0, 400)
@@ -472,5 +503,5 @@ http.createServer(async (req, res) => {
   if (u.pathname !== '/open') return send(404, { ok: false })
   const sym = (u.searchParams.get('symbol') || '').trim()
   if (!SYM.test(sym)) return send(400, { ok: false, error: 'bad symbol' })
-  try { send(200, { ok: true, ...(await setSymbol(sym, u.searchParams.get('focus') !== '0', u.searchParams.get('avwap') === '1')) }) } catch (e) { send(502, { ok: false, error: e.message }) }
+  try { send(200, { ok: true, ...(await setSymbol(sym, u.searchParams.get('focus') !== '0', u.searchParams.get('avwap') === '1', +u.searchParams.get('band') || 0)) }) } catch (e) { send(502, { ok: false, error: e.message }) }
 }).listen(PORT, '127.0.0.1', () => console.log(`tv-bridge on http://127.0.0.1:${PORT} → TradingView debug port ${CDP_PORTS.join('/')}`))
