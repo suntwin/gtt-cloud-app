@@ -112,7 +112,7 @@ async function setSymbol(sym, focus = true, withAvwap = false) {
 
 // ── Watchlists: the Leading / Mediocre / Lagging / Inbox lists (prefix SD = NSE, US = US) read from your TradingView account,
 // so the Scanner can show which list each stock is on. Read-only.
-const LIST_PREFIX = /^(SD|US)$/
+const LIST_PREFIX = /^(SD|US|CR)$/
 async function readLists(prefix) {
   let t
   try { t = await findTarget() } catch { return null }
@@ -141,6 +141,7 @@ async function pageListOp({ P, S, TO }) {        // stringified and run in Tradi
     if (hit) { was.push(tier); full = full || hit }
   }
   if (TO !== 'Remove' && !full) {
+    if (P === 'CR') return { ok: false, error: 'crypto needs the full TradingView symbol (e.g. BINANCE:BTCUSDT)' }
     if (P === 'SD') full = 'NSE:' + bare(S)
     else {
       try {
@@ -173,6 +174,59 @@ async function listOp(prefix, sym, to) {
   const expr = `(${pageListOp.toString()})(${JSON.stringify({ P: prefix, S: sym, TO: to })})`
   const [r] = await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }], 20000)
   return r?.result?.value || null
+}
+
+// ── Crypto AVWAP watch: daily bars straight from the exchange (public APIs, no key), for "BYBIT:ACSUSDT", "BINANCE:X.P",
+// "OKX:BTCUSDT"…; other exchanges fall back to the same coin on Binance, then Bybit, then OKX. Days are UTC (as on TradingView).
+const CSYM = /^[A-Z0-9_]{2,20}:[A-Z0-9]{2,30}(\.P)?$/
+async function jget(url) { const r = await fetch(url, { signal: AbortSignal.timeout(10000) }); if (!r.ok) throw new Error(url + ' ' + r.status); return r.json() }
+const KL = {                                                        // → [[t(sec), o, h, l, c, v], …] oldest first
+  BINANCE: async (pair, perp) => (await jget(`https://${perp ? 'fapi' : 'api'}.binance.com/${perp ? 'fapi/v1' : 'api/v3'}/klines?symbol=${pair}&interval=1d&limit=102`))
+    .map((k) => [k[0] / 1000, +k[1], +k[2], +k[3], +k[4], +k[5]]),
+  BYBIT: async (pair, perp) => ((await jget(`https://api.bybit.com/v5/market/kline?category=${perp ? 'linear' : 'spot'}&symbol=${pair}&interval=D&limit=102`)).result?.list || [])
+    .map((k) => [+k[0] / 1000, +k[1], +k[2], +k[3], +k[4], +k[5]]).reverse(),
+  OKX: async (pair, perp) => {
+    const q = pair.replace(/(USDT|USDC|USD)$/, '-$1') + (perp ? '-SWAP' : '')
+    return ((await jget(`https://www.okx.com/api/v5/market/candles?instId=${q}&bar=1Dutc&limit=100`)).data || [])
+      .map((k) => [+k[0] / 1000, +k[1], +k[2], +k[3], +k[4], +k[5]]).reverse()
+  },
+}
+async function cryptoBars(tvSym) {
+  const [ex, rest] = tvSym.split(':'), perp = rest.endsWith('.P'), pair = rest.replace(/\.P$/, '')
+  const usdt = pair.replace(/(USDT|USDC|USD|PERP)$/, '') + 'USDT'
+  const tries = [[ex, pair, perp], ['BINANCE', usdt, false], ['BINANCE', usdt, true], ['BYBIT', usdt, false], ['BYBIT', usdt, true], ['OKX', usdt, false]]
+  for (const [e, p, pp] of tries) {
+    if (!KL[e]) continue
+    try { const b = await KL[e](p, pp); if (b.length >= 25) return { bars: b, src: `${e}:${p}${pp ? '.P' : ''}` } } catch {}
+  }
+  return null
+}
+function cryptoWatchRow(bars) {
+  const today = Math.floor(Date.now() / 864e5) * 86400
+  const live = bars[bars.length - 1][0] >= today ? bars[bars.length - 1] : null     // today's unfinished UTC bar
+  const done = live ? bars.slice(0, -1) : bars
+  const look = done.slice(-100)
+  let k = 0
+  for (let i = 0; i < look.length; i++) if (look[i][2] >= look[k][2]) k = i                 // highest high (most recent if tied)
+  let pv = 0, vv = 0
+  for (let i = k; i < look.length; i++) { const b = look[i]; pv += (b[2] + b[3] + b[4]) / 3 * b[5]; vv += b[5] }
+  if (!vv) return null
+  const r20 = done.slice(-20), d = (t) => new Date(t * 1000).toISOString().slice(0, 10)
+  const adr = r20.reduce((t, b) => t + (b[2] / b[3] - 1), 0) / r20.length * 100
+  const last = live || done[done.length - 1]
+  return { avwap: +(pv / vv).toPrecision(8), anchor_date: d(look[k][0]), anchor_high: look[k][2], adr_pct: +adr.toFixed(3),
+           prev: done[done.length - 1][4], close: last[4], high: last[2], low: last[3], volume: live ? live[5] : 0,
+           avg_vol: r20.reduce((t, b) => t + b[5], 0) / r20.length, frac: Math.max(0.03, (Date.now() / 1000 - today) / 86400), live: !!live }
+}
+async function cryptoWatch(syms) {
+  const out = {}
+  for (let i = 0; i < syms.length; i += 6) {
+    const part = await Promise.all(syms.slice(i, i + 6).map(async (s) => {
+      try { const r = await cryptoBars(s); const row = r && cryptoWatchRow(r.bars); return [s, row && { ...row, src: r.src }] } catch { return [s, null] }
+    }))
+    for (const [s, v] of part) if (v) out[s] = v
+  }
+  return out
 }
 
 // ── Crypto: MarketInOut gives "ACS.CR"; TradingView needs an exchange pair. Look each coin up with TradingView's own
@@ -275,7 +329,7 @@ http.createServer(async (req, res) => {
   if (!ok) return send(403, { ok: false, error: 'origin not allowed' })
   if (req.method === 'OPTIONS') return send(204, {})
   const u = new URL(req.url, 'http://x')
-  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true })
+  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true, cwatch: true })
   if (u.pathname === '/quotes') {
     const mk = (u.searchParams.get('market') || 'NSE').toUpperCase()
     const syms = [...new Set((u.searchParams.get('syms') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => QUOTE_SYM.test(x)))].slice(0, 400)
@@ -298,9 +352,14 @@ http.createServer(async (req, res) => {
     if (!LIST_PREFIX.test(pre) || !LIST_TO.test(to) || !SYM.test(sym)) return send(400, { ok: false, error: 'prefix SD|US, to Leading|Mediocre|Lagging|Inbox|Remove, symbol' })
     try { const r = await listOp(pre, sym, to); return send(r?.ok ? 200 : 502, r || { ok: false, error: 'TradingView not reachable' }) } catch (e) { return send(502, { ok: false, error: e.message }) }
   }
+  if (u.pathname === '/cwatch') {
+    const syms = [...new Set((u.searchParams.get('syms') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => CSYM.test(x)))].slice(0, 200)
+    if (!syms.length) return send(400, { ok: false, error: 'syms needed (e.g. BINANCE:BTCUSDT)' })
+    try { return send(200, { ok: true, data: await cryptoWatch(syms) }) } catch (e) { return send(502, { ok: false, error: e.message }) }
+  }
   if (u.pathname === '/lists') {
     const pre = u.searchParams.get('prefix') || ''
-    if (!LIST_PREFIX.test(pre)) return send(400, { ok: false, error: 'prefix must be SD or US' })
+    if (!LIST_PREFIX.test(pre)) return send(400, { ok: false, error: 'prefix must be SD, US or CR' })
     try { const lists = await readLists(pre); return send(lists ? 200 : 502, { ok: !!lists, lists }) } catch (e) { return send(502, { ok: false, error: e.message }) }
   }
   if (u.pathname !== '/open') return send(404, { ok: false })
