@@ -204,23 +204,23 @@ async function listOp(prefix, sym, to) {
 const CSYM = /^[A-Z0-9_]{2,20}:[A-Z0-9]{2,30}(\.P)?$/
 async function jget(url) { const r = await fetch(url, { signal: AbortSignal.timeout(10000) }); if (!r.ok) throw new Error(url + ' ' + r.status); return r.json() }
 const KL = {                                                        // → [[t(sec), o, h, l, c, v], …] oldest first
-  BINANCE: async (pair, perp) => (await jget(`https://${perp ? 'fapi' : 'api'}.binance.com/${perp ? 'fapi/v1' : 'api/v3'}/klines?symbol=${pair}&interval=1d&limit=102`))
+  BINANCE: async (pair, perp, n = 102) => (await jget(`https://${perp ? 'fapi' : 'api'}.binance.com/${perp ? 'fapi/v1' : 'api/v3'}/klines?symbol=${pair}&interval=1d&limit=${n}`))
     .map((k) => [k[0] / 1000, +k[1], +k[2], +k[3], +k[4], +k[5]]),
-  BYBIT: async (pair, perp) => ((await jget(`https://api.bybit.com/v5/market/kline?category=${perp ? 'linear' : 'spot'}&symbol=${pair}&interval=D&limit=102`)).result?.list || [])
+  BYBIT: async (pair, perp, n = 102) => ((await jget(`https://api.bybit.com/v5/market/kline?category=${perp ? 'linear' : 'spot'}&symbol=${pair}&interval=D&limit=${n}`)).result?.list || [])
     .map((k) => [+k[0] / 1000, +k[1], +k[2], +k[3], +k[4], +k[5]]).reverse(),
-  OKX: async (pair, perp) => {
+  OKX: async (pair, perp, n = 100) => {
     const q = pair.replace(/(USDT|USDC|USD)$/, '-$1') + (perp ? '-SWAP' : '')
-    return ((await jget(`https://www.okx.com/api/v5/market/candles?instId=${q}&bar=1Dutc&limit=100`)).data || [])
+    return ((await jget(`https://www.okx.com/api/v5/market/candles?instId=${q}&bar=1Dutc&limit=${Math.min(n, 100)}`)).data || [])
       .map((k) => [+k[0] / 1000, +k[1], +k[2], +k[3], +k[4], +k[5]]).reverse()
   },
 }
-async function cryptoBars(tvSym) {
+async function cryptoBars(tvSym, n = 102) {
   const [ex, rest] = tvSym.split(':'), perp = rest.endsWith('.P'), pair = rest.replace(/\.P$/, '')
   const usdt = pair.replace(/(USDT|USDC|USD|PERP)$/, '') + 'USDT'
   const tries = [[ex, pair, perp], ['BINANCE', usdt, false], ['BINANCE', usdt, true], ['BYBIT', usdt, false], ['BYBIT', usdt, true], ['OKX', usdt, false]]
   for (const [e, p, pp] of tries) {
     if (!KL[e]) continue
-    try { const b = await KL[e](p, pp); if (b.length >= 25) return { bars: b, src: `${e}:${p}${pp ? '.P' : ''}` } } catch {}
+    try { const b = await KL[e](p, pp, n); if (b.length >= 25) return { bars: b, src: `${e}:${p}${pp ? '.P' : ''}` } } catch {}
   }
   return null
 }
@@ -250,6 +250,81 @@ async function cryptoWatch(syms) {
     for (const [s, v] of part) if (v) out[s] = v
   }
   return out
+}
+
+// ── Sort the CR lists like `watchlists.bat` sorts SD / US (Martin's EMA stacking), from the exchange's daily bars:
+// Leading = above the 10 and 20 EMA, 10 > 20, above the 50 EMA · Lagging = below the 50 EMA and the 150 SMA · else Mediocre.
+// Inbox + the three lists are re-filed; inside a list the coins nearest their 10 EMA (in ADRs) come first, split into
+// ≥ $50M and $1–50M a day. Coins under $1M a day are dropped; coins with no data stay where they were.
+const ema = (xs, n) => { const k = 2 / (n + 1); let e = xs[0]; for (let i = 1; i < xs.length; i++) e = xs[i] * k + e * (1 - k); return e }
+function crTier(bars) {
+  const c = bars.map((b) => b[4]), last = c[c.length - 1]
+  if (c.length < 50) return null
+  const e10 = ema(c, 10), e20 = ema(c, 20), e50 = ema(c, 50), s150 = c.length >= 150 ? c.slice(-150).reduce((a, b) => a + b, 0) / 150 : null
+  const r20 = bars.slice(-20), adr = r20.reduce((t, b) => t + (b[2] / b[3] - 1), 0) / r20.length * 100
+  const liq = bars.slice(-30).reduce((t, b) => t + b[5] * b[4], 0) / Math.min(30, bars.length) / 1e6
+  const tier = last > e10 && last > e20 && e10 > e20 && last > e50 ? 'Leading' : last < e50 && (s150 === null || last < s150) ? 'Lagging' : 'Mediocre'
+  return { tier, liq: +liq.toFixed(1), d10: adr ? (last / e10 - 1) * 100 / adr : 0 }
+}
+async function pageLists({ P }) {
+  const r = await fetch('/api/v1/symbols_list/custom/', { credentials: 'include' })
+  if (!r.ok) return null
+  const out = {}
+  for (const l of await r.json()) { const m = String(l.name || '').match(new RegExp('^' + P + ' (Leading|Mediocre|Lagging|Inbox)$')); if (m) out[m[1]] = { id: l.id, symbols: l.symbols || [] } }
+  return out
+}
+async function pageWriteLists({ P, LISTS }) {
+  const r = await fetch('/api/v1/symbols_list/custom/', { credentials: 'include' })
+  const have = {}
+  for (const l of await r.json()) have[l.name] = l.id
+  const bad = []
+  for (const [t, syms] of Object.entries(LISTS)) {
+    const id = have[P + ' ' + t]
+    const st = (await fetch(id ? '/api/v1/symbols_list/custom/' + id + '/replace/?unsafe=true' : '/api/v1/symbols_list/custom/',
+      { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(id ? syms : { name: P + ' ' + t, symbols: syms }) })).status
+    if (st !== 200 && st !== 201) bad.push(t + ' ' + st)
+  }
+  return { ok: !bad.length, error: bad.join(', ') }
+}
+async function inPage(fn, arg, ms = 20000) {
+  const t = await findTarget()
+  const [r] = await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: `(${fn.toString()})(${JSON.stringify(arg)})`, awaitPromise: true, returnByValue: true } }], ms)
+  return r?.result?.value
+}
+async function crSort(write) {
+  const lists = await inPage(pageLists, { P: 'CR' })
+  if (!lists) return { ok: false, error: 'could not read the CR lists' }
+  const mem = (t) => (lists[t]?.symbols || []).filter((x) => !String(x).startsWith('###')).map((x) => String(x).toUpperCase())
+  const cur = {}
+  for (const t of ['Leading', 'Mediocre', 'Lagging']) for (const s of mem(t)) cur[s] = t
+  const inbox = mem('Inbox'), syms = [...new Set([...Object.keys(cur), ...inbox])]
+  if (!syms.length) return { ok: true, empty: true }
+  const rows = {}
+  for (let i = 0; i < syms.length; i += 6) {
+    const part = await Promise.all(syms.slice(i, i + 6).map(async (s) => { try { const b = await cryptoBars(s, 200); return [s, b && crTier(b.bars)] } catch { return [s, null] } }))
+    for (const [s, v] of part) if (v) rows[s] = v
+  }
+  const nodata = syms.filter((s) => !rows[s]), thin = syms.filter((s) => rows[s] && rows[s].liq < 1)
+  const now = {}
+  for (const s of syms) if (rows[s] && rows[s].liq >= 1) now[s] = rows[s].tier
+  const rank = { Leading: 0, Mediocre: 1, Lagging: 2 }, up = [], down = [], fresh = []
+  for (const [s, t] of Object.entries(now)) { const p = cur[s]; if (!p) fresh.push([s, t]); else if (rank[t] < rank[p]) up.push([s, p, t]); else if (rank[t] > rank[p]) down.push([s, p, t]) }
+  const out = {}
+  for (const t of ['Leading', 'Mediocre', 'Lagging']) {
+    const part = Object.keys(now).filter((s) => now[s] === t).map((s) => ({ s, ...rows[s] }))
+    const sec = []
+    for (const [title, keep] of [['###LIQUID ≥$50M', (r) => r.liq >= 50], ['###$1-50M', (r) => r.liq < 50]]) {
+      const p = part.filter(keep).sort((a, b) => Math.abs(a.d10) - Math.abs(b.d10))
+      if (p.length) sec.push(title, ...p.map((r) => r.s))
+    }
+    out[t] = [...sec, ...nodata.filter((s) => cur[s] === t)]
+  }
+  out.Inbox = nodata.filter((s) => !cur[s])
+  if (write) { const w = await inPage(pageWriteLists, { P: 'CR', LISTS: out }); if (!w?.ok) return { ok: false, error: w?.error || 'TradingView did not save' } }
+  const short = (x) => x.split(':').pop()
+  return { ok: true, counts: Object.fromEntries(['Leading', 'Mediocre', 'Lagging'].map((t) => [t, Object.values(now).filter((v) => v === t).length])),
+           up: up.map(([s, a, b]) => `${short(s)} (${a}→${b})`), down: down.map(([s, a, b]) => `${short(s)} (${a}→${b})`),
+           new: fresh.map(([s, t]) => `${short(s)} (→${t})`), thin: thin.map(short), nodata: nodata.map(short), written: !!write }
 }
 
 // ── Crypto: MarketInOut gives "ACS.CR"; TradingView needs an exchange pair. Look each coin up with TradingView's own
@@ -352,7 +427,7 @@ http.createServer(async (req, res) => {
   if (!ok) return send(403, { ok: false, error: 'origin not allowed' })
   if (req.method === 'OPTIONS') return send(204, {})
   const u = new URL(req.url, 'http://x')
-  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true, cwatch: true, listadd: true })
+  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true, cwatch: true, listadd: true, crsort: true })
   if (u.pathname === '/quotes') {
     const mk = (u.searchParams.get('market') || 'NSE').toUpperCase()
     const syms = [...new Set((u.searchParams.get('syms') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => QUOTE_SYM.test(x)))].slice(0, 400)
@@ -369,6 +444,9 @@ http.createServer(async (req, res) => {
     const bases = [...new Set((u.searchParams.get('bases') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => CR_BASE.test(x)))].slice(0, 60)
     if (!bases.length) return send(400, { ok: false, error: 'bases needed' })
     try { const map = await resolveCrypto(bases); return send(map ? 200 : 502, { ok: !!map, map }) } catch (e) { return send(502, { ok: false, error: e.message }) }
+  }
+  if (u.pathname === '/crsort') {
+    try { const r = await crSort(u.searchParams.get('write') === '1'); return send(r.ok ? 200 : 502, r) } catch (e) { return send(502, { ok: false, error: e.message }) }
   }
   if (u.pathname === '/listadd') {
     const pre = u.searchParams.get('prefix') || '', to = u.searchParams.get('to') || 'Inbox'
