@@ -168,6 +168,29 @@ async function pageListOp({ P, S, TO }) {        // stringified and run in Tradi
   }
   return { ok: true, sym: full || bare(S), was, to: TO }
 }
+// Add several symbols to one list of a prefix (skips any already on one of the prefix's four lists) — one save.
+async function pageListAdd({ P, TO, SYMS }) {
+  const bare = (x) => String(x).toUpperCase().split(':').pop()
+  const r = await fetch('/api/v1/symbols_list/custom/', { credentials: 'include' })
+  if (!r.ok) return { ok: false, error: 'lists HTTP ' + r.status }
+  const mine = {}
+  for (const l of await r.json()) { const m = String(l.name || '').match(new RegExp('^' + P + ' (Leading|Mediocre|Lagging|Inbox)$')); if (m) mine[m[1]] = l }
+  const have = new Set(Object.values(mine).flatMap((l) => (l.symbols || []).filter((x) => !String(x).startsWith('###')).map(bare)))
+  const add = [...new Set(SYMS.map((x) => String(x).toUpperCase()))].filter((x) => x.includes(':') && !have.has(bare(x)))
+  if (!add.length) return { ok: true, added: [] }
+  const l = mine[TO]
+  const body = l ? [...(l.symbols || []), ...add] : { name: P + ' ' + TO, symbols: add }
+  const st = (await fetch(l ? '/api/v1/symbols_list/custom/' + l.id + '/replace/?unsafe=true' : '/api/v1/symbols_list/custom/',
+    { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).status
+  return st === 200 || st === 201 ? { ok: true, added: add } : { ok: false, error: P + ' ' + TO + ': HTTP ' + st }
+}
+async function listAdd(prefix, to, syms) {
+  let t
+  try { t = await findTarget() } catch { return null }
+  const expr = `(${pageListAdd.toString()})(${JSON.stringify({ P: prefix, TO: to, SYMS: syms })})`
+  const [r] = await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }], 20000)
+  return r?.result?.value || null
+}
 async function listOp(prefix, sym, to) {
   let t
   try { t = await findTarget() } catch { return null }
@@ -329,7 +352,7 @@ http.createServer(async (req, res) => {
   if (!ok) return send(403, { ok: false, error: 'origin not allowed' })
   if (req.method === 'OPTIONS') return send(204, {})
   const u = new URL(req.url, 'http://x')
-  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true, cwatch: true })
+  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true, cwatch: true, listadd: true })
   if (u.pathname === '/quotes') {
     const mk = (u.searchParams.get('market') || 'NSE').toUpperCase()
     const syms = [...new Set((u.searchParams.get('syms') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => QUOTE_SYM.test(x)))].slice(0, 400)
@@ -346,6 +369,12 @@ http.createServer(async (req, res) => {
     const bases = [...new Set((u.searchParams.get('bases') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => CR_BASE.test(x)))].slice(0, 60)
     if (!bases.length) return send(400, { ok: false, error: 'bases needed' })
     try { const map = await resolveCrypto(bases); return send(map ? 200 : 502, { ok: !!map, map }) } catch (e) { return send(502, { ok: false, error: e.message }) }
+  }
+  if (u.pathname === '/listadd') {
+    const pre = u.searchParams.get('prefix') || '', to = u.searchParams.get('to') || 'Inbox'
+    const syms = (u.searchParams.get('symbols') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => SYM.test(x)).slice(0, 300)
+    if (!LIST_PREFIX.test(pre) || !/^(Leading|Mediocre|Lagging|Inbox)$/.test(to) || !syms.length) return send(400, { ok: false, error: 'prefix, to, symbols' })
+    try { const r = await listAdd(pre, to, syms); return send(r?.ok ? 200 : 502, r || { ok: false, error: 'TradingView not reachable' }) } catch (e) { return send(502, { ok: false, error: e.message }) }
   }
   if (u.pathname === '/listop') {
     const pre = u.searchParams.get('prefix') || '', to = u.searchParams.get('to') || '', sym = (u.searchParams.get('symbol') || '').trim().toUpperCase()
