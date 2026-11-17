@@ -6,6 +6,11 @@ Makes the Scanner's **TradingView** button switch the chart in TradingView Deskt
 from myswingdesk.app, *.frappe.cloud and localhost, and only does one thing: set the chart symbol over TradingView's
 debug port (9222 — the same one the TradingView MCP uses). If TradingView is closed, it starts it in debug mode first.
 
+With `&avwap=1` (the Scanner always sends it) it also reads the **daily** pane after the switch and returns the AVWAP
+anchored at the highest high of the last 100 daily bars (hlc3 × volume), its anchor date, ADR % and the distance in ADRs.
+The Scanner saves it and shows it in the **AVWAP ADR** column. After updating this file, restart the bridge
+(Task Manager → end `node.exe`, then double-click `start-hidden.vbs`).
+
 ## One-time setup
 Right-click `install.ps1` → **Run with PowerShell**. It:
 - adds a Startup entry, so at every login TradingView opens in debug mode and the bridge starts (no windows);

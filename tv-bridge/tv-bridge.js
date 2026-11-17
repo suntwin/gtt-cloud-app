@@ -31,11 +31,11 @@ async function waitForChart(t) {                       // a freshly opened Tradi
   }
 }
 
-function cdp(wsUrl, calls) {
+function cdp(wsUrl, calls, ms = 8000) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl), out = []
     let id = 0
-    const timer = setTimeout(() => { ws.close(); reject(new Error('TradingView did not answer')) }, 8000)
+    const timer = setTimeout(() => { ws.close(); reject(new Error('TradingView did not answer')) }, ms)
     const next = () => {
       if (id === calls.length) { clearTimeout(timer); ws.close(); return resolve(out) }
       ws.send(JSON.stringify({ id: ++id, ...calls[id - 1] }))
@@ -59,10 +59,45 @@ function launchTV() {                                   // start TradingView in 
   return launching
 }
 
-async function setSymbol(sym, focus = true) {
+// ── AVWAP read-back: after a switch, read the DAILY pane's bars and anchor a VWAP at the highest high of the last 100 bars
+// (hlc3 × volume). Same rule as the chart's AVWAP-from-high. Returns null when the pane isn't loaded in time.
+const DAILY = `(function(){ var A = TradingViewApi, n = A.chartsCount ? A.chartsCount() : 1
+  for (var i = 0; i < n; i++) { var c = A.chart(i); if (c.resolution() === '1D' || c.resolution() === 'D') return c }
+  return null })()`
+const SIG = `(function(){ var c = ${DAILY}; if (!c) return ''; var b = c._chartWidget.model().mainSeries().bars();
+  return c.symbol() + '|' + b.size() + '|' + JSON.stringify(b.valueAt(b.lastIndex())) })()`
+const CALC = (want, prev) => `(function(){ var c = ${DAILY}; if (!c) return { wait: false, none: 'no daily pane' }
+  var ms = c._chartWidget.model().mainSeries(), b = ms.bars(), sym = c.symbol(), prev = ${JSON.stringify(prev)}
+  var data = b.size() + '|' + JSON.stringify(b.valueAt(b.lastIndex()))
+  var base = function (s) { return String(s).split(':').pop().toUpperCase() }, want = base(${JSON.stringify(want)})
+  var stale = prev && base(prev.split('|')[0]) !== want && prev.slice(prev.indexOf('|') + 1) === data   // still the old ticker's bars
+  if (base(sym) !== want || b.size() < 30 || stale || (ms.isLoading && ms.isLoading()) || (ms.isCompleted && !ms.isCompleted())) return { wait: true }
+  var bars = [], end = b.lastIndex(), st = Math.max(b.firstIndex(), end - 99)
+  for (var i = st; i <= end; i++) { var v = b.valueAt(i); if (v) bars.push(v) }
+  var hi = -1, k = -1; bars.forEach(function (v, j) { if (v[2] >= hi) { hi = v[2]; k = j } })
+  var pv = 0, vv = 0; for (var j = k; j < bars.length; j++) { var x = bars[j], w = x[5] || 0; pv += (x[2] + x[3] + x[4]) / 3 * w; vv += w }
+  if (!vv) return { wait: false, none: 'no volume' }
+  var last = bars[bars.length - 1], r = bars.slice(-20), adr = r.reduce(function (t, x) { return t + (x[2] / x[3] - 1) }, 0) / r.length * 100
+  var av = pv / vv, d = function (t) { return new Date(t * 1000).toISOString().slice(0, 10) }
+  return { symbol: sym, avwap: +av.toFixed(4), anchor_date: d(bars[k][0]), anchor_high: hi, close: last[4], bar_date: d(last[0]),
+           adr_pct: +adr.toFixed(3), dist_adr: +((last[4] - av) / (last[4] * adr / 100)).toFixed(3) } })()`
+
+async function readAvwap(t, want, prev) {
+  for (let i = 0; i < 20; i++) {                        // up to ~6 s for the daily pane to load the new symbol
+    const [r] = await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: CALC(want, prev), returnByValue: true } }]).catch(() => [{}])
+    const v = r?.result?.value
+    if (v && !v.wait) return v.none ? null : v
+    await new Promise((ok) => setTimeout(ok, 300))
+  }
+  return null
+}
+
+async function setSymbol(sym, focus = true, withAvwap = false) {
   let t
   try { t = await findTarget() } catch { await launchTV(); t = await findTarget() }
   await waitForChart(t)
+  let prev = ''
+  if (withAvwap) prev = (await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: SIG, returnByValue: true } }]).catch(() => [{}]))[0]?.result?.value || ''
   const expr = `new Promise((ok, no) => { try { const c = TradingViewApi.activeChart();
     const done = () => ok(c.symbol()); c.setSymbol(${JSON.stringify(sym)}, done); setTimeout(done, 4000) } catch (e) { no(String(e)) } })`
   const calls = [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }]
@@ -71,7 +106,162 @@ async function setSymbol(sym, focus = true) {
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.value || 'setSymbol failed')
   if (focus && process.platform === 'win32')  // raise the TradingView window (fixed command, no user input)
     exec(`powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate('TradingView') | Out-Null"`, { windowsHide: true })
-  return r.result.value
+  const symbol = r.result.value
+  return { symbol, avwap: withAvwap ? await readAvwap(t, sym, prev) : undefined }
+}
+
+// ── Watchlists: the Leading / Mediocre / Lagging / Inbox lists (prefix SD = NSE, US = US) read from your TradingView account,
+// so the Scanner can show which list each stock is on. Read-only.
+const LIST_PREFIX = /^(SD|US)$/
+async function readLists(prefix) {
+  let t
+  try { t = await findTarget() } catch { return null }
+  const expr = `fetch('/api/v1/symbols_list/custom/', { credentials: 'include' }).then((r) => r.json()).then((all) => {
+    const out = {}
+    for (const l of all) { const m = String(l.name || '').match(/^${prefix} (Leading|Mediocre|Lagging|Inbox)$/); if (m) out[m[1]] = (l.symbols || []).filter((s) => !String(s).startsWith('###')) }
+    return out })`
+  const [r] = await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }])
+  return r?.result?.value || null
+}
+
+// ── Edit the tier lists on the fly (from the scanner, the phone or an ntfy button): move a ticker to Leading / Mediocre /
+// Lagging / Inbox, or take it off all four. Runs inside the TradingView page, like the watchlist tool (same list API).
+const LIST_TO = /^(Leading|Mediocre|Lagging|Inbox|Remove)$/
+async function pageListOp({ P, S, TO }) {        // stringified and run in TradingView
+  const bare = (x) => String(x).toUpperCase().split(':').pop()
+  const mem = (x) => !String(x).startsWith('###')
+  const r = await fetch('/api/v1/symbols_list/custom/', { credentials: 'include' })
+  if (!r.ok) return { ok: false, error: 'lists HTTP ' + r.status }
+  const mine = {}
+  for (const l of await r.json()) { const m = String(l.name || '').match(new RegExp('^' + P + ' (Leading|Mediocre|Lagging|Inbox)$')); if (m) mine[m[1]] = l }
+  let full = S.includes(':') ? S.toUpperCase() : null
+  const was = []
+  for (const [tier, l] of Object.entries(mine)) {
+    const hit = (l.symbols || []).find((x) => mem(x) && bare(x) === bare(S))
+    if (hit) { was.push(tier); full = full || hit }
+  }
+  if (TO !== 'Remove' && !full) {
+    if (P === 'SD') full = 'NSE:' + bare(S)
+    else {
+      try {
+        const j = await (await fetch('https://symbol-search.tradingview.com/symbol_search/v3/?text=' + encodeURIComponent(bare(S)) +
+          '&hl=0&exchange=&lang=en&search_type=stocks&domain=production&sort_by_country=US')).json()
+        const h = (j.symbols || []).find((x) => x.symbol === bare(S) && x.country === 'US' && ['NASDAQ', 'NYSE', 'AMEX', 'NYSE Arca'].includes(x.exchange)
+          && !['BATS', 'CBOE'].includes(x.prefix || ''))
+        if (h) full = (h.exchange === 'NYSE Arca' ? 'AMEX' : h.exchange) + ':' + bare(S)
+      } catch {}
+      if (!full) return { ok: false, error: 'could not find ' + bare(S) + ' on a US exchange' }
+    }
+  }
+  const save = async (url, body) => (await fetch(url, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).status
+  for (const [tier, l] of Object.entries(mine)) {
+    if (tier === TO || !was.includes(tier)) continue
+    const st = await save('/api/v1/symbols_list/custom/' + l.id + '/replace/?unsafe=true', (l.symbols || []).filter((x) => !mem(x) || bare(x) !== bare(S)))
+    if (st !== 200 && st !== 201) return { ok: false, error: P + ' ' + tier + ': HTTP ' + st }
+  }
+  if (TO !== 'Remove' && !was.includes(TO)) {
+    const l = mine[TO]
+    const st = l ? await save('/api/v1/symbols_list/custom/' + l.id + '/replace/?unsafe=true', [...(l.symbols || []), full])
+                 : await save('/api/v1/symbols_list/custom/', { name: P + ' ' + TO, symbols: [full] })
+    if (st !== 200 && st !== 201) return { ok: false, error: P + ' ' + TO + ': HTTP ' + st }
+  }
+  return { ok: true, sym: full || bare(S), was, to: TO }
+}
+async function listOp(prefix, sym, to) {
+  let t
+  try { t = await findTarget() } catch { return null }
+  const expr = `(${pageListOp.toString()})(${JSON.stringify({ P: prefix, S: sym, TO: to })})`
+  const [r] = await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }], 20000)
+  return r?.result?.value || null
+}
+
+// ── Crypto: MarketInOut gives "ACS.CR"; TradingView needs an exchange pair. Look each coin up with TradingView's own
+// symbol search (from inside the TradingView page) and pick the best market: perpetuals on the big exchanges first,
+// then spot. Read-only; the Scanner saves the answers so each coin is looked up once.
+const CR_BASE = /^[A-Z0-9]{1,20}$/
+async function resolveCrypto(bases) {
+  let t
+  try { t = await findTarget() } catch { return null }
+  const expr = `(async () => {
+    const PREF = ['BINANCE:P', 'BYBIT:P', 'OKX:P', 'BITGET:P', 'BINANCE:S', 'BYBIT:S', 'OKX:S', 'COINBASE:S', 'KUCOIN:S', 'GATE:S', 'MEXC:S',
+                  'BITGET:S', 'HTX:S', 'KUCOIN:P', 'MEXC:P', 'BINGX:P', 'BINGX:S', 'GATE:P']
+    const one = async (b) => {
+      try {
+        const r = await fetch('https://symbol-search.tradingview.com/symbol_search/v3/?text=' + b + 'USDT&hl=0&exchange=&lang=en&search_type=crypto&domain=production')
+        const j = await r.json(), c = []
+        for (const x of j.symbols || []) {
+          const sym = String(x.symbol || '').replace(/<\\/?em>/g, '').toUpperCase(), ex = String(x.prefix || x.exchange || '').toUpperCase()
+          const perp = sym === b + 'USDT.P', spot = sym === b + 'USDT' || (ex === 'COINBASE' && sym === b + 'USD')
+          if (!ex || !(perp || spot)) continue
+          const i = PREF.indexOf(ex + ':' + (perp ? 'P' : 'S'))
+          c.push({ tv: ex + ':' + sym, rank: i < 0 ? 50 + (perp ? 0 : 1) : i })
+        }
+        c.sort((a, z) => a.rank - z.rank)
+        return [b, c[0] ? c[0].tv : null]
+      } catch (e) { return [b, undefined] }
+    }
+    const out = {}, list = ${JSON.stringify(bases)}
+    for (let i = 0; i < list.length; i += 8) for (const [b, v] of await Promise.all(list.slice(i, i + 8).map(one))) if (v !== undefined) out[b] = v
+    return out })()`
+  const [r] = await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }], 45000)
+  return r?.result?.value || null
+}
+
+// ── Live quotes for the Scanner's AVWAP watch: one TradingView screener request for a list of tickers (no chart flipping).
+const QUOTE_SYM = /^[A-Z0-9_.&-]{1,30}$/
+async function quotes(market, syms) {
+  let t
+  try { t = await findTarget() } catch { return null }
+  const us = market === 'USA' || market === 'US'
+  const body = { markets: [us ? 'america' : 'india'], columns: ['name', 'close', 'high', 'low', 'volume', 'average_volume_10d_calc', 'change'],
+    filter: [{ left: 'name', operation: 'in_range', right: syms }, { left: 'exchange', operation: 'in_range', right: us ? ['NASDAQ', 'NYSE', 'AMEX'] : ['NSE'] }]
+      .concat(us ? [{ left: 'is_primary', operation: 'equal', right: true }] : []), range: [0, 1000] }
+  const expr = `fetch('https://scanner.tradingview.com/${us ? 'america' : 'india'}/scan', { method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'text/plain' }, body: ${JSON.stringify(JSON.stringify(body))} }).then((r) => r.json()).then((j) => {
+      const out = {}
+      for (const x of j.data || []) { const d = x.d; out[String(d[0]).toUpperCase()] = { close: d[1], high: d[2], low: d[3], volume: d[4], avg_vol: d[5], chg: d[6] } }
+      return out })`
+  const [r] = await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }], 20000)
+  return r?.result?.value || null
+}
+
+// ── AVWAP without opening charts: daily bars from Yahoo Finance (this PC's internet), same rule as the chart read-back —
+// anchored at the highest high of the last 100 daily bars, hlc3 × volume. Used to fill names you haven't browsed.
+function yahooSym(sym, market) {
+  const s = String(sym).toUpperCase()
+  return market === 'NSE' ? `${s}.NS` : s.replace(/\./g, '-')
+}
+async function avwapFromYahoo(sym, market) {
+  const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym(sym, market))}?range=8mo&interval=1d`,
+    { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) })
+  if (!r.ok) return null
+  const res = (await r.json())?.chart?.result?.[0]
+  const q = res?.indicators?.quote?.[0], ts = res?.timestamp
+  if (!q || !ts) return null
+  let bars = ts.map((t, i) => [t, q.high[i], q.low[i], q.close[i], q.volume[i]]).filter((b) => b[1] != null && b[2] != null && b[3] != null)
+  // during the session leave today's unfinished bar out: the AVWAP to beat is the one as of the last close
+  const reg = res.meta?.currentTradingPeriod?.regular, nowS = Date.now() / 1000
+  if (reg && nowS >= reg.start && nowS < reg.end && bars.length && bars[bars.length - 1][0] >= reg.start) bars = bars.slice(0, -1)
+  bars = bars.slice(-100)
+  if (bars.length < 30) return null
+  let hi = -1, k = -1
+  bars.forEach((b, j) => { if (b[1] >= hi) { hi = b[1]; k = j } })
+  let pv = 0, vv = 0
+  for (let j = k; j < bars.length; j++) { const [, h, l, c, v] = bars[j]; pv += (h + l + c) / 3 * (v || 0); vv += v || 0 }
+  if (!vv) return null
+  const last = bars[bars.length - 1], r20 = bars.slice(-20)
+  const adr = r20.reduce((t, b) => t + (b[1] / b[2] - 1), 0) / r20.length * 100, av = pv / vv
+  const d = (t) => new Date(t * 1000).toISOString().slice(0, 10)
+  return { avwap: +av.toFixed(4), anchor_date: d(bars[k][0]), anchor_high: hi, close: last[3], bar_date: d(last[0]),
+           adr_pct: +adr.toFixed(3), dist_adr: +((last[3] - av) / (last[3] * adr / 100)).toFixed(3), source: 'yahoo' }
+}
+async function avwapBatch(market, syms) {
+  const out = {}
+  for (let i = 0; i < syms.length; i += 6) {
+    const part = await Promise.all(syms.slice(i, i + 6).map((s) => avwapFromYahoo(s, market).then((v) => [s, v]).catch(() => [s, null])))
+    for (const [s, v] of part) if (v) out[s] = v
+  }
+  return out
 }
 
 http.createServer(async (req, res) => {
@@ -85,9 +275,36 @@ http.createServer(async (req, res) => {
   if (!ok) return send(403, { ok: false, error: 'origin not allowed' })
   if (req.method === 'OPTIONS') return send(204, {})
   const u = new URL(req.url, 'http://x')
-  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge' })
+  if (u.pathname === '/ping') return send(200, { ok: true, app: 'tv-bridge', lists: true, crypto: true, quotes: true, avwap: true, listop: true })
+  if (u.pathname === '/quotes') {
+    const mk = (u.searchParams.get('market') || 'NSE').toUpperCase()
+    const syms = [...new Set((u.searchParams.get('syms') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => QUOTE_SYM.test(x)))].slice(0, 400)
+    if (!syms.length) return send(400, { ok: false, error: 'syms needed' })
+    try { const q = await quotes(mk, syms); return send(q ? 200 : 502, { ok: !!q, quotes: q }) } catch (e) { return send(502, { ok: false, error: e.message }) }
+  }
+  if (u.pathname === '/avwap') {
+    const mk = (u.searchParams.get('market') || 'NSE').toUpperCase() === 'NSE' ? 'NSE' : 'USA'
+    const syms = [...new Set((u.searchParams.get('syms') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => QUOTE_SYM.test(x)))].slice(0, 300)
+    if (!syms.length) return send(400, { ok: false, error: 'syms needed' })
+    try { return send(200, { ok: true, avwap: await avwapBatch(mk, syms) }) } catch (e) { return send(502, { ok: false, error: e.message }) }
+  }
+  if (u.pathname === '/resolve') {
+    const bases = [...new Set((u.searchParams.get('bases') || '').toUpperCase().split(',').map((x) => x.trim()).filter((x) => CR_BASE.test(x)))].slice(0, 60)
+    if (!bases.length) return send(400, { ok: false, error: 'bases needed' })
+    try { const map = await resolveCrypto(bases); return send(map ? 200 : 502, { ok: !!map, map }) } catch (e) { return send(502, { ok: false, error: e.message }) }
+  }
+  if (u.pathname === '/listop') {
+    const pre = u.searchParams.get('prefix') || '', to = u.searchParams.get('to') || '', sym = (u.searchParams.get('symbol') || '').trim().toUpperCase()
+    if (!LIST_PREFIX.test(pre) || !LIST_TO.test(to) || !SYM.test(sym)) return send(400, { ok: false, error: 'prefix SD|US, to Leading|Mediocre|Lagging|Inbox|Remove, symbol' })
+    try { const r = await listOp(pre, sym, to); return send(r?.ok ? 200 : 502, r || { ok: false, error: 'TradingView not reachable' }) } catch (e) { return send(502, { ok: false, error: e.message }) }
+  }
+  if (u.pathname === '/lists') {
+    const pre = u.searchParams.get('prefix') || ''
+    if (!LIST_PREFIX.test(pre)) return send(400, { ok: false, error: 'prefix must be SD or US' })
+    try { const lists = await readLists(pre); return send(lists ? 200 : 502, { ok: !!lists, lists }) } catch (e) { return send(502, { ok: false, error: e.message }) }
+  }
   if (u.pathname !== '/open') return send(404, { ok: false })
   const sym = (u.searchParams.get('symbol') || '').trim()
   if (!SYM.test(sym)) return send(400, { ok: false, error: 'bad symbol' })
-  try { send(200, { ok: true, symbol: await setSymbol(sym, u.searchParams.get('focus') !== '0') }) } catch (e) { send(502, { ok: false, error: e.message }) }
+  try { send(200, { ok: true, ...(await setSymbol(sym, u.searchParams.get('focus') !== '0', u.searchParams.get('avwap') === '1')) }) } catch (e) { send(502, { ok: false, error: e.message }) }
 }).listen(PORT, '127.0.0.1', () => console.log(`tv-bridge on http://127.0.0.1:${PORT} → TradingView debug port ${CDP_PORTS.join('/')}`))
