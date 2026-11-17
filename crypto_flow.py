@@ -22,7 +22,8 @@ SCREENS = {
     "Daily": {"scans": {"1M": "https://api.marketinout.com/run/screen?key=304125ceaf8c4948",
                         "3M": "https://api.marketinout.com/run/screen?key=17e949fd9a4148ab",
                         "6M": "https://api.marketinout.com/run/screen?key=1caa51e5c0ab4e60"},
-              "extra": "https://api.marketinout.com/run/screen?key=dfffbaf35d5d4646"},
+              "extra": "https://api.marketinout.com/run/screen?key=dfffbaf35d5d4646",
+              "htf": "https://api.marketinout.com/run/screen?key=b1f711065d424ee9"},   # high tight flags: +40% then a tight flag
     "Hourly": {"scans": {"22h": "https://api.marketinout.com/run/screen?key=9fdcdedbcee248d8",
                          "68h": "https://api.marketinout.com/run/screen?key=30ae06ca7155498e",
                          "126h": "https://api.marketinout.com/run/screen?key=e42d24a9aabc4a7e"},
@@ -160,6 +161,16 @@ def load_scan(st, tf):
     counts["Weekly" if tf == "Daily" else "Daily/Weekly"] = 0 if ex is None else len(ex)
     if ex is not None:
         base = base.merge(ex, on="Symbol", how="left")
+    htf = set()
+    if sc.get("htf"):                     # marked only: not a performance screen, so it doesn't change "Scans"
+        try:
+            txt = _fetch(sc["htf"])
+            h = _parse_scan(txt, COLUMNS[tf]) if txt else None
+            htf = set(h["Symbol"]) if h is not None and not h.empty else set()
+            counts["HTF"] = len(htf)
+        except Exception:
+            pass
+    base["HTF"] = base["Symbol"].isin(htf)
     return base.dropna(subset=["Last"]).reset_index(drop=True), counts
 
 
@@ -333,7 +344,7 @@ CARD_NAMES = {"dvol": "Day vol", "dvolhourly": "Hour vol", "dvoldaily": "Day vol
               "_10madist": "10MA %", "_20madist": "20MA %", "_10wmadist": "10wMA %", "_period_perf": "Period perf %",
               "_days_since_bo": "Days since BO", "_bo_dollar_vol_mln": "BO $ value", "_insideday": "Inside day",
               "_wtc": "Weekly tight closes", "_rs": "RS", "cap": "Market cap", "Timestamp": "Data time"}
-SHOW = {"Daily": ["Flag", "Symbol", "Score", "Setup", "MA hold"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "BO", "BO value",
+SHOW = {"Daily": ["Flag", "Symbol", "Score", "Setup", "HTF", "MA hold"] + HIGHLIGHT + ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "BO", "BO value",
                   "Off 10w (ADR)", "Off 10w hi %", "10MA (ADR)", "Avg vol", "Day vol", "Chg %", "Vol x", "Scans", "Flags", "Last"],
         "Hourly": ["Flag", "Symbol", "Score", "Setup", "MA hold", "ADR", "Ti65", "Rel tight", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "BO",
                    "D10EMA (ADR)", "10MA (ADR)", "Tight closes", "Avg vol", "Day vol", "Chg %", "Vol x", "Day vol x", "Scans", "Flags", "Last"]}
