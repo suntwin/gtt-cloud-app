@@ -94,7 +94,7 @@ async function readAvwap(t, want, prev) {
 
 // ── NSE circuit lines: when the Scanner opens a stock it passes the stock's price band (the Circuit % column). The base is
 // the last finished session's close (Yahoo daily bars; during the session today's bar is left out), and the upper / lower
-// circuit are drawn as two dashed lines. They are temporary (not saved in the layout) and replaced on the next open.
+// circuit are shown as a small label at the top right of the chart. It is temporary (not saved in the layout) and replaced on the next open.
 async function circuitBase(sym) {
   const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym(String(sym).split(':').pop(), 'NSE'))}?range=10d&interval=1d`,
     { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) })
@@ -114,10 +114,12 @@ async function drawCircuit(t, sym, band) {
     for (const id of (window.__sdCircuit || [])) { try { c.removeEntity(id) } catch (e) {} }
     window.__sdCircuit = []
     if (!A) return 'cleared'
-    const mk = (p, txt, col) => Promise.resolve(c.createShape({ price: p }, { shape: 'horizontal_line', lock: true, disableSave: true, disableUndo: true,
-      overrides: { linecolor: col, linestyle: 2, linewidth: 1, showLabel: true, text: txt, textcolor: col, horzLabelsAlign: 'right', vertLabelsAlign: 'bottom', fontsize: 11 } }))
-    const col = A.band <= 5 ? '#e53935' : A.band <= 10 ? '#fb8c00' : '#8d6e63'
-    window.__sdCircuit = [await mk(A.up, 'Upper circuit ' + A.up + '  (+' + A.band + '%)', col), await mk(A.lo, 'Lower circuit ' + A.lo + '  (−' + A.band + '%)', col)]
+    const col = A.band <= 5 ? '#ef5350' : A.band <= 10 ? '#ffa726' : '#bcaaa4'
+    const f = (x) => Number(x).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    // a small label pinned to the top right of the chart (under the Market box), not lines across the price
+    window.__sdCircuit = [await Promise.resolve(c.createAnchoredShape({ x: 0.79, y: 0.155 }, { shape: 'anchored_text',
+      text: 'Circuit ' + A.band + '%  ·  UC ' + f(A.up) + '  ·  LC ' + f(A.lo), lock: true, disableSave: true, disableUndo: true,
+      overrides: { color: col, fontsize: 12, bold: true, fillBackground: true, backgroundColor: 'rgba(20,20,20,0.85)', drawBorder: true, borderColor: col } }))]
     return 'drawn' })(${JSON.stringify(arg)})`
   await cdp(t.webSocketDebuggerUrl, [{ method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }]).catch(() => {})
 }
